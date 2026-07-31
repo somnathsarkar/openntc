@@ -115,10 +115,81 @@ float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
   return lr;
 }
 
+const char* map_phases_to_labels[7] = {
+  "draw_features",
+  "draw_targets",
+  "forward_pass",
+  "loss",
+  "backward_pass",
+  "accumulate_grid_gradients",
+  "update_adam"};
+
+class PerfTimer
+{
+  public:
+    static const int num_phases = 7;
+    static const int len_window = 500;
+    static const int num_warmup = 50;
+    PerfTimer()
+    {
+      for (int i = 0; i < len_window; i++)
+      {
+        for (int j = 0; j < num_phases + 1; j++)
+        {
+          cudaEventCreate(&events[i][j]);
+        }
+        lods[i] = -1;
+      }
+    }
+    ~PerfTimer()
+    {
+      for (int i = 0; i < len_window; i++)
+      {
+        for (int j = 0; j < num_phases + 1; j++)
+        {
+          cudaEventDestroy(events[i][j]);
+        }
+      }
+    }
+    void log(int batch_i, int phase, int lod)
+    {
+      int step = batch_i - num_warmup;
+      if (step < 0 || step >= len_window) return;
+      assert(lods[step] == -1 || lods[step] == lod);
+      cudaEventRecord(events[step][phase]);
+      lods[step] = lod;
+    }
+    void harvest()
+    {
+      cudaEventSynchronize(events[len_window - 1][num_phases]);
+      for (int step = 0; step < len_window; step++)
+      {
+        for (int phase = 0; phase < num_phases; phase++)
+        {
+          float ms;
+          cudaEventElapsedTime(&ms, events[step][phase], events[step][phase + 1]);
+          accum_ms[phase] += ms;
+        }
+      }
+      float total = 0.0f;
+      for (int i = 0; i < num_phases; i++)
+      {
+        accum_ms[i] /= len_window;
+        total += accum_ms[i];
+        printf("%s: %f ms/step\n", map_phases_to_labels[i], accum_ms[i]);
+      }
+      printf("Total: %f ms/step\n", total);
+    }
+  private:
+    cudaEvent_t events[len_window][num_phases + 1];
+    double accum_ms[num_phases] = {};
+    int lods[len_window];
+};
+
 int main()
 {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  // std::random_device rd;
+  std::mt19937 gen(123);
 
   cublasHandle_t handle;
   cublasCreate(&handle);
@@ -252,9 +323,12 @@ int main()
   int *grid_draws_dev;
   cudaMalloc(&grid_draws_dev, sizeof(int) * 16);
 
+  PerfTimer ptimer;
+
   int grid_batch_i[4] = {0, 0, 0, 0};
 
-  int batch_count = 10;
+  int batch_count = 1000;
+  assert(PerfTimer::num_warmup + PerfTimer::len_window <= batch_count);
   int lock_i = 95 * batch_count / 100;
   assert(lock_i > 0);
   for (int batch_i = 0; batch_i < batch_count; batch_i++)
@@ -309,6 +383,7 @@ int main()
       cudaMemset(g1_noise_dev, 0, sizeof(float) * g1_grid_dim[0] * g1_grid_dim[0] * g1_dim);
     }
 
+    ptimer.log(batch_i, 0, lod);
     launch_draw_features(
       8,
       grid_dim_draw,
@@ -325,7 +400,9 @@ int main()
       g0_dev[feature_level],
       g1_dev[feature_level],
       x_dev);
+    ptimer.log(batch_i, 1, lod);
     launch_draw_targets(8, grid_dim_draw, mip_dim[lod], out_dim, grid_draws_dev, mips.levels[lod].data_dev, lossdiff_dev);
+    ptimer.log(batch_i, 2, lod);
 
     int batch_dim = 8 * grid_dim_draw * grid_dim_draw;
 
@@ -336,6 +413,7 @@ int main()
     matmulAB(handle, 64, batch_dim, 64, W1_dev, W0xa_dev, W1x_dev);
     launch_forward_hardgelu(64 * batch_dim, W1x_dev, W1xa_dev);
     matmulAB(handle, out_dim, batch_dim, 64, Wout_dev, W1xa_dev, Woutx_dev);
+    ptimer.log(batch_i, 3, lod);
 
     // Loss
 
@@ -346,6 +424,7 @@ int main()
     float mse = squarederr / ((float)out_dim * batch_dim);
     std::printf("Batch %05d: %f\n", batch_i, mse);
     launch_scalar_product(out_dim * batch_dim, -2.0f / ((float)out_dim * batch_dim), lossdiff_dev, dLdPred_dev);
+    ptimer.log(batch_i, 4, lod);
 
     // Backward pass
 
@@ -357,6 +436,7 @@ int main()
     launch_backward_hardgelu(64 * batch_dim, W0x_dev, dLdW0xa_dev, dLdW0x_dev);
     matmulABT(handle, 64, feature_dim, batch_dim, dLdW0x_dev, x_dev, dLdW0_dev);
     matmulATB(handle, feature_dim, batch_dim, 64, W0_dev, dLdW0x_dev, dLdx_dev);
+    ptimer.log(batch_i, 5, lod);
 
     cudaMemset(dLdG0_dev[feature_level], 0, g0_grid_dim[feature_level] * g0_grid_dim[feature_level] * g0_dim * sizeof(float));
     cudaMemset(dLdG1_dev[feature_level], 0, g1_grid_dim[feature_level] * g1_grid_dim[feature_level] * g1_dim * sizeof(float));
@@ -373,6 +453,7 @@ int main()
       dLdx_dev,
       dLdG0_dev[feature_level],
       dLdG1_dev[feature_level]);
+    ptimer.log(batch_i, 6, lod);
 
     // Update ADAM parameters
 
@@ -426,7 +507,10 @@ int main()
         g1_delta,
         g1_dev[feature_level]);
     }
+    ptimer.log(batch_i, 7, lod);
   }
+
+  ptimer.harvest();
 
   double mse_numer = 0;
   double mse_denom = 0;
