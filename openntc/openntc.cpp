@@ -171,7 +171,7 @@ class PerfTimer
           accum_ms[phase] += ms;
         }
       }
-      float total = 0.0f;
+      double total = 0.0;
       for (int i = 0; i < num_phases; i++)
       {
         accum_ms[i] /= len_window;
@@ -327,8 +327,8 @@ int main()
 
   int grid_batch_i[4] = {0, 0, 0, 0};
 
-  int batch_count = 1000;
-  assert(PerfTimer::num_warmup + PerfTimer::len_window <= batch_count);
+  int batch_count = 10000;
+  // assert(PerfTimer::num_warmup + PerfTimer::len_window <= batch_count);
   int lock_i = 95 * batch_count / 100;
   assert(lock_i > 0);
   for (int batch_i = 0; batch_i < batch_count; batch_i++)
@@ -407,12 +407,7 @@ int main()
     int batch_dim = 8 * grid_dim_draw * grid_dim_draw;
 
     // Forward pass
-
-    matmulAB(handle, 64, batch_dim, feature_dim, W0_dev, x_dev, W0x_dev);
-    launch_forward_hardgelu(64 * batch_dim, W0x_dev, W0xa_dev);
-    matmulAB(handle, 64, batch_dim, 64, W1_dev, W0xa_dev, W1x_dev);
-    launch_forward_hardgelu(64 * batch_dim, W1x_dev, W1xa_dev);
-    matmulAB(handle, out_dim, batch_dim, 64, Wout_dev, W1xa_dev, Woutx_dev);
+    launch_forward_pass(batch_dim, x_dev, W0_dev, W1_dev, Wout_dev, W0x_dev, W0xa_dev, W1x_dev, W1xa_dev, Woutx_dev);
     ptimer.log(batch_i, 3, lod);
 
     // Loss
@@ -422,12 +417,13 @@ int main()
     float squarederr = 0.0f;
     cublasSdot(handle, out_dim * batch_dim, lossdiff_dev, 1, lossdiff_dev, 1, &squarederr);
     float mse = squarederr / ((float)out_dim * batch_dim);
-    std::printf("Batch %05d: %f\n", batch_i, mse);
+    // std::printf("Batch %05d: %f\n", batch_i, mse);
     launch_scalar_product(out_dim * batch_dim, -2.0f / ((float)out_dim * batch_dim), lossdiff_dev, dLdPred_dev);
     ptimer.log(batch_i, 4, lod);
 
     // Backward pass
 
+#if 0
     matmulABT(handle, out_dim, 64, batch_dim, dLdPred_dev, W1xa_dev, dLdWout_dev);
     matmulATB(handle, 64, batch_dim, out_dim, Wout_dev, dLdPred_dev, dLdW1xa_dev);
     launch_backward_hardgelu(64 * batch_dim, W1x_dev, dLdW1xa_dev, dLdW1x_dev);
@@ -436,6 +432,11 @@ int main()
     launch_backward_hardgelu(64 * batch_dim, W0x_dev, dLdW0xa_dev, dLdW0x_dev);
     matmulABT(handle, 64, feature_dim, batch_dim, dLdW0x_dev, x_dev, dLdW0_dev);
     matmulATB(handle, feature_dim, batch_dim, 64, W0_dev, dLdW0x_dev, dLdx_dev);
+#endif
+    launch_backward_pass(batch_dim, W0_dev, W1_dev, Wout_dev, dLdPred_dev, W0x_dev, W1x_dev, dLdx_dev, dLdW0x_dev, dLdW1x_dev);
+    matmulABT(handle, out_dim, 64, batch_dim, dLdPred_dev, W1xa_dev, dLdWout_dev);
+    matmulABT(handle, 64, 64, batch_dim, dLdW1x_dev, W0xa_dev, dLdW1_dev);
+    matmulABT(handle, 64, feature_dim, batch_dim, dLdW0x_dev, x_dev, dLdW0_dev);
     ptimer.log(batch_i, 5, lod);
 
     cudaMemset(dLdG0_dev[feature_level], 0, g0_grid_dim[feature_level] * g0_grid_dim[feature_level] * g0_dim * sizeof(float));
@@ -512,7 +513,7 @@ int main()
 
   ptimer.harvest();
 
-  double mse_numer = 0;
+  /*double mse_numer = 0;
   double mse_denom = 0;
   for (int mip_i = 0; mip_i <= 8; mip_i++)
   {
@@ -582,7 +583,7 @@ int main()
     }
   }
   double mse = mse_numer / mse_denom;
-  printf("PSNR: %f dB", -10.0 * log10(mse));
+  printf("PSNR: %f dB", -10.0 * log10(mse));*/
 
   cudaDeviceSynchronize();
   return 0;

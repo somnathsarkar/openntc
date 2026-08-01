@@ -1,6 +1,9 @@
 #include <openntc/ntc_kernel.cuh>
 #include <cstdio>
 
+#define FEAT_DIM 57
+#define OUT_DIM 9
+
 // out_channels = 1 + 3 + 1 + 3 + 1 (AO + Color + Displacement + Normals + Roughness)
 
 __global__ void forward_hardgelu(int n, float* input, float* o_output)
@@ -38,6 +41,205 @@ void launch_backward_hardgelu(int n, float* inputs, float* incoming_gradients, f
 {
   int num_blocks = (n + 1023) / 1024;
   backward_hardgelu<<<num_blocks, 1024>>>(n, inputs, incoming_gradients, o_outgoing_gradients);
+}
+
+__device__ float hardgelu(float x)
+{
+  if (x < -1.5f) return 0.0f;
+  if (x > 1.5f) return x;
+  return (x / 3.0f) * (x + 1.5f);
+}
+
+__device__ float back_hardgelu(float x)
+{
+  if (x < -1.5f) return 0.0f;
+  else if(x < 1.5f) return (2.0f * x + 1.5f) / 3.0f;
+  return 1.0f;
+}
+
+__global__ void forward_pass(
+  int n,
+  float* x,
+  float* W0,
+  float* W1,
+  float* Wout,
+  float* o_W0x,
+  float* o_W0xa,
+  float* o_W1x,
+  float* o_W1xa,
+  float* o_Woutx)
+{
+  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (tid >= n) return;
+
+  float xr[FEAT_DIM];
+  #pragma unroll
+  for (int i = 0; i < FEAT_DIM; i++)
+    xr[i] = x[i * n + tid];
+
+  float W0xa[64];
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    float a0 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < FEAT_DIM; j++)
+    {
+      a0 += xr[j] * W0[i * FEAT_DIM + j];
+    }
+    o_W0x[i * n + tid] = a0;
+    W0xa[i] = hardgelu(a0);
+    o_W0xa[i * n + tid] = W0xa[i];
+  }
+
+  float W1xa[64];
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    float a0 = 0.0f;
+    float a1 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 64; j+=2)
+    {
+      a0 += W0xa[j] * W1[i * 64 + j];
+      a1 += W0xa[j + 1] * W1[i * 64 + j + 1];
+    }
+    float acc = a0 + a1;
+    o_W1x[i * n + tid] = acc;
+    W1xa[i] = hardgelu(acc);
+    o_W1xa[i * n + tid] = W1xa[i];
+  }
+
+  #pragma unroll
+  for (int i = 0; i < OUT_DIM; i++)
+  {
+    float a0 = 0.0f;
+    float a1 = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 64; j += 2)
+    {
+      a0 += W1xa[j] * Wout[i * 64 + j];
+      a1 += W1xa[j + 1] * Wout[i * 64 + j + 1];
+    }
+    float acc = a0 + a1;
+    o_Woutx[i * n + tid] = acc;
+  }
+}
+
+void launch_forward_pass(
+  int n,
+  float* x,
+  float* W0,
+  float* W1,
+  float* Wout,
+  float* o_W0x,
+  float* o_W0xa,
+  float* o_W1x,
+  float* o_W1xa,
+  float* o_Woutx)
+{
+  // ~180 regs/thread: 1024-thread blocks exceed the 64k-register block
+  // limit ("too many resources requested for launch"). 256 fits fine.
+  int block_count = (n + 255) / 256;
+  forward_pass<<<block_count, 256>>>(n, x, W0, W1, Wout, o_W0x, o_W0xa, o_W1x, o_W1xa, o_Woutx);
+}
+
+__global__ void backward_pass(
+  int n,
+  float* W0,
+  float* W1,
+  float* Wout,
+  float* dLdPred,
+  float* W0x,
+  float* W1x,
+  float* o_dLdx,
+  float* o_dLdW0x,
+  float* o_dLdW1x)
+{
+  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (tid >= n) return;
+
+  float xr[OUT_DIM];
+  #pragma unroll
+  for (int i = 0; i < OUT_DIM; i++)
+    xr[i] = dLdPred[i * n + tid];
+
+  float dLdW1x[64];
+  #pragma unroll
+  for (int i = 0; i < 64; i++) dLdW1x[i] = 0.0f;
+  #pragma unroll
+  for (int i = 0; i < OUT_DIM; i++)
+  {
+    float d = xr[i];
+    #pragma unroll
+    for (int j = 0; j < 64; j++)
+    {
+      dLdW1x[j] += d * Wout[i * 64 + j];
+    }
+  }
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    dLdW1x[i] *= back_hardgelu(W1x[i * n + tid]);
+    o_dLdW1x[n * i + tid] = dLdW1x[i];
+  }
+
+  float dLdW0x[64];
+  #pragma unroll
+  for (int i = 0; i < 64; i++) dLdW0x[i] = 0.0f;
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    float d = dLdW1x[i];
+    #pragma unroll
+    for (int j = 0; j < 64; j++)
+    {
+      dLdW0x[j] += d * W1[i * 64 + j];
+    }
+  }
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    dLdW0x[i] *= back_hardgelu(W0x[i * n + tid]);
+    o_dLdW0x[n * i + tid] = dLdW0x[i];
+  }
+
+  float dLdx[FEAT_DIM];
+  #pragma unroll
+  for (int i = 0; i < FEAT_DIM; i++) dLdx[i] = 0.0f;
+  #pragma unroll
+  for (int i = 0; i < 64; i++)
+  {
+    float d = dLdW0x[i];
+    #pragma unroll
+    for (int j = 0; j < FEAT_DIM; j++)
+    {
+      dLdx[j] += d * W0[i * FEAT_DIM + j];
+    }
+  }
+  #pragma unroll
+  for (int i = 0; i < FEAT_DIM; i++)
+  {
+    o_dLdx[i * n + tid] = dLdx[i];
+  }
+}
+
+void launch_backward_pass(
+  int n,
+  float* W0,
+  float* W1,
+  float* Wout,
+  float* dLdPred,
+  float* W0x,
+  float* W1x,
+  float* o_dLdx,
+  float* o_dLdW0x,
+  float* o_dLdW1x)
+{
+  // same register class as forward_pass: 1024-thread blocks exceed the
+  // per-block register file; 256 fits.
+  int num_blocks = (n + 255) / 256;
+  backward_pass<<<num_blocks, 256>>>(n, W0, W1, Wout, dLdPred, W0x, W1x, o_dLdx, o_dLdW0x, o_dLdW1x);
 }
 
 void launch_scalar_product(int n, float a, float* inputs, float* o_outputs)
