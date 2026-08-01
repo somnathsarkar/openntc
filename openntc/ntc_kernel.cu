@@ -184,6 +184,25 @@ void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim,
   draw_targets<<<block_count, 1024>>>(batch_dim, grid_dim, mip_dim, pred_dim, grid_draws, mip, out_targets);
 }
 
+__device__ void mask_aggregate_atomic_increment(float* loc, int pos, float val)
+{
+  unsigned peers = __match_any_sync(__activemask(), pos);
+  int lane = threadIdx.x % 32;
+  int leader = __ffs(peers) - 1;
+  
+  float total_val = val;
+  unsigned others = peers & (~(1u << lane));
+  while (others)
+  {
+    int next = __ffs(others) - 1;
+    total_val += __shfl_sync(peers, val, next);
+    others &= (~(1 << next));
+  }
+
+  if (lane == leader)
+    atomicAdd(&loc[pos], total_val);
+}
+
 __global__ void accumulate_grid_gradients(
   int batch_dim,
   int grid_dim,
@@ -227,16 +246,21 @@ __global__ void accumulate_grid_gradients(
     int k = i0 / 2;
     int g0xc = clamp_int(g0x0 + j, 0, g0_dim - 1);
     int g0yc = clamp_int(g0y0 + k, 0, g0_dim - 1);
+    
     for (int i1 = 0; i1 < g0_channels; i1++)
     {
-      // row-major grid layout: (y * W + x) * C, matching the mip npy data
-      atomicAdd(&o_dLdG0[(g0yc * g0_dim + g0xc) * g0_channels + i1], dLdx[(i0 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy]);
+      int pos = (g0yc * g0_dim + g0xc) * g0_channels + i1;
+      float val = dLdx[(i0 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy];
+      mask_aggregate_atomic_increment(o_dLdG0, pos, val);
+      
     }
     int g1xc = clamp_int(g1x0 + j, 0, g1_dim - 1);
     int g1yc = clamp_int(g1y0 + k, 0, g1_dim - 1);
     for (int i1 = 0; i1 < g1_channels; i1++)
     {
-      atomicAdd(&o_dLdG1[(g1yc * g1_dim + g1xc) * g1_channels + i1], g1w[i0] * dLdx[(4 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy]);
+      int pos = (g1yc * g1_dim + g1xc) * g1_channels + i1;
+      float val = g1w[i0] * dLdx[(4 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy];
+      mask_aggregate_atomic_increment(o_dLdG1, pos, val);
     }
   }
 }
