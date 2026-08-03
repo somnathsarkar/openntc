@@ -30,3 +30,6 @@ add_executable(test_dataloader openntc/test_dataloader.cpp openntc/dataloader.cp
 set_target_properties(test_dataloader PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
 target_include_directories(test_dataloader PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(test_dataloader PRIVATE CUDA::cudart)
+
+add_executable(openntc-gui WIN32 openntc-gui/main.cpp)
+target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib)
