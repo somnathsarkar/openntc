@@ -8,6 +8,8 @@
 #include <cublas_v2.h>
 #include <curand_kernel.h>
 
+#define FUSED_PASS 0
+
 void initialize_decoder_weights(std::mt19937& gen, int feature_dim, int out_dim, float** W0, float** W1, float** Wout)
 {
   *W0 = new float[64 * feature_dim];
@@ -188,12 +190,11 @@ class PerfTimer
 
 int main()
 {
-  // std::random_device rd;
   std::mt19937 gen(123);
 
   cublasHandle_t handle;
   cublasCreate(&handle);
-  cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);
+  cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);
 
   int g0_num_bytes = 2;
   int g1_num_bytes = 4;
@@ -318,7 +319,7 @@ int main()
 
   std::bernoulli_distribution dist_batch_type(0.05);
   std::uniform_real_distribution<float> dist_u(0.0f, 1.0f);
-  std::uniform_int_distribution<int> dist_grid(0, 8);
+  std::uniform_int_distribution<int> dist_lod(0, 8);
 
   int *grid_draws_dev;
   cudaMalloc(&grid_draws_dev, sizeof(int) * 16);
@@ -328,15 +329,16 @@ int main()
   int grid_batch_i[4] = {0, 0, 0, 0};
 
   int batch_count = 10000;
-  // assert(PerfTimer::num_warmup + PerfTimer::len_window <= batch_count);
+  assert(PerfTimer::num_warmup + PerfTimer::len_window <= batch_count);
   int lock_i = 95 * batch_count / 100;
   assert(lock_i > 0);
+  int grids_per_batch = 1;
   for (int batch_i = 0; batch_i < batch_count; batch_i++)
   {
     bool draw_uniform = dist_batch_type(gen);
     float U = dist_u(gen);
     int lod = int(floorf(0.5f * -log2f(U)));
-    int lod_uniform = dist_grid(gen);
+    int lod_uniform = dist_lod(gen);
     if (draw_uniform)
       lod = lod_uniform;
     lod = std::clamp(lod, 0, 8);
@@ -351,12 +353,12 @@ int main()
       feature_level = 3;
     int grid_draws[16];
     std::uniform_int_distribution<int> dist_grid(0, std::max(mip_dim[lod] - 256, 0));
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < grids_per_batch; i++)
     {
       grid_draws[i + i] = dist_grid(gen);
       grid_draws[i + i + 1] = dist_grid(gen);
     }
-    cudaMemcpy(grid_draws_dev, grid_draws, sizeof(int) * 16, cudaMemcpyHostToDevice);
+    cudaMemcpy(grid_draws_dev, grid_draws, sizeof(int) * grids_per_batch * 2, cudaMemcpyHostToDevice);
     int grid_dim_draw = std::min(mip_dim[lod], 256);
     if (batch_i < lock_i)
     {
@@ -385,7 +387,7 @@ int main()
 
     ptimer.log(batch_i, 0, lod);
     launch_draw_features(
-      8,
+      grids_per_batch,
       grid_dim_draw,
       feature_dim,
       mip_dim[lod],
@@ -401,13 +403,21 @@ int main()
       g1_dev[feature_level],
       x_dev);
     ptimer.log(batch_i, 1, lod);
-    launch_draw_targets(8, grid_dim_draw, mip_dim[lod], out_dim, grid_draws_dev, mips.levels[lod].data_dev, lossdiff_dev);
+    launch_draw_targets(grids_per_batch, grid_dim_draw, mip_dim[lod], out_dim, grid_draws_dev, mips.levels[lod].data_dev, lossdiff_dev);
     ptimer.log(batch_i, 2, lod);
 
-    int batch_dim = 8 * grid_dim_draw * grid_dim_draw;
+    int batch_dim = grids_per_batch * grid_dim_draw * grid_dim_draw;
 
     // Forward pass
+#if !FUSED_PASS
+    matmulAB(handle, 64, batch_dim, feature_dim, W0_dev, x_dev, W0x_dev);
+    launch_forward_hardgelu(64 * batch_dim, W0x_dev, W0xa_dev);
+    matmulAB(handle, 64, batch_dim, 64, W1_dev, W0xa_dev, W1x_dev);
+    launch_forward_hardgelu(64 * batch_dim, W1x_dev, W1xa_dev);
+    matmulAB(handle, out_dim, batch_dim, 64, Wout_dev, W1xa_dev, Woutx_dev);
+#else
     launch_forward_pass(batch_dim, x_dev, W0_dev, W1_dev, Wout_dev, W0x_dev, W0xa_dev, W1x_dev, W1xa_dev, Woutx_dev);
+#endif
     ptimer.log(batch_i, 3, lod);
 
     // Loss
@@ -423,7 +433,7 @@ int main()
 
     // Backward pass
 
-#if 0
+#if !FUSED_PASS
     matmulABT(handle, out_dim, 64, batch_dim, dLdPred_dev, W1xa_dev, dLdWout_dev);
     matmulATB(handle, 64, batch_dim, out_dim, Wout_dev, dLdPred_dev, dLdW1xa_dev);
     launch_backward_hardgelu(64 * batch_dim, W1x_dev, dLdW1xa_dev, dLdW1x_dev);
@@ -432,17 +442,18 @@ int main()
     launch_backward_hardgelu(64 * batch_dim, W0x_dev, dLdW0xa_dev, dLdW0x_dev);
     matmulABT(handle, 64, feature_dim, batch_dim, dLdW0x_dev, x_dev, dLdW0_dev);
     matmulATB(handle, feature_dim, batch_dim, 64, W0_dev, dLdW0x_dev, dLdx_dev);
-#endif
+#else
     launch_backward_pass(batch_dim, W0_dev, W1_dev, Wout_dev, dLdPred_dev, W0x_dev, W1x_dev, dLdx_dev, dLdW0x_dev, dLdW1x_dev);
     matmulABT(handle, out_dim, 64, batch_dim, dLdPred_dev, W1xa_dev, dLdWout_dev);
     matmulABT(handle, 64, 64, batch_dim, dLdW1x_dev, W0xa_dev, dLdW1_dev);
     matmulABT(handle, 64, feature_dim, batch_dim, dLdW0x_dev, x_dev, dLdW0_dev);
+#endif
     ptimer.log(batch_i, 5, lod);
 
     cudaMemset(dLdG0_dev[feature_level], 0, g0_grid_dim[feature_level] * g0_grid_dim[feature_level] * g0_dim * sizeof(float));
     cudaMemset(dLdG1_dev[feature_level], 0, g1_grid_dim[feature_level] * g1_grid_dim[feature_level] * g1_dim * sizeof(float));
     launch_accumulate_grid_gradients(
-      8,
+      grids_per_batch,
       grid_dim_draw,
       feature_dim,
       mip_dim[lod],
@@ -513,7 +524,7 @@ int main()
 
   ptimer.harvest();
 
-  /*double mse_numer = 0;
+  double mse_numer = 0;
   double mse_denom = 0;
   for (int mip_i = 0; mip_i <= 8; mip_i++)
   {
@@ -583,7 +594,7 @@ int main()
     }
   }
   double mse = mse_numer / mse_denom;
-  printf("PSNR: %f dB", -10.0 * log10(mse));*/
+  printf("PSNR: %f dB", -10.0 * log10(mse));
 
   cudaDeviceSynchronize();
   return 0;
