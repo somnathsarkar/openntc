@@ -293,10 +293,10 @@ void LoadContent()
   VERIFY(g_device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_dsv)));
 
   ComPtr<ID3DBlob> vertex_shader_blob;
-  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/vertex_shader.cso", &vertex_shader_blob));
+  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_vs.cso", &vertex_shader_blob));
 
   ComPtr<ID3DBlob> pixel_shader_blob;
-  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pixel_shader.cso", &pixel_shader_blob));
+  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_ps.cso", &pixel_shader_blob));
 
   D3D12_INPUT_ELEMENT_DESC input_layout[] = {
     { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
