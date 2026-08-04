@@ -22,6 +22,25 @@ using namespace DirectX;
 #define VERIFY(hr) do { (hr); } while(0)
 #endif
 
+enum class TexType: int32_t
+{
+  Albedo,
+  AmbientOcclusion,
+  Displacement,
+  Normal,
+  Roughness,
+
+  Count,
+};
+
+const wchar_t* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
+  L"Color",
+  L"AmbientOcclusion",
+  L"Displacement",
+  L"NormalDX",
+  L"Roughness",
+};
+
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
 uint32_t g_height = 720;
@@ -43,7 +62,7 @@ ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
-ComPtr<ID3D12Resource> g_tex;
+ComPtr<ID3D12Resource> g_tex[static_cast<int32_t>(TexType::Count)];
 UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
@@ -392,10 +411,23 @@ void LoadContent()
 
   // Texture
 
+  D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
+  srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  srv_heap_desc.NumDescriptors = static_cast<int32_t>(TexType::Count);
+  srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  srv_heap_desc.NodeMask = 0;
+  VERIFY(g_device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_srv)));
+  D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
+  UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+  for (int tex_i = 0; tex_i < static_cast<int32_t>(TexType::Count); tex_i++)
   {
+    std::wstring filepath = L"C:/Code/openntc/img/Bricks101_1K-JPG/Bricks101_1K-JPG_";
+    filepath += g_map_tex_to_name[tex_i];
+    filepath += L".jpg";
     DirectX::TexMetadata metadata;
     DirectX::ScratchImage scratch_image;
-    VERIFY(LoadFromWICFile(L"C:/Code/openntc/img/Bricks101_1K-JPG/Bricks101_1K-JPG_Color.jpg", DirectX::WIC_FLAGS_NONE, &metadata, scratch_image));
+    VERIFY(LoadFromWICFile(filepath.c_str(), DirectX::WIC_FLAGS_NONE, &metadata, scratch_image));
     assert(metadata.dimension == TEX_DIMENSION_TEXTURE2D);
     D3D12_RESOURCE_DESC tex_desc = {};
     tex_desc.Format = metadata.format;
@@ -417,17 +449,10 @@ void LoadContent()
     heap_props.CreationNodeMask = 1;
     heap_props.VisibleNodeMask = 1;
 
-    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex)));
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex[tex_i])));
 
     auto img = scratch_image.GetImage(0, 0, 0);
-    VERIFY(g_tex->WriteToSubresource(0, nullptr, img->pixels, img->rowPitch, img->slicePitch));
-
-    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_heap_desc.NumDescriptors = 1;
-    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    srv_heap_desc.NodeMask = 0;
-    VERIFY(g_device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_srv)));
+    VERIFY(g_tex[tex_i]->WriteToSubresource(0, nullptr, img->pixels, img->rowPitch, img->slicePitch));
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = metadata.format;
@@ -438,7 +463,9 @@ void LoadContent()
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_tex.Get(), &srv_desc, g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart());
+    D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_handle_head;
+    srv_handle.ptr += tex_i * srv_descriptor_size;
+    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, srv_handle);
   }
 
 
@@ -494,6 +521,9 @@ void Render()
   D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_descriptorheap->GetCPUDescriptorHandleForHeapStart();
   rtv_handle.ptr += g_frame_i * g_descriptorsize;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
+  UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart();
+  tex_color_handle.ptr += tex_color_size * static_cast<int32_t>(TexType::Albedo);
 
   D3D12_VIEWPORT viewport = {};
   viewport.TopLeftX = 0.0f;
@@ -532,7 +562,7 @@ void Render()
   XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
   mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
   g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
-  g_commandlist->SetGraphicsRootDescriptorTable(1, g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart());
+  g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
 
   {
