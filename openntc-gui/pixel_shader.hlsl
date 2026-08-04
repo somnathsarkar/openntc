@@ -1,7 +1,10 @@
+Texture2D<float4> tex_albedo : register(t1, space0);
+SamplerState sampler_bilinear_clamp : register(s0);
+
 struct PixelShaderInput
 {
   float4 pos : SV_Position;
-	float4 color : COLOR;
+	float2 uv : TEXCOORD;
 };
 
 struct PixelShaderOutput
@@ -13,7 +16,7 @@ PixelShaderOutput main(PixelShaderInput p_in)
 {
   PixelShaderOutput p_out;
 
-  p_out.color = p_in.color;
+  p_out.color = tex_albedo.Sample(sampler_bilinear_clamp, p_in.uv);
   
   return p_out;
 }

@@ -10,6 +10,7 @@ using namespace Microsoft::WRL;
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 using namespace DirectX;
+#include <DirectXTex/DirectXTex.h>
 
 #include <algorithm>
 #include <chrono>
@@ -41,6 +42,8 @@ ComPtr<ID3D12RootSignature> g_rootsignature;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
+ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
+ComPtr<ID3D12Resource> g_tex;
 UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
@@ -58,12 +61,12 @@ bool g_fullscreen = false;
 static const int g_index_count = 36;
 WORD g_cube_indices[g_index_count] =
 {
-    0, 1, 2, 0, 2, 3,
-    4, 6, 5, 4, 7, 6,
-    4, 5, 1, 4, 1, 0,
-    3, 2, 6, 3, 6, 7,
-    1, 5, 6, 1, 6, 2,
-    4, 0, 3, 4, 3, 7
+     0,  1,  2,  0,  2,  3, // front
+     4,  5,  6,  4,  6,  7, // back
+     8,  9, 10,  8, 10, 11, // left
+    12, 13, 14, 12, 14, 15, // right
+    16, 17, 18, 16, 18, 19, // top
+    20, 21, 22, 20, 22, 23  // bottom
 };
 
 D3D12_VERTEX_BUFFER_VIEW g_vbv;
@@ -91,7 +94,7 @@ void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceval, HANDLE fenc
 struct VertexDescriptor
 {
   DirectX::XMFLOAT3 pos;
-  DirectX::XMFLOAT3 color;
+  DirectX::XMFLOAT2 uv;
 };
 
 void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES initial_state, D3D12_RESOURCE_STATES final_state)
@@ -159,16 +162,38 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
 
 void LoadContent()
 {
-  static const uint32_t vertex_count = 8;
+  static const uint32_t vertex_count = 24;
   VertexDescriptor cube[vertex_count] = {
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3(0.0f, 0.0f, 0.0f) }, // 0
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 1
-    { XMFLOAT3(1.0f,  1.0f, -1.0f), XMFLOAT3(1.0f, 1.0f, 0.0f) }, // 2
-    { XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) }, // 3
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) }, // 4
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3(0.0f, 1.0f, 1.0f) }, // 5
-    { XMFLOAT3(1.0f,  1.0f,  1.0f), XMFLOAT3(1.0f, 1.0f, 1.0f) }, // 6
-    { XMFLOAT3(1.0f, -1.0f,  1.0f), XMFLOAT3(1.0f, 0.0f, 1.0f) }  // 7
+    // front (z = -1)
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 0
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 1
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 2
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 3
+    // back (z = +1)
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 4
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 5
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 6
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 7
+    // left (x = -1)
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 8
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 9
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 10
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 11
+    // right (x = +1)
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 12
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 13
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 14
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 15
+    // top (y = +1)
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 16
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 17
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 18
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 19
+    // bottom (y = -1)
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 20
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 21
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 22
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }  // 23
   };
 
   {
@@ -256,7 +281,7 @@ void LoadContent()
 
   D3D12_INPUT_ELEMENT_DESC input_layout[] = {
     { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
   };
 
   D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
@@ -269,22 +294,47 @@ void LoadContent()
   D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
                                                     D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
                                                     D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
-                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
-  
-  D3D12_ROOT_PARAMETER1 root_parameters[1];
+                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+  D3D12_DESCRIPTOR_RANGE1 drange = {};
+  drange.RegisterSpace = 0;
+  drange.BaseShaderRegister = 1;
+  drange.NumDescriptors = 1;
+  drange.OffsetInDescriptorsFromTableStart = 0;
+  drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+  drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+  D3D12_ROOT_PARAMETER1 root_parameters[2];
   root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   root_parameters[0].Constants.Num32BitValues = sizeof(XMMATRIX) / 4;
   root_parameters[0].Constants.RegisterSpace = 0;
   root_parameters[0].Constants.ShaderRegister = 0;
   root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+  root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+  root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
+  root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
+  sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  sampler_desc.MinLOD = 0.0f;
+  sampler_desc.MaxLOD = 1.0f;
+  sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+  sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+  sampler_desc.ShaderRegister = 0;
+  sampler_desc.RegisterSpace = 0;
+  sampler_desc.MaxAnisotropy = 16;
+  sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
   D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
   root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-  root_signature_desc.Desc_1_1.NumParameters = 1;
+  root_signature_desc.Desc_1_1.NumParameters = 2;
   root_signature_desc.Desc_1_1.pParameters = root_parameters;
-  root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
-  root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+  root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+  root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
   root_signature_desc.Desc_1_1.Flags = root_signature_flags;
 
   ComPtr<ID3DBlob> root_signature_blob;
@@ -339,6 +389,58 @@ void LoadContent()
   ID3D12CommandList* const command_lists[] = { g_commandlist.Get() };
   g_queue->ExecuteCommandLists(_countof(command_lists), command_lists);
   WaitForFenceValue(g_fence, g_framefenceval[g_frame_i], g_fence_event);
+
+  // Texture
+
+  {
+    DirectX::TexMetadata metadata;
+    DirectX::ScratchImage scratch_image;
+    VERIFY(LoadFromWICFile(L"C:/Code/openntc/img/Bricks101_1K-JPG/Bricks101_1K-JPG_Color.jpg", DirectX::WIC_FLAGS_NONE, &metadata, scratch_image));
+    assert(metadata.dimension == TEX_DIMENSION_TEXTURE2D);
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Format = metadata.format;
+    tex_desc.Alignment = 0;
+    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    tex_desc.Width = metadata.width;
+    tex_desc.Height = metadata.height;
+    tex_desc.DepthOrArraySize = metadata.depth;
+    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    tex_desc.MipLevels = 1;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex)));
+
+    auto img = scratch_image.GetImage(0, 0, 0);
+    VERIFY(g_tex->WriteToSubresource(0, nullptr, img->pixels, img->rowPitch, img->slicePitch));
+
+    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
+    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srv_heap_desc.NumDescriptors = 1;
+    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    srv_heap_desc.NodeMask = 0;
+    VERIFY(g_device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_srv)));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = metadata.format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.PlaneSlice = 0;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_tex.Get(), &srv_desc, g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart());
+  }
+
 
   g_contentloaded = true;
 
@@ -415,6 +517,8 @@ void Render()
   }
 
   g_commandlist->SetPipelineState(g_pipelinestate.Get());
+  ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
+  g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
   g_commandlist->SetGraphicsRootSignature(g_rootsignature.Get());
 
   g_commandlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -428,6 +532,7 @@ void Render()
   XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
   mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
   g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
+  g_commandlist->SetGraphicsRootDescriptorTable(1, g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart());
   g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
 
   {
@@ -801,6 +906,7 @@ HANDLE CreateEventHandle()
 
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
+  ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
   const char* wndclass_name = "openntc-gui-window-class";

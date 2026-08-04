@@ -32,4 +32,6 @@ target_include_directories(test_dataloader PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(test_dataloader PRIVATE CUDA::cudart)
 
 add_executable(openntc-gui WIN32 openntc-gui/main.cpp)
-target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib)
+target_link_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/DirectXTex/Bin/Desktop_2022/x64/Debug)
+target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib DirectXTex.lib)
+target_include_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/)
