@@ -32,4 +32,4 @@ target_include_directories(test_dataloader PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(test_dataloader PRIVATE CUDA::cudart)
 
 add_executable(openntc-gui WIN32 openntc-gui/main.cpp)
-target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib)
+target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib)

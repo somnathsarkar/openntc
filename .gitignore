@@ -3,4 +3,5 @@ img/
 data/
 build/
 .vscode/
+*.cso
 
