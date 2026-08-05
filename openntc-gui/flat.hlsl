@@ -8,6 +8,8 @@ ConstantBuffer<ModelViewProjection> ModelViewProjectionCB : register(b0, space0)
 struct VertexShaderInput
 {
   float3 pos : SV_Position;
+  float3 normal : NORMAL;
+  float3 tangent : TANGENT;
   float2 uv : TEXCOORD;
 };
 

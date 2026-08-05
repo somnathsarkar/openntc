@@ -16,6 +16,10 @@ using namespace DirectX;
 #include <chrono>
 #include <cmath>
 
+#include <imgui.h>
+#include <imgui_impl_win32.h>
+#include <imgui_impl_dx12.h>
+
 #if defined(_DEBUG)
 #define VERIFY(hr) do { assert(!FAILED(hr)); } while(0)
 #else
@@ -33,12 +37,20 @@ enum class TexType: int32_t
   Count,
 };
 
-const wchar_t* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
+const wchar_t* const g_map_tex_to_filename[static_cast<int32_t>(TexType::Count)] = {
   L"Color",
   L"AmbientOcclusion",
   L"Displacement",
   L"NormalDX",
   L"Roughness",
+};
+
+const char* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
+  "Albedo",
+  "Ambient Occlusion",
+  "Displacement",
+  "Normal",
+  "Roughness",
 };
 
 const uint8_t g_numframes = 2;
@@ -56,8 +68,10 @@ ComPtr<ID3D12Resource> g_depthbuffer;
 ComPtr<ID3D12GraphicsCommandList10> g_commandlist;
 ComPtr<ID3D12CommandAllocator> g_commandallocators[g_numframes];
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap;
-ComPtr<ID3D12PipelineState> g_pipelinestate;
-ComPtr<ID3D12RootSignature> g_rootsignature;
+ComPtr<ID3D12PipelineState> g_pipelinestate_flat;
+ComPtr<ID3D12RootSignature> g_rootsignature_flat;
+ComPtr<ID3D12PipelineState> g_pipelinestate_ggx;
+ComPtr<ID3D12RootSignature> g_rootsignature_ggx;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
@@ -77,6 +91,13 @@ bool g_vsync = true;
 bool g_gsync = false; // Tearing enabled?
 bool g_fullscreen = false;
 
+struct ModelViewProjection
+{
+  XMMATRIX model_to_world;
+  XMMATRIX world_to_view;
+  XMMATRIX view_to_proj;
+};
+
 static const int g_index_count = 36;
 WORD g_cube_indices[g_index_count] =
 {
@@ -93,6 +114,45 @@ D3D12_INDEX_BUFFER_VIEW g_ibv;
 
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_fov = 110.0f;
+
+constexpr int32_t g_nonimgui_srv_count = static_cast<int32_t>(TexType::Count);
+constexpr int32_t g_imgui_srv_count = 64;
+constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
+
+std::vector<UINT> g_imgui_available_srv_slots;
+
+enum class Shader: int32_t
+{
+  Flat,
+  GGX,
+
+  Count,
+};
+
+const char* g_map_shader_to_name[] = {
+  "Flat",
+  "GGX",
+};
+
+int32_t g_gui_shader = static_cast<int32_t>(Shader::GGX);
+int32_t g_gui_window_shading = true;
+int32_t g_gui_texture = static_cast<int32_t>(TexType::Albedo);
+
+void ImguiDescriptorSrvAlloc(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE* cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* gpu_handle)
+{
+  UINT slot = g_imgui_available_srv_slots.back();
+  g_imgui_available_srv_slots.pop_back();
+  UINT size_inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  cpu_handle->ptr = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart().ptr + size_inc * slot;
+  gpu_handle->ptr = g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart().ptr + size_inc * slot;
+}
+
+void ImguiDescriptorSrvFree(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
+{
+  UINT size_inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  UINT slot = (cpu_handle.ptr - g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart().ptr) / size_inc;
+  g_imgui_available_srv_slots.push_back(slot);
+}
 
 uint64_t SignalFence(ComPtr<ID3D12CommandQueue> command_queue, ComPtr<ID3D12Fence> fence, uint64_t* fenceval)
 {
@@ -113,6 +173,8 @@ void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceval, HANDLE fenc
 struct VertexDescriptor
 {
   DirectX::XMFLOAT3 pos;
+  DirectX::XMFLOAT3 normal;
+  DirectX::XMFLOAT3 tangent;
   DirectX::XMFLOAT2 uv;
 };
 
@@ -183,36 +245,36 @@ void LoadContent()
 {
   static const uint32_t vertex_count = 24;
   VertexDescriptor cube[vertex_count] = {
-    // front (z = -1)
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 0
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 1
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 2
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 3
-    // back (z = +1)
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 4
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 5
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 6
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 7
-    // left (x = -1)
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 8
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 9
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 10
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 11
-    // right (x = +1)
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 12
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 13
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 14
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 15
-    // top (y = +1)
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 16
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 17
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 18
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 19
-    // bottom (y = -1)
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 20
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 21
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 22
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }  // 23
+    // front (z = -1), N = -z, T = +x
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 0
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 1
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 2
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 3
+    // back (z = +1), N = +z, T = -x
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 4
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 5
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 6
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 7
+    // left (x = -1), N = -x, T = -z
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 8
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 9
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 10
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 11
+    // right (x = +1), N = +x, T = +z
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 12
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 13
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 14
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 15
+    // top (y = +1), N = +y, T = +x
+    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 16
+    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 17
+    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 18
+    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 19
+    // bottom (y = -1), N = -y, T = +x
+    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 20
+    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 21
+    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 22
+    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }  // 23
   };
 
   {
@@ -292,118 +354,243 @@ void LoadContent()
   dsv_heap_desc.NodeMask = 0;
   VERIFY(g_device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_dsv)));
 
-  ComPtr<ID3DBlob> vertex_shader_blob;
-  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_vs.cso", &vertex_shader_blob));
+  // Flat
 
-  ComPtr<ID3DBlob> pixel_shader_blob;
-  VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_ps.cso", &pixel_shader_blob));
-
-  D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-    { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-  };
-
-  D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
-  feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-  if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
   {
-    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    ComPtr<ID3DBlob> vertex_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_vs.cso", &vertex_shader_blob));
+
+    ComPtr<ID3DBlob> pixel_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_ps.cso", &pixel_shader_blob));
+
+    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
+      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange = {};
+    drange.RegisterSpace = 0;
+    drange.BaseShaderRegister = 1;
+    drange.NumDescriptors = 1;
+    drange.OffsetInDescriptorsFromTableStart = 0;
+    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[2];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(XMMATRIX) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
+    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    sampler_desc.MinLOD = 0.0f;
+    sampler_desc.MaxLOD = 1.0f;
+    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc.ShaderRegister = 0;
+    sampler_desc.RegisterSpace = 0;
+    sampler_desc.MaxAnisotropy = 16;
+    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 2;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_flat)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
+      D3D12_INPUT_LAYOUT_DESC input_layout;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
+      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
+      D3D12_SHADER_BYTECODE vs;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
+      D3D12_SHADER_BYTECODE ps;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
+      DXGI_FORMAT dsv;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
+      D3D12_RT_FORMAT_ARRAY rtv;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_flat.Get();
+    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
+    pipeline_stream.input_layout.NumElements = _countof(input_layout);
+    pipeline_stream.input_layout.pInputElementDescs = input_layout;
+    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
+    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
+    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
+    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
+    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
+    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
+    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+    pipeline_stream.rtv.NumRenderTargets = 1;
+    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_flat)));
   }
 
-  D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                    D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+  // GGX
 
-  D3D12_DESCRIPTOR_RANGE1 drange = {};
-  drange.RegisterSpace = 0;
-  drange.BaseShaderRegister = 1;
-  drange.NumDescriptors = 1;
-  drange.OffsetInDescriptorsFromTableStart = 0;
-  drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-  drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-  D3D12_ROOT_PARAMETER1 root_parameters[2];
-  root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-  root_parameters[0].Constants.Num32BitValues = sizeof(XMMATRIX) / 4;
-  root_parameters[0].Constants.RegisterSpace = 0;
-  root_parameters[0].Constants.ShaderRegister = 0;
-  root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-  root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-  root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-  root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-  root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-  D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-  sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-  sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-  sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-  sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-  sampler_desc.MinLOD = 0.0f;
-  sampler_desc.MaxLOD = 1.0f;
-  sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-  sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-  sampler_desc.ShaderRegister = 0;
-  sampler_desc.RegisterSpace = 0;
-  sampler_desc.MaxAnisotropy = 16;
-  sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-  D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-  root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-  root_signature_desc.Desc_1_1.NumParameters = 2;
-  root_signature_desc.Desc_1_1.pParameters = root_parameters;
-  root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-  root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
-  root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-  ComPtr<ID3DBlob> root_signature_blob;
-  ComPtr<ID3DBlob> error_blob;
-  VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-  VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature)));
-
-  struct PipelineStream
   {
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-    ID3D12RootSignature* root_signature;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-    D3D12_INPUT_LAYOUT_DESC input_layout;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-    D3D12_SHADER_BYTECODE vs;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-    D3D12_SHADER_BYTECODE ps;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-    DXGI_FORMAT dsv;
-    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-    D3D12_RT_FORMAT_ARRAY rtv;
-  } pipeline_stream;
+    ComPtr<ID3DBlob> vertex_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/ggx_vs.cso", &vertex_shader_blob));
 
-  pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-  pipeline_stream.root_signature = g_rootsignature.Get();
-  pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-  pipeline_stream.input_layout.NumElements = 2;
-  pipeline_stream.input_layout.pInputElementDescs = input_layout;
-  pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-  pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-  pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-  pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-  pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-  pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-  pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-  pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-  pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-  pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-  pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-  pipeline_stream.rtv.NumRenderTargets = 1;
-  pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-  for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+    ComPtr<ID3DBlob> pixel_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/ggx_ps.cso", &pixel_shader_blob));
 
-  D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-  pdesc.SizeInBytes = sizeof(PipelineStream);
-  pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-  VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate)));
+    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
+      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange = {};
+    drange.RegisterSpace = 0;
+    drange.BaseShaderRegister = 1;
+    drange.NumDescriptors = 5;
+    drange.OffsetInDescriptorsFromTableStart = 0;
+    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[2];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
+    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    sampler_desc.MinLOD = 0.0f;
+    sampler_desc.MaxLOD = 1.0f;
+    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc.ShaderRegister = 0;
+    sampler_desc.RegisterSpace = 0;
+    sampler_desc.MaxAnisotropy = 16;
+    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 2;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_ggx)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
+      D3D12_INPUT_LAYOUT_DESC input_layout;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
+      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
+      D3D12_SHADER_BYTECODE vs;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
+      D3D12_SHADER_BYTECODE ps;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
+      DXGI_FORMAT dsv;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
+      D3D12_RT_FORMAT_ARRAY rtv;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_ggx.Get();
+    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
+    pipeline_stream.input_layout.NumElements = _countof(input_layout);
+    pipeline_stream.input_layout.pInputElementDescs = input_layout;
+    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
+    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
+    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
+    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
+    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
+    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
+    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+    pipeline_stream.rtv.NumRenderTargets = 1;
+    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_ggx)));
+  }
 
   ID3D12CommandList* const command_lists[] = { g_commandlist.Get() };
   g_queue->ExecuteCommandLists(_countof(command_lists), command_lists);
@@ -413,7 +600,7 @@ void LoadContent()
 
   D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
   srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  srv_heap_desc.NumDescriptors = static_cast<int32_t>(TexType::Count);
+  srv_heap_desc.NumDescriptors = g_srv_count;
   srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   srv_heap_desc.NodeMask = 0;
   VERIFY(g_device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_srv)));
@@ -423,7 +610,7 @@ void LoadContent()
   for (int tex_i = 0; tex_i < static_cast<int32_t>(TexType::Count); tex_i++)
   {
     std::wstring filepath = L"C:/Code/openntc/img/Bricks101_1K-JPG/Bricks101_1K-JPG_";
-    filepath += g_map_tex_to_name[tex_i];
+    filepath += g_map_tex_to_filename[tex_i];
     filepath += L".jpg";
     DirectX::TexMetadata metadata;
     DirectX::ScratchImage scratch_image;
@@ -503,7 +690,7 @@ void Update()
   const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
   g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
 
-  const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -3.0f, 1.0f);
+  const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -2.0f, 1.0f);
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
   g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
@@ -514,6 +701,19 @@ void Update()
 
 void Render()
 {
+  ImGui_ImplDX12_NewFrame();
+  ImGui_ImplWin32_NewFrame();
+  ImGui::NewFrame();
+  g_gui_window_shading = ImGui::Begin("Shading");
+  ImGui::Combo("Shader", &g_gui_shader, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  Shader shader = static_cast<Shader>(g_gui_shader);
+  if (shader == Shader::Flat)
+  {
+    ImGui::Combo("Channel", &g_gui_texture, g_map_tex_to_name, static_cast<int32_t>(TexType::Count));
+  }
+  TexType tex_flat = static_cast<TexType>(g_gui_texture);
+  ImGui::End();
+
   auto command_allocator = g_commandallocators[g_frame_i];
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
@@ -523,7 +723,7 @@ void Render()
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart();
-  tex_color_handle.ptr += tex_color_size * static_cast<int32_t>(TexType::Albedo);
+  tex_color_handle.ptr += tex_color_size * static_cast<int32_t>(tex_flat);
 
   D3D12_VIEWPORT viewport = {};
   viewport.TopLeftX = 0.0f;
@@ -546,10 +746,18 @@ void Render()
     g_commandlist->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
   }
 
-  g_commandlist->SetPipelineState(g_pipelinestate.Get());
+  if (shader == Shader::Flat)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
+  }
+  else if (shader == Shader::GGX)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_ggx.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_ggx.Get());
+  }
   ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
-  g_commandlist->SetGraphicsRootSignature(g_rootsignature.Get());
 
   g_commandlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_commandlist->IASetVertexBuffers(0, 1, &g_vbv);
@@ -559,11 +767,25 @@ void Render()
   g_commandlist->RSSetScissorRects(1, &scissor);
   g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
 
-  XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
-  mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
-  g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
+  if (shader == Shader::Flat)
+  {
+    XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
+    mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
+  }
+  else if (shader == Shader::GGX)
+  {
+    ModelViewProjection mvp = {};
+    mvp.model_to_world = g_model_mat;
+    mvp.world_to_view = g_view_mat;
+    mvp.view_to_proj = g_proj_mat;
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
+  }
   g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
+
+  ImGui::Render();
+  ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_commandlist.Get());
 
   {
     TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -656,10 +878,15 @@ void SetFullscreen(bool fullscreen)
   }
 }
 
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+  if (ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
+    return 1;
+
   if (g_initialized)
   {
     switch (uMsg)
@@ -969,6 +1196,28 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   LoadContent();
 
+  for (int i = 0; i < g_imgui_srv_count; i++)
+  {
+    UINT slot = g_nonimgui_srv_count + i;
+    g_imgui_available_srv_slots.push_back(slot);
+  }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui::StyleColorsDark();
+  ImGui_ImplWin32_Init(g_hwnd);
+
+  ImGui_ImplDX12_InitInfo imgui_info = {};
+  imgui_info.Device = g_device.Get();
+  imgui_info.CommandQueue = g_queue.Get();
+  imgui_info.NumFramesInFlight = g_numframes;
+  imgui_info.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+  imgui_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+  imgui_info.SrvDescriptorHeap = g_descriptorheap_srv.Get();
+  imgui_info.SrvDescriptorAllocFn = ImguiDescriptorSrvAlloc;
+  imgui_info.SrvDescriptorFreeFn = ImguiDescriptorSrvFree;
+  ImGui_ImplDX12_Init(&imgui_info);
+
   ::ShowWindow(g_hwnd, SW_SHOW);
   MSG msg = {};
   while (msg.message != WM_QUIT)
@@ -983,6 +1232,9 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   }
 
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+  ImGui_ImplDX12_Shutdown();
+  ImGui_ImplWin32_Shutdown();
+  ImGui::DestroyContext();
   ::CloseHandle(g_fence_event);
 
   return 0;

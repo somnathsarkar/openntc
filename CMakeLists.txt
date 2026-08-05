@@ -31,7 +31,18 @@ set_target_properties(test_dataloader PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcm
 target_include_directories(test_dataloader PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(test_dataloader PRIVATE CUDA::cudart)
 
+add_library(imgui STATIC
+  C:/Dev/imgui/imgui.cpp
+  C:/Dev/imgui/imgui_draw.cpp
+  C:/Dev/imgui/imgui_tables.cpp
+  C:/Dev/imgui/imgui_widgets.cpp
+  C:/Dev/imgui/imgui_demo.cpp
+  C:/Dev/imgui/backends/imgui_impl_win32.cpp
+  C:/Dev/imgui/backends/imgui_impl_dx12.cpp)
+target_include_directories(imgui PUBLIC C:/Dev/imgui C:/Dev/imgui/backends)
+
 add_executable(openntc-gui WIN32 openntc-gui/main.cpp)
 target_link_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/DirectXTex/Bin/Desktop_2022/x64/Debug)
 target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib DirectXTex.lib)
 target_include_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/)
+target_link_libraries(openntc-gui PRIVATE imgui)
