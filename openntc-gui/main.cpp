@@ -15,6 +15,8 @@ using namespace DirectX;
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <thread>
+#include <atomic>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -56,6 +58,8 @@ const char* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
 };
 
 OpenNTCContext g_ctx;
+std::atomic<OpenNTCTrainProgress> g_train_progress;
+std::thread thread_train;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -1160,10 +1164,20 @@ void Render()
   ImGui::End();
 
   ImGui::Begin("Train");
-  if (ImGui::Button("Train"))
+  if (ImGui::Button("Load Package"))
   {
     for (int mip_i = 0; mip_i < 9; mip_i++)
       g_ctx.LoadPackage(g_package_handle[mip_i], g_package_res_size[mip_i], mip_i);
+  }
+  if (ImGui::Button("Train"))
+  {
+    assert(thread_train.get_id() == std::thread::id());
+    thread_train = std::thread(&OpenNTCContext::Train, &g_ctx, std::ref(g_train_progress));
+  }
+  if (thread_train.get_id() != std::thread::id())
+  {
+    OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_relaxed);
+    ImGui::ProgressBar((float)progress.step / progress.total_steps);
   }
   ImGui::End();
 
@@ -1474,9 +1488,9 @@ ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
   ComPtr<ID3D12InfoQueue> info_queue;
   if (SUCCEEDED(device2.As(&info_queue)))
   {
-    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
-    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE);
 
     D3D12_MESSAGE_SEVERITY severities[] =
     {

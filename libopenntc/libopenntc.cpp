@@ -328,7 +328,7 @@ static float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
   return lr;
 }
 
-void OpenNTCContext::Train()
+void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
 {
   for (int level_i = 0; level_i < 4; level_i++)
   {
@@ -534,6 +534,11 @@ void OpenNTCContext::Train()
         g1_delta_,
         g1_[feature_level].DevicePtr());
     }
+
+    OpenNTCTrainProgress tprogress;
+    tprogress.step = batch_i;
+    tprogress.total_steps = batch_count;
+    progress.store(tprogress, std::memory_order_relaxed);
   }
 }
 

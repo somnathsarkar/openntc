@@ -1,4 +1,5 @@
 #include <random>
+#include <atomic>
 
 #include <cublas_v2.h>
 #include <curand_kernel.h>
@@ -84,6 +85,13 @@ struct OpenNTCEvalResults
   double psnr;
 };
 
+class OpenNTCTrainProgress
+{
+public:
+  int step;
+  int total_steps;
+};
+
 class OpenNTCContext
 {
 public:
@@ -96,7 +104,7 @@ public:
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
   void LoadPackage(void* handle, long long size, int mip);
-  void Train();
+  void Train(std::atomic<OpenNTCTrainProgress>& progress);
   OpenNTCEvalResults Eval();
   void* GetCompressedObject();
 
