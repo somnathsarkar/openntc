@@ -59,7 +59,7 @@ const char* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
 
 OpenNTCContext g_ctx;
 std::atomic<OpenNTCTrainProgress> g_train_progress;
-std::thread thread_train;
+std::thread g_thread_train;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -1144,7 +1144,7 @@ void Update()
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
   g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
 
-  float aspect_ratio = g_width / static_cast<float>(g_height);
+  float aspect_ratio = g_width / (2.0f * static_cast<float>(g_height));
   g_proj_mat = XMMatrixPerspectiveFovLH(XMConvertToRadians(g_fov), aspect_ratio, 0.1f, 100.0f);
 }
 
@@ -1171,10 +1171,10 @@ void Render()
   }
   if (ImGui::Button("Train"))
   {
-    assert(thread_train.get_id() == std::thread::id());
-    thread_train = std::thread(&OpenNTCContext::Train, &g_ctx, std::ref(g_train_progress));
+    assert(g_thread_train.get_id() == std::thread::id());
+    g_thread_train = std::thread(&OpenNTCContext::Train, &g_ctx, std::ref(g_train_progress));
   }
-  if (thread_train.get_id() != std::thread::id())
+  if (g_thread_train.get_id() != std::thread::id())
   {
     OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_relaxed);
     ImGui::ProgressBar((float)progress.step / progress.total_steps);
@@ -1194,7 +1194,7 @@ void Render()
   D3D12_VIEWPORT viewport = {};
   viewport.TopLeftX = 0.0f;
   viewport.TopLeftY = 0.0f;
-  viewport.Width = static_cast<float>(g_width);
+  viewport.Width = static_cast<float>(g_width) / 2.0f;
   viewport.Height = static_cast<float>(g_height);
   viewport.MinDepth = 0.0f;
   viewport.MaxDepth = 1.0f;
@@ -1707,6 +1707,12 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
   ::CloseHandle(g_fence_event);
+  for (int i = 0; i < 9; i++)
+  {
+    ::CloseHandle(g_package_handle[i]);
+  }
+  if (g_thread_train.joinable())
+    g_thread_train.join();
 
   return 0;
 }
