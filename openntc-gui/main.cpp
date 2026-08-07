@@ -20,6 +20,8 @@ using namespace DirectX;
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 
+#include <libopenntc/libopenntc.h>
+
 #if defined(_DEBUG)
 #define VERIFY(hr) do { assert(!FAILED(hr)); } while(0)
 #else
@@ -53,6 +55,8 @@ const char* const g_map_tex_to_name[static_cast<int32_t>(TexType::Count)] = {
   "Roughness",
 };
 
+OpenNTCContext g_ctx;
+
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
 uint32_t g_height = 720;
@@ -72,11 +76,21 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_flat;
 ComPtr<ID3D12RootSignature> g_rootsignature_flat;
 ComPtr<ID3D12PipelineState> g_pipelinestate_ggx;
 ComPtr<ID3D12RootSignature> g_rootsignature_ggx;
+ComPtr<ID3D12PipelineState> g_pipelinestate_lanczos;
+ComPtr<ID3D12RootSignature> g_rootsignature_lanczos;
+ComPtr<ID3D12PipelineState> g_pipelinestate_packagetex;
+ComPtr<ID3D12RootSignature> g_rootsignature_packagetex;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
 ComPtr<ID3D12Resource> g_tex[static_cast<int32_t>(TexType::Count)];
+ComPtr<ID3D12Resource> g_tex_scratch[static_cast<int32_t>(TexType::Count)];
+ComPtr<ID3D12Resource> g_buffer_package[9];
+UINT64 g_package_size[9];
+UINT64 g_package_res_size[9];
+HANDLE g_package_handle[9];
+DXGI_FORMAT g_formats[static_cast<int32_t>(TexType::Count)];
 UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
@@ -115,9 +129,63 @@ D3D12_INDEX_BUFFER_VIEW g_ibv;
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_fov = 110.0f;
 
-constexpr int32_t g_nonimgui_srv_count = static_cast<int32_t>(TexType::Count);
+constexpr int32_t g_nonimgui_srv_count = static_cast<int32_t>(TexType::Count) * 11 + 9;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
+
+template <typename T>
+T SrvDescriptorHead()
+{
+  if constexpr (std::is_same_v<T, D3D12_CPU_DESCRIPTOR_HANDLE>)
+    return g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
+  else
+    return g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart();
+}
+
+template <typename T>
+T SrvDescriptorForTex(TexType textype)
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * static_cast<int>(textype);
+  return head;
+}
+
+template <typename T>
+T UavDescriptorForTex(TexType textype, UINT mip)
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (static_cast<int>(TexType::Count) + static_cast<int>(textype) * 8 + mip - 1);
+  return head;
+}
+
+template <typename T>
+T SrvDescriptorForScratch(TexType textype)
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (static_cast<int>(TexType::Count) * 9 + static_cast<int>(textype));
+  return head;
+}
+
+template <typename T>
+T UavDescriptorForScratch(TexType textype)
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (static_cast<int>(TexType::Count) * 10 + static_cast<int>(textype));
+  return head;
+}
+
+template <typename T>
+T UavDescriptorForPackage(UINT mip)
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (static_cast<int>(TexType::Count) * 11 + mip);
+  return head;
+}
 
 std::vector<UINT> g_imgui_available_srv_slots;
 
@@ -137,6 +205,21 @@ const char* g_map_shader_to_name[] = {
 int32_t g_gui_shader = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_window_shading = true;
 int32_t g_gui_texture = static_cast<int32_t>(TexType::Albedo);
+
+struct LanczosConstantBuffer
+{
+  int mip_src;
+  int w_src;
+  int h_src;
+  int a;
+  int is_y;
+};
+
+struct PackageTexConstantBuffer
+{
+  int mip;
+  int dim;
+};
 
 void ImguiDescriptorSrvAlloc(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE* cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* gpu_handle)
 {
@@ -190,10 +273,32 @@ void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr
   command_list->ResourceBarrier(1, &barrier);
 }
 
+void CreateTextureBarrier(
+  ComPtr<ID3D12GraphicsCommandList10> command_list,
+  ComPtr<ID3D12Resource> res_tex,
+  UINT mip,
+  D3D12_RESOURCE_STATES initial_state,
+  D3D12_RESOURCE_STATES final_state)
+{
+  D3D12_RESOURCE_BARRIER barrier = {};
+  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+  barrier.Transition.pResource = res_tex.Get();
+  barrier.Transition.Subresource = mip;
+  barrier.Transition.StateBefore = initial_state;
+  barrier.Transition.StateAfter = final_state;
+  command_list->ResourceBarrier(1, &barrier);
+}
+
 void Flush(ComPtr<ID3D12CommandQueue> command_queue, ComPtr<ID3D12Fence> fence, uint64_t* fenceval, HANDLE fenceevent)
 {
   uint64_t signalval = SignalFence(command_queue, fence, fenceval);
   WaitForFenceValue(fence, signalval, fenceevent);
+}
+
+inline int CeilDiv(int a, int b)
+{
+  return (a + b - 1) / b;
 }
 
 void ResizeDepthBuffer(uint32_t width, uint32_t height)
@@ -592,9 +697,175 @@ void LoadContent()
     VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_ggx)));
   }
 
-  ID3D12CommandList* const command_lists[] = { g_commandlist.Get() };
-  g_queue->ExecuteCommandLists(_countof(command_lists), command_lists);
-  WaitForFenceValue(g_fence, g_framefenceval[g_frame_i], g_fence_event);
+  // Lanczos
+
+  {
+    ComPtr<ID3DBlob> shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/lanczos_cs.cso", &shader_blob));
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
+    drange_srv.RegisterSpace = 0;
+    drange_srv.BaseShaderRegister = 1;
+    drange_srv.NumDescriptors = 1;
+    drange_srv.OffsetInDescriptorsFromTableStart = 0;
+    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_uav = {};
+    drange_uav.RegisterSpace = 0;
+    drange_uav.BaseShaderRegister = 2;
+    drange_uav.NumDescriptors = 1;
+    drange_uav.OffsetInDescriptorsFromTableStart = 0;
+    drange_uav.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_uav.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(LanczosConstantBuffer) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_uav;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
+    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_lanczos)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE cs_type;
+      D3D12_SHADER_BYTECODE cs;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_lanczos.Get();
+    pipeline_stream.cs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS;
+    pipeline_stream.cs.BytecodeLength = shader_blob->GetBufferSize();
+    pipeline_stream.cs.pShaderBytecode = shader_blob->GetBufferPointer();
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_lanczos)));
+  }
+
+  // PackageTex
+
+  {
+    ComPtr<ID3DBlob> shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/packagetex_cs.cso", &shader_blob));
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
+    drange_srv.RegisterSpace = 0;
+    drange_srv.BaseShaderRegister = 1;
+    drange_srv.NumDescriptors = static_cast<int>(TexType::Count);
+    drange_srv.OffsetInDescriptorsFromTableStart = 0;
+    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_uav = {};
+    drange_uav.RegisterSpace = 0;
+    drange_uav.BaseShaderRegister = 6;
+    drange_uav.NumDescriptors = 1;
+    drange_uav.OffsetInDescriptorsFromTableStart = 0;
+    drange_uav.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_uav.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(PackageTexConstantBuffer) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_uav;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
+    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_packagetex)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE cs_type;
+      D3D12_SHADER_BYTECODE cs;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_packagetex.Get();
+    pipeline_stream.cs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS;
+    pipeline_stream.cs.BytecodeLength = shader_blob->GetBufferSize();
+    pipeline_stream.cs.pShaderBytecode = shader_blob->GetBufferPointer();
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_packagetex)));
+  }
 
   // Texture
 
@@ -615,17 +886,18 @@ void LoadContent()
     DirectX::TexMetadata metadata;
     DirectX::ScratchImage scratch_image;
     VERIFY(LoadFromWICFile(filepath.c_str(), DirectX::WIC_FLAGS_NONE, &metadata, scratch_image));
+    g_formats[tex_i] = metadata.format;
     assert(metadata.dimension == TEX_DIMENSION_TEXTURE2D);
     D3D12_RESOURCE_DESC tex_desc = {};
     tex_desc.Format = metadata.format;
     tex_desc.Alignment = 0;
     tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     tex_desc.Width = metadata.width;
     tex_desc.Height = metadata.height;
     tex_desc.DepthOrArraySize = metadata.depth;
     tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    tex_desc.MipLevels = 1;
+    tex_desc.MipLevels = 9;
     tex_desc.SampleDesc.Count = 1;
     tex_desc.SampleDesc.Quality = 0;
 
@@ -644,17 +916,190 @@ void LoadContent()
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = metadata.format;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 9;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.PlaneSlice = 0;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, SrvDescriptorForTex<D3D12_CPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i)));
+  }
+
+  for (int tex_i = 0; tex_i < static_cast<int32_t>(TexType::Count); tex_i++)
+  {
+    for (int mip_i = 1; mip_i < 9; mip_i++)
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+      uav_desc.Format = g_formats[tex_i];
+      uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+      uav_desc.Texture2D.MipSlice = mip_i;
+      uav_desc.Texture2D.PlaneSlice = 0;
+
+      g_device->CreateUnorderedAccessView(g_tex[tex_i].Get(), nullptr, &uav_desc, UavDescriptorForTex<D3D12_CPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i), mip_i));
+    }
+  }
+
+  for (int tex_i = 0; tex_i < static_cast<int>(TexType::Count); tex_i++)
+  {
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Format = g_formats[tex_i];
+    tex_desc.Alignment = 0;
+    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    tex_desc.Width = 1024;
+    tex_desc.Height = 1024;
+    tex_desc.DepthOrArraySize = 1;
+    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    tex_desc.MipLevels = 1;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex_scratch[tex_i])));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = g_formats[tex_i];
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MipLevels = 1;
     srv_desc.Texture2D.MostDetailedMip = 0;
     srv_desc.Texture2D.PlaneSlice = 0;
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_handle_head;
-    srv_handle.ptr += tex_i * srv_descriptor_size;
-    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, srv_handle);
+    g_device->CreateShaderResourceView(g_tex_scratch[tex_i].Get(), &srv_desc, SrvDescriptorForScratch<D3D12_CPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i)));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+    uav_desc.Format = g_formats[tex_i];
+    uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uav_desc.Texture2D.MipSlice = 0;
+    uav_desc.Texture2D.PlaneSlice = 0;
+
+    g_device->CreateUnorderedAccessView(g_tex_scratch[tex_i].Get(), nullptr, &uav_desc, UavDescriptorForScratch<D3D12_CPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i)));
   }
 
+  UINT64 package_size = 1024ll * 1024ll * 9ll * 4ll;
+  for (int i = 0; i < 9; i++)
+  {
+    g_package_size[i] = package_size;
+    package_size /= 4ll;
+  }
+
+  for (int mip_i = 0; mip_i < 9; mip_i++)
+  {
+    D3D12_RESOURCE_DESC buf_desc = {};
+    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+    buf_desc.Alignment = 0;
+    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buf_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    buf_desc.Width = g_package_size[mip_i];
+    buf_desc.Height = 1;
+    buf_desc.DepthOrArraySize = 1;
+    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    buf_desc.MipLevels = 1;
+    buf_desc.SampleDesc.Count = 1;
+    buf_desc.SampleDesc.Quality = 0;
+
+    D3D12_RESOURCE_ALLOCATION_INFO alloc_info = g_device->GetResourceAllocationInfo(0, 1, &buf_desc);
+    g_package_res_size[mip_i] = alloc_info.SizeInBytes;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_SHARED, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_package[mip_i])));
+    
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+    uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav_desc.Buffer.CounterOffsetInBytes = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.NumElements = static_cast<UINT>(g_package_size[mip_i] / 4);
+    uav_desc.Buffer.StructureByteStride = 0;
+
+    g_device->CreateUnorderedAccessView(g_buffer_package[mip_i].Get(), nullptr, &uav_desc, UavDescriptorForPackage<D3D12_CPU_DESCRIPTOR_HANDLE>(mip_i));
+
+    g_device->CreateSharedHandle(g_buffer_package[mip_i].Get(), nullptr, GENERIC_ALL, nullptr, &g_package_handle[mip_i]);
+  }
+
+  g_commandlist->Reset(g_commandallocators[g_frame_i].Get(), nullptr);
+  g_commandlist->SetPipelineState(g_pipelinestate_lanczos.Get());
+  g_commandlist->SetComputeRootSignature(g_rootsignature_lanczos.Get());
+  ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
+  g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
+  for (int tex_i = 0; tex_i < static_cast<int>(TexType::Count); tex_i++)
+  {
+    CreateTextureBarrier(g_commandlist, g_tex_scratch[tex_i], 0, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    int curr_dim = 1024;
+    for (int mip_i = 0; mip_i < 8; mip_i++)
+    {
+      CreateTextureBarrier(g_commandlist, g_tex_scratch[tex_i], 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+      LanczosConstantBuffer lcbx = {};
+      lcbx.mip_src = mip_i;
+      lcbx.w_src = curr_dim;
+      lcbx.h_src = curr_dim;
+      lcbx.is_y = 0;
+      lcbx.a = 3;
+
+      D3D12_GPU_DESCRIPTOR_HANDLE src_handle_x = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i));
+      D3D12_GPU_DESCRIPTOR_HANDLE dst_handle_x = UavDescriptorForScratch<D3D12_GPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i));
+      g_commandlist->SetComputeRoot32BitConstants(0, sizeof(LanczosConstantBuffer) / 4, &lcbx, 0);
+      g_commandlist->SetComputeRootDescriptorTable(1, src_handle_x);
+      g_commandlist->SetComputeRootDescriptorTable(2, dst_handle_x);
+      g_commandlist->Dispatch(CeilDiv(curr_dim, 16), CeilDiv(curr_dim, 8), 1);
+
+      CreateTextureBarrier(g_commandlist, g_tex_scratch[tex_i], 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      CreateTextureBarrier(g_commandlist, g_tex[tex_i], mip_i + 1, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+      LanczosConstantBuffer lcby = {};
+      lcby.mip_src = 0;
+      lcby.w_src = curr_dim / 2;
+      lcby.h_src = curr_dim;
+      lcby.is_y = 1;
+      lcby.a = 3;
+
+      D3D12_GPU_DESCRIPTOR_HANDLE src_handle_y = SrvDescriptorForScratch<D3D12_GPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i));
+      D3D12_GPU_DESCRIPTOR_HANDLE dst_handle_y = UavDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(static_cast<TexType>(tex_i), mip_i + 1);
+      g_commandlist->SetComputeRoot32BitConstants(0, sizeof(LanczosConstantBuffer) / 4, &lcby, 0);
+      g_commandlist->SetComputeRootDescriptorTable(1, src_handle_y);
+      g_commandlist->SetComputeRootDescriptorTable(2, dst_handle_y);
+      g_commandlist->Dispatch(CeilDiv(curr_dim, 16), CeilDiv(curr_dim, 16), 1);
+      curr_dim /= 2;
+
+      CreateTextureBarrier(g_commandlist, g_tex[tex_i], mip_i + 1, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+  }
+
+  PackageTexConstantBuffer ptcb = {};
+  ptcb.mip = 0;
+  ptcb.dim = 1024;
+  for (int mip_i = 0; mip_i < 9; mip_i++)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_packagetex.Get());
+    g_commandlist->SetComputeRootSignature(g_rootsignature_packagetex.Get());
+    g_commandlist->SetComputeRoot32BitConstants(0, sizeof(PackageTexConstantBuffer) / 4, &ptcb, 0);
+    g_commandlist->SetComputeRootDescriptorTable(1, SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(TexType::Albedo));
+    g_commandlist->SetComputeRootDescriptorTable(2, UavDescriptorForPackage<D3D12_GPU_DESCRIPTOR_HANDLE>(mip_i));
+    g_commandlist->Dispatch(CeilDiv(ptcb.dim, 8), CeilDiv(ptcb.dim, 8), 1);
+    ptcb.dim /= 2;
+    ptcb.mip++;
+  }
+
+  VERIFY(g_commandlist->Close());
+  ID3D12CommandList* const command_lists[] = { g_commandlist.Get() };
+  g_queue->ExecuteCommandLists(_countof(command_lists), command_lists);
+  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
 
   g_contentloaded = true;
 
@@ -714,6 +1159,14 @@ void Render()
   TexType tex_flat = static_cast<TexType>(g_gui_texture);
   ImGui::End();
 
+  ImGui::Begin("Train");
+  if (ImGui::Button("Train"))
+  {
+    for (int mip_i = 0; mip_i < 9; mip_i++)
+      g_ctx.LoadPackage(g_package_handle[mip_i], g_package_res_size[mip_i], mip_i);
+  }
+  ImGui::End();
+
   auto command_allocator = g_commandallocators[g_frame_i];
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
@@ -722,8 +1175,7 @@ void Render()
   rtv_handle.ptr += g_frame_i * g_descriptorsize;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart();
-  tex_color_handle.ptr += tex_color_size * static_cast<int32_t>(tex_flat);
+  D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(tex_flat);
 
   D3D12_VIEWPORT viewport = {};
   viewport.TopLeftX = 0.0f;
@@ -1163,6 +1615,11 @@ HANDLE CreateEventHandle()
 
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
+  OpenNTCContextInitInfo init_info = {};
+  init_info.dim = 1024;
+  init_info.profile = OpenNTCProfile::Bpp_0_2;
+  g_ctx.Init(init_info);
+
   ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

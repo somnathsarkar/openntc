@@ -1,12 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
 project(openntc LANGUAGES CXX CUDA)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(CUDAToolkit REQUIRED)
 
 if(NOT CMAKE_CUDA_FLAGS_RELWITHDEBINFO MATCHES "-lineinfo")
     set(CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_RELWITHDEBINFO} -lineinfo")
 endif()
+
+add_library(libopenntc STATIC libopenntc/libopenntc.cpp
+  libopenntc/ntc_kernel.cu)
+set_target_properties(libopenntc PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
+set_target_properties(libopenntc PROPERTIES CUDA_ARCHITECTURES native)
+target_include_directories(libopenntc PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(libopenntc PRIVATE CUDA::cublas CUDA::cudart)
 
 add_executable(openntc openntc/openntc.cpp openntc/ntc_kernel.cu openntc/dataloader.cpp)
 set_target_properties(openntc PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
@@ -45,4 +52,5 @@ add_executable(openntc-gui WIN32 openntc-gui/main.cpp)
 target_link_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/DirectXTex/Bin/Desktop_2022/x64/Debug)
 target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib DirectXTex.lib)
 target_include_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/)
-target_link_libraries(openntc-gui PRIVATE imgui)
+target_include_directories(openntc-gui PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(openntc-gui PRIVATE imgui libopenntc)
