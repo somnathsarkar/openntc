@@ -70,6 +70,16 @@ float* Tensor2d::DevicePtr()
   return dev_;
 }
 
+size_t Tensor2d::SizeBytes() const
+{
+  return sizeof(float) * shape_[0] * shape_[1];
+}
+
+size_t Tensor2d::NumElems() const
+{
+  return (size_t)shape_[0] * shape_[1];
+}
+
 Tensor3d::Tensor3d() : initialized_(false), dev_(nullptr) {}
 
 Tensor3d::~Tensor3d()
@@ -146,6 +156,16 @@ float** Tensor3d::DeviceDPtr()
 bool Tensor3d::IsInitialized() const
 {
   return initialized_;
+}
+
+size_t Tensor3d::SizeBytes() const
+{
+  return sizeof(float) * shape_[0] * shape_[1] * shape_[2];
+}
+
+size_t Tensor3d::NumElems() const
+{
+  return (size_t)shape_[0] * shape_[1] * shape_[2];
 }
 
 IntTensor1d::IntTensor1d() : initialized_(false), dev_(nullptr) {}
@@ -279,6 +299,16 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   cublasSetMathMode(handle_, CUBLAS_TF32_TENSOR_OP_MATH);
   cudaMalloc(&rstate_, sizeof(curandState) * g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_);
   launch_initialize_rand(g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_, rstate_);
+
+  for (int i = 0; i < 4; i++)
+  {
+    g0_host_[i] = new float[g0_[i].NumElems()];
+    g1_host_[i] = new float[g1_[i].NumElems()];
+    g0_host_16_[i] = new uint16_t[g0_[i].NumElems()];
+  }
+  W0_host_ = new float[W0_.NumElems()];
+  W1_host_ = new float[W1_.NumElems()];
+  Wout_host_ = new float[Wout_.NumElems()];
 
   return OpenNTCResult::Success;
 }
@@ -536,10 +566,31 @@ void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
     }
 
     OpenNTCTrainProgress tprogress;
+    tprogress.phase = 2;
     tprogress.step = batch_i;
     tprogress.total_steps = batch_count;
     progress.store(tprogress, std::memory_order_relaxed);
   }
+
+  for (int i = 0; i < 4; i++)
+  {
+    cudaMemcpy(g0_host_[i], g0_[i].DevicePtr(), g0_[i].SizeBytes(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(g1_host_[i], g1_[i].DevicePtr(), g1_[i].SizeBytes(), cudaMemcpyDeviceToHost);
+  }
+  cudaMemcpy(W0_host_, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
+  cudaMemcpy(W1_host_, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost);
+  cudaMemcpy(Wout_host_, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost);
+  for (int i = 0; i < 4; i++)
+  {
+    for (int j = 0; j < g0_[i].NumElems(); j++)
+    {
+      g0_host_16_[i][j] = std::bit_cast<uint16_t>(__float2half(g0_host_[i][j]));
+    }
+  }
+  
+  OpenNTCTrainProgress tprogress;
+  tprogress.phase = 3;
+  progress.store(tprogress, std::memory_order_relaxed);
 }
 
 OpenNTCEvalResults OpenNTCContext::Eval()
@@ -620,6 +671,37 @@ OpenNTCEvalResults OpenNTCContext::Eval()
   return results;
 }
 
+OpenNTCCompressedData OpenNTCContext::GetCompressedData()
+{
+  OpenNTCCompressedData data = {};
+  for (int i = 0; i < 4; i++)
+  {
+    data.g0_[i] = g0_host_16_[i];
+    data.g0_size_[i] = g0_[i].NumElems() * sizeof(uint16_t);
+    data.g1_[i] = g1_host_[i];
+    data.g1_size_[i] = g1_[i].SizeBytes();
+  }
+  data.W0_ = W0_host_;
+  data.W0_size_ = W0_.SizeBytes();
+  data.W1_ = W1_host_;
+  data.W1_size_ = W1_.SizeBytes();
+  data.Wout_ = Wout_host_;
+  data.Wout_size_ = Wout_.SizeBytes();
+
+  for (int i = 0; i < 4; i++)
+  {
+    data.g0_grid_dim_[i] = g0_grid_dim_[i];
+    data.g1_grid_dim_[i] = g1_grid_dim_[i];
+  }
+  data.g0_bytes_per_channel_ = g0_bytes_per_channel_;
+  data.g1_bytes_per_channel_ = g1_bytes_per_channel_;
+  data.g0_channels_ = g0_channels_;
+  data.g1_channels_ = g1_channels_;
+  data.dim_ = mip_dim_[0];
+
+  return data;
+}
+
 void OpenNTCContext::Destroy()
 {
   for (int i = 0; i < 4; i++)
@@ -685,4 +767,14 @@ void OpenNTCContext::Destroy()
   }
 
   cudaFree(rstate_);
+
+  for(int i = 0; i < 4; i++)
+  {
+    delete[] g0_host_[i];
+    delete[] g1_host_[i];
+    delete[] g0_host_16_[i];
+  }
+  delete[] W0_host_;
+  delete[] W1_host_;
+  delete[] Wout_host_;
 }

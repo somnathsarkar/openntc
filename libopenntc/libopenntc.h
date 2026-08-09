@@ -35,6 +35,8 @@ public:
   void FillKaiming(std::mt19937& gen);
   void Destroy();
   float* DevicePtr();
+  size_t SizeBytes() const;
+  size_t NumElems() const;
 
   private:
     bool initialized_;
@@ -56,6 +58,8 @@ public:
   float* DevicePtr();
   float** DeviceDPtr();
   bool IsInitialized() const;
+  size_t SizeBytes() const;
+  size_t NumElems() const;
 
   private:
     bool initialized_;
@@ -88,8 +92,32 @@ struct OpenNTCEvalResults
 class OpenNTCTrainProgress
 {
 public:
+  int phase; // 0: initial, 1: received package, 2: training, 3: finished training
   int step;
   int total_steps;
+};
+
+struct OpenNTCCompressedData
+{
+  uint16_t* g0_[4];
+  float* g1_[4];
+  float* W0_;
+  float* W1_;
+  float* Wout_;
+
+  size_t g0_size_[4];
+  size_t g1_size_[4];
+  size_t W0_size_;
+  size_t W1_size_;
+  size_t Wout_size_;
+  
+  int g0_grid_dim_[4];
+  int g1_grid_dim_[4];
+  int g0_bytes_per_channel_;
+  int g1_bytes_per_channel_;
+  int g0_channels_;
+  int g1_channels_;
+  int dim_;
 };
 
 class OpenNTCContext
@@ -106,7 +134,16 @@ public:
   void LoadPackage(void* handle, long long size, int mip);
   void Train(std::atomic<OpenNTCTrainProgress>& progress);
   OpenNTCEvalResults Eval();
-  void* GetCompressedObject();
+  OpenNTCCompressedData GetCompressedData();
+
+  // Host-side parameters after training
+
+  float* g0_host_[4];
+  uint16_t* g0_host_16_[4];
+  float* g1_host_[4];
+  float* W0_host_;
+  float* W1_host_;
+  float* Wout_host_;
 
 private:
   static const int kMinDimension = 1024;

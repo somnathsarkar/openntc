@@ -1,5 +1,8 @@
 #include <openntc/ntc_kernel.cuh>
+
 #include <cstdio>
+
+#include <cuda_fp16.h>
 
 #define FEAT_DIM 57
 #define OUT_DIM 9
