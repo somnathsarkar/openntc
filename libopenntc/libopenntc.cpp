@@ -203,6 +203,12 @@ int* IntTensor1d::DevicePtr()
 OpenNTCContext::OpenNTCContext() : initialized_(false), gen_(123), rstate_(nullptr) {}
 OpenNTCContext::~OpenNTCContext() { Destroy(); }
 
+static int RoundUpToNearestK(int n, int k)
+{
+  assert(k > 0);
+  return ((n + k - 1) / k) * k;
+}
+
 OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
 {
   assert(init_info.profile == OpenNTCProfile::Bpp_0_2);
@@ -236,7 +242,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   g1_grid_dim_[1] = 32;
   g1_grid_dim_[2] = 8;
   g1_grid_dim_[3] = 2;
-  feature_dim_ = 4 * g0_channels_ + g1_channels_ + 12 + 1;
+  feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   out_dim_ = 9;
   max_batch_ = 8;
   max_batch_dim_ = max_batch_ * 256 * 256;

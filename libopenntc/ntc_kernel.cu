@@ -4,7 +4,7 @@
 
 #include <cuda_fp16.h>
 
-#define FEAT_DIM 57
+#define FEAT_DIM 60
 #define OUT_DIM 9
 
 // out_channels = 1 + 3 + 1 + 3 + 1 (AO + Color + Displacement + Normals + Roughness)
@@ -344,6 +344,12 @@ __global__ void draw_features(
     }
   }
   out_features[(4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = norm_lod;
+  pos_off++;
+  while ((4 * g0_channels + g1_channels + pos_off) < feature_dim)
+  {
+    out_features[(4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = 0.0f;
+    pos_off++;
+  }
 }
 
 void launch_draw_features(

@@ -1306,7 +1306,7 @@ void LoadCompressedData()
     heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
     heap_props.CreationNodeMask = 1;
     heap_props.VisibleNodeMask = 1;
-    
+
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_ntc_info)));
 
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
@@ -1430,11 +1430,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W0)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W0_size_ / sizeof(float);
+    srv_desc.Buffer.NumElements = cdata.W0_size_ / (sizeof(float) * 4);
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1471,11 +1471,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W1)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W1_size_ / sizeof(float);
+    srv_desc.Buffer.NumElements = cdata.W1_size_ / (sizeof(float) * 4);
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1513,11 +1513,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_Wout)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.Wout_size_ / sizeof(float);
+    srv_desc.Buffer.NumElements = cdata.Wout_size_ / (4 * sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 

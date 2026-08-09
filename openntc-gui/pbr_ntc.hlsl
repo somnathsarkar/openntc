@@ -64,9 +64,9 @@ ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
 Buffer<float16_t> g0[4] : register(t0, space0);
 Buffer<float> g1[4] : register(t4, space0);
-Buffer<float> W0 : register(t8, space0);
-Buffer<float> W1 : register(t9, space0);
-Buffer<float> Wout : register(t10, space0);
+Buffer<float4> W0 : register(t8, space0);
+Buffer<float4> W1 : register(t9, space0);
+Buffer<float4> Wout : register(t10, space0);
 
 struct PixelShaderInput
 {
@@ -119,7 +119,7 @@ int FeatureLevelForLod(int lod)
   return 3;
 }
 
-void GetFeatures(float2 uv, out float o_feat[57])
+void GetFeatures(float2 uv, out float o_feat[60])
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
@@ -201,6 +201,9 @@ void GetFeatures(float2 uv, out float o_feat[57])
   }
 
   o_feat[57 - 1] = lod / 8.0f;
+
+  for (int i = 57; i < 60; i++)
+    o_feat[i] = 0.0f;
 }
 
 float hardgelu(float x)
@@ -222,7 +225,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Samples
 
-  float feat[57];
+  float feat[60];
   float W0x[64];
   float W1x[64];
   float Woutx[9];
@@ -240,27 +243,30 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   for (int i = 0; i < 64; i++)
   {
     [unroll]
-    for (int j = 0; j < 57; j++)
+    for (int j = 0; j < 60 / 4; j++)
     {
-      W0x[i] += W0.Load(i * 57 + j) * feat[j];
+      float4 f4 = float4(feat[j * 4], feat[j * 4 + 1], feat[j * 4 + 2], feat[j * 4 + 3]); 
+      W0x[i] += dot(W0.Load(i * (60 / 4) + j), f4);
     }
     W0x[i] = hardgelu(W0x[i]);
   }
   for (int i = 0; i < 64; i++)
   {
     [unroll]
-    for (int j = 0; j < 64; j++)
+    for (int j = 0; j < 64 / 4; j++)
     {
-      W1x[i] += W1.Load(i * 64 + j) * W0x[j];
+      float4 f4 = float4(W0x[j * 4], W0x[j * 4 + 1], W0x[j * 4 + 2], W0x[j * 4 + 3]);
+      W1x[i] += dot(W1.Load(i * (64 / 4) + j), f4);
     }
     W1x[i] = hardgelu(W1x[i]);
   }
   for (int i = 0; i < 9; i++)
   {
     [unroll]
-    for (int j = 0; j < 64; j++)
+    for (int j = 0; j < 64 / 4; j++)
     {
-      Woutx[i] += Wout.Load(i * 64 + j) * W1x[j];
+      float4 f4 = float4(W1x[j * 4], W1x[j * 4 + 1], W1x[j * 4 + 2], W1x[j * 4 + 3]);
+      Woutx[i] += dot(Wout.Load(i * (64 / 4) + j), f4);
     }
   }
 
