@@ -244,6 +244,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   g1_grid_dim_[3] = 2;
   feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   out_dim_ = 9;
+  out_dim_padded_ = RoundUpToNearestK(out_dim_, 4);
   max_batch_ = 8;
   max_batch_dim_ = max_batch_ * 256 * 256;
   hidden_dim_ = 64;
@@ -308,13 +309,15 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
 
   for (int i = 0; i < 4; i++)
   {
-    g0_host_[i] = new float[g0_[i].NumElems()];
-    g1_host_[i] = new float[g1_[i].NumElems()];
-    g0_host_16_[i] = new uint16_t[g0_[i].NumElems()];
+    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bytes_per_channel_) / 32];
+    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bytes_per_channel_) / 32];
   }
-  W0_host_ = new float[W0_.NumElems()];
-  W1_host_ = new float[W1_.NumElems()];
-  Wout_host_ = new float[Wout_.NumElems()];
+  W0_host_ = new uint32_t[W0_.NumElems() / 4];
+  W1_host_ = new uint32_t[W1_.NumElems() / 4];
+  Wout_host_ = new uint32_t[(out_dim_padded_ * hidden_dim_) / 4];
+  W0_scale_ = new float[hidden_dim_];
+  W1_scale_ = new float[hidden_dim_];
+  Wout_scale_ = new float[out_dim_padded_];
 
   return OpenNTCResult::Success;
 }
@@ -362,6 +365,32 @@ static float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
 {
   float lr = lr_min + 0.5f * (lr_max - lr_min) * (1.0f + cosf(t_cur * acosf(-1.0f) / t_max));
   return lr;
+}
+
+static void QuantizeWeights(float* Wf, int rows, int cols, float prescale, uint32_t* o_Wq, float* o_Ws)
+{
+  for (int i = 0; i < rows; i++)
+  {
+    float max_abs = 0.0f;
+    for (int j = 0; j < cols; j++)
+    {
+      float val = Wf[i * cols + j];
+      max_abs = std::max(std::abs(val), max_abs);
+    }
+    float scale = (max_abs == 0.0f) ? 1.0f : max_abs / 127.0f;
+    o_Ws[i] = scale * prescale;
+    for (int j = 0; j < cols; j += 4)
+    {
+      uint32_t pack = 0;
+      for (int c = 0; c < 4; c++)
+      {
+        float val = Wf[i * cols + j + c] / scale;
+        int clamp_val = std::clamp((int)std::lroundf(val), -128, 127);
+        pack |= ((clamp_val & 0xFF) << (c * 8));
+      }
+      o_Wq[i * (cols / 4) + (j / 4)] = pack;
+    }
+  }
 }
 
 void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
@@ -578,25 +607,128 @@ void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
     progress.store(tprogress, std::memory_order_relaxed);
   }
 
+  uint32_t* g0pack = nullptr;
+  uint32_t* g1pack = nullptr;
+
+  cudaMalloc(&g0pack, sizeof(uint32_t) * (g0_[0].NumElems() * g0_bytes_per_channel_) / 32);
+  cudaMalloc(&g1pack, sizeof(uint32_t) * (g1_[0].NumElems() * g1_bytes_per_channel_) / 32);
+
   for (int i = 0; i < 4; i++)
   {
-    cudaMemcpy(g0_host_[i], g0_[i].DevicePtr(), g0_[i].SizeBytes(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(g1_host_[i], g1_[i].DevicePtr(), g1_[i].SizeBytes(), cudaMemcpyDeviceToHost);
+    launch_quantize_pack(g0_[i].NumElems(), (g0_[i].NumElems() * g0_bytes_per_channel_) / 32, g0_bytes_per_channel_, g0_[i].DevicePtr(), g0pack);
+    launch_quantize_pack(g1_[i].NumElems(), (g1_[i].NumElems() * g1_bytes_per_channel_) / 32, g1_bytes_per_channel_, g1_[i].DevicePtr(), g1pack);
+    cudaMemcpy(g0_host_[i], g0pack, sizeof(uint32_t) * (g0_[i].NumElems() * g0_bytes_per_channel_) / 32, cudaMemcpyDeviceToHost);
+    cudaMemcpy(g1_host_[i], g1pack, sizeof(uint32_t) * (g1_[i].NumElems() * g1_bytes_per_channel_) / 32, cudaMemcpyDeviceToHost);
   }
-  cudaMemcpy(W0_host_, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
-  cudaMemcpy(W1_host_, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost);
-  cudaMemcpy(Wout_host_, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost);
-  for (int i = 0; i < 4; i++)
+
+  cudaFree(g0pack);
+  cudaFree(g1pack);
+
+  caldata_ = Calibrate();
+
+  float* W0_unpack = new float[W0_.NumElems()];
+  float* W1_unpack = new float[W1_.NumElems()];
+  float* Wout_unpack = new float[out_dim_padded_ * hidden_dim_];
+
+  cudaMemcpy(W0_unpack, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
+  cudaMemcpy(W1_unpack, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost);
+  cudaMemcpy(Wout_unpack, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost);
+
+  for (int i = 0; i < hidden_dim_; i++)
   {
-    for (int j = 0; j < g0_[i].NumElems(); j++)
+    for (int j = 57; j < feature_dim_; j++)
     {
-      g0_host_16_[i][j] = std::bit_cast<uint16_t>(__float2half(g0_host_[i][j]));
+      W0_unpack[i * feature_dim_ + j] = 0.0f;
     }
   }
+  QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_, 1.0f / 128.0f, W0_host_, W0_scale_);
+  QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1, W1_host_, W1_scale_);
+  QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2, Wout_host_, Wout_scale_);
+  for (int i = out_dim_; i < out_dim_padded_; i++) Wout_scale_[i] = 0.0f;
+
+  delete[] W0_unpack;
+  delete[] W1_unpack;
+  delete[] Wout_unpack;
   
   OpenNTCTrainProgress tprogress;
   tprogress.phase = 3;
   progress.store(tprogress, std::memory_order_relaxed);
+}
+
+OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
+{
+  // Exact per-layer max |activation| over every texel of every mip, using the
+  // same tiling as Eval. Requires trained (post-freeze) weights and grids.
+  float* dmax = nullptr;
+  cudaMalloc(&dmax, sizeof(float) * 2);
+  cudaMemset(dmax, 0, sizeof(float) * 2);
+
+  for (int mip_i = 0; mip_i <= 8; mip_i++)
+  {
+    int grids_per_dim = (mip_dim_[mip_i] + 255) / 256;
+    int num_grids = grids_per_dim * grids_per_dim;
+    int grid_draws[16];
+    int grid_dim_draw = std::min(256, mip_dim_[mip_i]);
+    for (int batch_start = 0; batch_start < num_grids; batch_start += 8)
+    {
+      int num_batches = std::min(8, num_grids - batch_start);
+      int fill_i = 0;
+      for (int g = batch_start; g < batch_start + num_batches; g++)
+      {
+        grid_draws[fill_i + fill_i] = (g % grids_per_dim) * grid_dim_draw;
+        grid_draws[fill_i + fill_i + 1] = (g / grids_per_dim) * grid_dim_draw;
+        fill_i++;
+      }
+      cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice);
+
+      int feature_level = -1;
+      if (mip_i <= 3)
+        feature_level = 0;
+      else if (mip_i <= 5)
+        feature_level = 1;
+      else if (mip_i <= 7)
+        feature_level = 2;
+      else
+        feature_level = 3;
+
+      int batch_dim = num_batches * grid_dim_draw * grid_dim_draw;
+
+      launch_draw_features(
+        num_batches,
+        grid_dim_draw,
+        feature_dim_,
+        mip_dim_[mip_i],
+        g0_grid_dim_[feature_level],
+        g1_grid_dim_[feature_level],
+        g0_channels_,
+        g1_channels_,
+        mip_i / 8.0f,
+        grid_draws_.DevicePtr(),
+        g0_noise_.DevicePtr(),
+        g1_noise_.DevicePtr(),
+        g0_[feature_level].DevicePtr(),
+        g1_[feature_level].DevicePtr(),
+        x_.DevicePtr());
+
+      matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr());
+      launch_forward_hardgelu(hidden_dim_ * batch_dim, W0x_.DevicePtr(), W0xa_.DevicePtr());
+      launch_max_abs(hidden_dim_ * batch_dim, W0xa_.DevicePtr(), &dmax[0]);
+      matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr());
+      launch_forward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), W1xa_.DevicePtr());
+      launch_max_abs(hidden_dim_ * batch_dim, W1xa_.DevicePtr(), &dmax[1]);
+    }
+  }
+
+  float hmax[2] = {};
+  cudaMemcpy(hmax, dmax, sizeof(float) * 2, cudaMemcpyDeviceToHost);
+  cudaFree(dmax);
+
+  OpenNTCCalibration cal = {};
+  cal.max_abs_a1 = hmax[0];
+  cal.max_abs_a2 = hmax[1];
+  cal.s_a1 = headroom * hmax[0] / 127.0f;
+  cal.s_a2 = headroom * hmax[1] / 127.0f;
+  return cal;
 }
 
 OpenNTCEvalResults OpenNTCContext::Eval()
@@ -682,17 +814,24 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
   OpenNTCCompressedData data = {};
   for (int i = 0; i < 4; i++)
   {
-    data.g0_[i] = g0_host_16_[i];
-    data.g0_size_[i] = g0_[i].NumElems() * sizeof(uint16_t);
+    data.g0_[i] = g0_host_[i];
+    data.g0_size_[i] = (g0_[i].NumElems() * g0_bytes_per_channel_) / 8;
     data.g1_[i] = g1_host_[i];
-    data.g1_size_[i] = g1_[i].SizeBytes();
+    data.g1_size_[i] = (g1_[i].NumElems() * g1_bytes_per_channel_) / 8;
   }
   data.W0_ = W0_host_;
-  data.W0_size_ = W0_.SizeBytes();
+  data.W0_size_ = W0_.SizeBytes() / 4;
   data.W1_ = W1_host_;
-  data.W1_size_ = W1_.SizeBytes();
+  data.W1_size_ = W1_.SizeBytes() / 4;
   data.Wout_ = Wout_host_;
-  data.Wout_size_ = Wout_.SizeBytes();
+  data.Wout_size_ = ((out_dim_padded_ * hidden_dim_) / 4) * sizeof(uint32_t);
+
+  data.W0_scale_ = W0_scale_;
+  data.W0_scale_size_ = hidden_dim_ * sizeof(float);
+  data.W1_scale_ = W1_scale_;
+  data.W1_scale_size_ = hidden_dim_ * sizeof(float);
+  data.Wout_scale_ = Wout_scale_;
+  data.Wout_scale_size_ = out_dim_padded_ * sizeof(float);
 
   for (int i = 0; i < 4; i++)
   {
@@ -704,6 +843,8 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
   data.g0_channels_ = g0_channels_;
   data.g1_channels_ = g1_channels_;
   data.dim_ = mip_dim_[0];
+
+  data.caldata_ = caldata_;
 
   return data;
 }
@@ -778,9 +919,11 @@ void OpenNTCContext::Destroy()
   {
     delete[] g0_host_[i];
     delete[] g1_host_[i];
-    delete[] g0_host_16_[i];
   }
   delete[] W0_host_;
   delete[] W1_host_;
   delete[] Wout_host_;
+  delete[] W0_scale_;
+  delete[] W1_scale_;
+  delete[] Wout_scale_;
 }

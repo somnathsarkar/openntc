@@ -71,3 +71,5 @@ void launch_backward_pass(
   float* o_dLdx,
   float* o_dLdW0x,
   float* o_dLdW1x);
+void launch_quantize_pack(int n, int n_bytes, int bits, float* input, uint32_t* output);
+void launch_max_abs(int n, float* data, float* result);

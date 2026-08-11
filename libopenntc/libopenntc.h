@@ -89,6 +89,14 @@ struct OpenNTCEvalResults
   double psnr;
 };
 
+struct OpenNTCCalibration
+{
+  float max_abs_a1;
+  float max_abs_a2;
+  float s_a1;
+  float s_a2;
+};
+
 class OpenNTCTrainProgress
 {
 public:
@@ -99,17 +107,24 @@ public:
 
 struct OpenNTCCompressedData
 {
-  uint16_t* g0_[4];
-  float* g1_[4];
-  float* W0_;
-  float* W1_;
-  float* Wout_;
+  uint32_t* g0_[4];
+  uint32_t* g1_[4];
+  uint32_t* W0_;
+  uint32_t* W1_;
+  uint32_t* Wout_;
+
+  float* W0_scale_;
+  float* W1_scale_;
+  float* Wout_scale_;
 
   size_t g0_size_[4];
   size_t g1_size_[4];
   size_t W0_size_;
   size_t W1_size_;
   size_t Wout_size_;
+  size_t W0_scale_size_;
+  size_t W1_scale_size_;
+  size_t Wout_scale_size_;
   
   int g0_grid_dim_[4];
   int g1_grid_dim_[4];
@@ -118,6 +133,8 @@ struct OpenNTCCompressedData
   int g0_channels_;
   int g1_channels_;
   int dim_;
+
+  OpenNTCCalibration caldata_;
 };
 
 class OpenNTCContext
@@ -134,16 +151,20 @@ public:
   void LoadPackage(void* handle, long long size, int mip);
   void Train(std::atomic<OpenNTCTrainProgress>& progress);
   OpenNTCEvalResults Eval();
+  OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
 
   // Host-side parameters after training
 
-  float* g0_host_[4];
-  uint16_t* g0_host_16_[4];
-  float* g1_host_[4];
-  float* W0_host_;
-  float* W1_host_;
-  float* Wout_host_;
+  uint32_t* g0_host_[4];
+  uint32_t* g1_host_[4];
+  uint32_t* W0_host_;
+  uint32_t* W1_host_;
+  uint32_t* Wout_host_;
+  float* W0_scale_;
+  float* W1_scale_;
+  float* Wout_scale_;
+  OpenNTCCalibration caldata_;
 
 private:
   static const int kMinDimension = 1024;
@@ -163,6 +184,7 @@ private:
   int g1_grid_dim_[4];
   int feature_dim_;
   int out_dim_;
+  int out_dim_padded_;
   int max_batch_;
   int max_batch_dim_;
   int hidden_dim_;

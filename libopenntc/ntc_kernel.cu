@@ -1,5 +1,6 @@
 #include <openntc/ntc_kernel.cuh>
 
+#include <cassert>
 #include <cstdio>
 
 #include <cuda_fp16.h>
@@ -611,4 +612,51 @@ void launch_clamp_grid(int n, int num_bytes, float delta, float* g)
 {
   int block_count = (n + 1023) / 1024;
   clamp_grid<<<block_count, 1024>>>(n, delta, g);
+}
+
+// quantize float to 1/2/4/8 bits
+
+__global__ void quantize_pack(int n_packs, int bits, float* input, uint32_t* output)
+{
+  int pack_i = blockDim.x * blockIdx.x + threadIdx.x;
+  if (pack_i >= n_packs) return;
+  int vals_per_pack = 32 / bits;
+  uint32_t packed = 0;
+  for (int s = 0; s < vals_per_pack; s++)
+  {
+    int x = (int)roundf(input[pack_i * vals_per_pack + s] * (1 << (bits - 1)));
+    x = clamp_int(x, -(1 << (bits - 1)), (1 << (bits - 1)) - 1);
+    packed |= (uint32_t)(x + (1 << (bits - 1))) << (s * bits);
+  }
+  output[pack_i] = packed;
+}
+
+void launch_quantize_pack(int n, int n_packs, int bits, float* input, uint32_t* output)
+{
+  assert((n * bits) % 32 == 0);
+  assert((n * bits) / 32 == n_packs);
+  int block_count = (n_packs + 1023) / 1024;
+  quantize_pack<<<block_count, 1024>>>(n_packs, bits, input, output);
+}
+
+__global__ void max_abs(int n, float* data, float* result)
+{
+  __shared__ float smax[1024];
+  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  smax[threadIdx.x] = (tid < n) ? fabsf(data[tid]) : 0.0f;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1)
+  {
+    if (threadIdx.x < s)
+      smax[threadIdx.x] = fmaxf(smax[threadIdx.x], smax[threadIdx.x + s]);
+    __syncthreads();
+  }
+  if (threadIdx.x == 0)
+    atomicMax((int*)result, __float_as_int(smax[0]));
+}
+
+void launch_max_abs(int n, float* data, float* result)
+{
+  int block_count = (n + 1023) / 1024;
+  max_abs<<<block_count, 1024>>>(n, data, result);
 }

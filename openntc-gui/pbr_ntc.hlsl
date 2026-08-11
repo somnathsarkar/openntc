@@ -1,5 +1,10 @@
 #define PI 3.14159265359
 
+#define G0_BITS 2
+#define G1_BITS 4
+#define G0_CHANNELS 8
+#define G1_CHANNELS 12
+
 struct ModelViewProjection
 {
   matrix model_to_world;
@@ -58,15 +63,20 @@ struct NTC
   int g0_channels;
   int g1_channels;
   int dim;
+  float rcp_s_a1;
+  float rcp_s_a2;
 };
 
 ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
-Buffer<float16_t> g0[4] : register(t0, space0);
-Buffer<float> g1[4] : register(t4, space0);
-Buffer<float4> W0 : register(t8, space0);
-Buffer<float4> W1 : register(t9, space0);
-Buffer<float4> Wout : register(t10, space0);
+Buffer<uint> g0[4] : register(t0, space0);
+Buffer<uint> g1[4] : register(t4, space0);
+Buffer<uint> W0 : register(t8, space0);
+Buffer<uint> W1 : register(t9, space0);
+Buffer<uint> Wout : register(t10, space0);
+Buffer<float4> W0_scale : register(t11, space0);
+Buffer<float4> W1_scale : register(t12, space0);
+Buffer<float4> Wout_scale : register(t13, space0);
 
 struct PixelShaderInput
 {
@@ -119,6 +129,36 @@ int FeatureLevelForLod(int lod)
   return 3;
 }
 
+float GetG0(int level, int x, int y, int c)
+{
+  int vals_per_pack = 32 / G0_BITS;
+  int g0_idx = y * NTCCBV.g0_grid_dim[level] * G0_CHANNELS + x * G0_CHANNELS + c;
+  int pack_idx = g0_idx / vals_per_pack;
+  int pack_subidx = g0_idx % vals_per_pack;
+  uint val = g0[level].Load(pack_idx);
+  val >>= (pack_subidx * G0_BITS);
+  val &= ((1u << G0_BITS) - 1);
+  float ans = val;
+  ans -= (1u << (G0_BITS - 1));
+  ans /= (1u << (G0_BITS - 1));
+  return ans;
+}
+
+float GetG1(int level, int x, int y, int c)
+{
+  int vals_per_pack = 32 / G1_BITS;
+  int g1_idx = y * NTCCBV.g1_grid_dim[level] * G1_CHANNELS + x * G1_CHANNELS + c;
+  int pack_idx = g1_idx / vals_per_pack;
+  int pack_subidx = g1_idx % vals_per_pack;
+  uint val = g1[level].Load(pack_idx);
+  val >>= (pack_subidx * G1_BITS);
+  val &= ((1u << G1_BITS) - 1);
+  float ans = val;
+  ans -= (1u << (G1_BITS - 1));
+  ans /= (1u << (G1_BITS - 1));
+  return ans;
+}
+
 void GetFeatures(float2 uv, out float o_feat[60])
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
@@ -141,10 +181,9 @@ void GetFeatures(float2 uv, out float o_feat[60])
     for (int j = 0; j < 2; j++)
     {
       int ij = i * 2 + j;
-      for (int k = 0; k < NTCCBV.g0_channels; k++)
+      for (int k = 0; k < G0_CHANNELS; k++)
       {
-        int g0_idx = g0_y[i] * NTCCBV.g0_grid_dim[feature_level] * NTCCBV.g0_channels + g0_x[j] * NTCCBV.g0_channels + k;
-        o_feat[ij * NTCCBV.g0_channels + k] = float(g0[feature_level].Load(g0_idx));
+        o_feat[ij * G0_CHANNELS + k] = GetG0(feature_level, g0_x[j], g0_y[i], k);
       }
     }
   }
@@ -168,19 +207,18 @@ void GetFeatures(float2 uv, out float o_feat[60])
     {
       int ij = i * 2 + j;
       float m = mult[ij];
-      for (int k = 0; k < NTCCBV.g1_channels; k++)
+      for (int k = 0; k < G1_CHANNELS; k++)
       {
-        int g1_idx = g1_y[i] * NTCCBV.g1_grid_dim[feature_level] * NTCCBV.g1_channels + g1_x[j] * NTCCBV.g1_channels + k;
-        g1_contrib[k] += m * float(g1[feature_level].Load(g1_idx));
+        g1_contrib[k] += m * GetG1(feature_level, g1_x[j], g1_y[i], k);
       }
     }
   }
 
-  for (int i = 0; i < NTCCBV.g1_channels; i++)
-    o_feat[4 * NTCCBV.g0_channels + i] = g1_contrib[i];
+  for (int i = 0; i < G1_CHANNELS; i++)
+    o_feat[4 * G0_CHANNELS + i] = g1_contrib[i];
 
   int periods[3] = {8, 4, 2};
-  int pos_off = 4 * NTCCBV.g0_channels + NTCCBV.g1_channels;
+  int pos_off = 4 * G0_CHANNELS + G1_CHANNELS;
   float2 cpos = uv * float(NTCCBV.dim >> lod);
   for (int i = 0; i < 3; i++)
   {
@@ -206,11 +244,145 @@ void GetFeatures(float2 uv, out float o_feat[60])
     o_feat[i] = 0.0f;
 }
 
+// 4 x 2-bit fields in the low byte of b -> top 2 bits of 4 bytes (k << 6 per lane)
+uint Spread2(uint b)
+{
+  return ((b & 0x03u) <<  6) | ((b & 0x0Cu) << 12) |
+         ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
+}
+
+// clamp to [-128,127] and pack 4 int8 lanes
+uint PackS8(int4 v)
+{
+  v = clamp(v, -128, 127);
+  return  (uint)(v.x & 0xFF)        | ((uint)(v.y & 0xFF) <<  8) |
+         ((uint)(v.z & 0xFF) << 16) | ((uint)(v.w & 0xFF) << 24);
+}
+
+void GetFeaturesPacked(float2 uv, out uint o_feat[15])
+{
+  float2 dUvdX = ddx(uv) * NTCCBV.dim;
+  float2 dUvdY = ddy(uv) * NTCCBV.dim;
+  float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
+  float lodab = 0.5 * log2(d);
+  int lod = clamp(int(lodab), 0, 8);
+  int feature_level = FeatureLevelForLod(lod);
+  int g0_dim = NTCCBV.g0_grid_dim[feature_level];
+  int g1_dim = NTCCBV.g1_grid_dim[feature_level];
+
+  // G0: 8ch x 2b = 16b per cell, half-word aligned; exact integer decode.
+  int2 g0_xy = int2(floor(uv * g0_dim - 0.5));
+  int g0_x[2];
+  g0_x[0] = max(g0_xy.x, 0);
+  g0_x[1] = min(g0_xy.x + 1, g0_dim - 1);
+  int g0_y[2];
+  g0_y[0] = max(g0_xy.y, 0);
+  g0_y[1] = min(g0_xy.y + 1, g0_dim - 1);
+
+  [unroll]
+  for (int i = 0; i < 2; i++)
+  {
+    [unroll]
+    for (int j = 0; j < 2; j++)
+    {
+      int ij = i * 2 + j;
+      uint cell = (uint)(g0_y[i] * g0_dim + g0_x[j]);
+      uint word = g0[feature_level].Load(cell >> 1);
+      uint c16 = (word >> ((cell & 1u) * 16u)) & 0xFFFFu;
+      // (k << 6) - 128 == (k << 6) ^ 0x80 per byte: lane = f * 128 exactly
+      o_feat[ij * 2 + 0] = Spread2(c16 & 0xFFu) ^ 0x80808080u;  // ch 0-3
+      o_feat[ij * 2 + 1] = Spread2(c16 >>   8u) ^ 0x80808080u;  // ch 4-7
+    }
+  }
+
+  // G1: 12ch x 4b = 48b per cell
+  int2 g1_xy = int2(floor(uv * g1_dim - 0.5));
+  int g1_x[2];
+  g1_x[0] = max(g1_xy.x, 0);
+  g1_x[1] = min(g1_xy.x + 1, g1_dim - 1);
+  int g1_y[2];
+  g1_y[0] = max(g1_xy.y, 0);
+  g1_y[1] = min(g1_xy.y + 1, g1_dim - 1);
+  float2 fr = frac(uv * g1_dim - 0.5);
+  float mult[4] = {(1 - fr.x) * (1 - fr.y), fr.x * (1 - fr.y), (1 - fr.x) * fr.y, fr.x * fr.y};
+
+  float g1_blend[G1_CHANNELS];
+  [unroll]
+  for (int k = 0; k < G1_CHANNELS; k++)
+    g1_blend[k] = 0.0f;
+
+  [unroll]
+  for (int i = 0; i < 2; i++)
+  {
+    [unroll]
+    for (int j = 0; j < 2; j++)
+    {
+      float m = mult[i * 2 + j];
+      uint cell = (uint)(g1_y[i] * g1_dim + g1_x[j]);
+      uint bitpos = cell * 48u;
+      uint w0 = g1[feature_level].Load(bitpos >> 5);
+      uint w1 = g1[feature_level].Load((bitpos >> 5) + 1u);
+      uint shift = bitpos & 31u;   // 0 or 16
+      [unroll]
+      for (int k = 0; k < G1_CHANNELS; k++)
+      {
+        uint bit = shift + (uint)k * 4u;
+        uint nib = ((bit < 32u ? w0 : w1) >> (bit & 31u)) & 0xFu;
+        g1_blend[k] += m * (((float)nib - 8.0f) / 8.0f);
+      }
+    }
+  }
+
+  [unroll]
+  for (int q = 0; q < 3; q++)
+  {
+    o_feat[8 + q] = PackS8(int4(round(float4(
+      g1_blend[q * 4 + 0], g1_blend[q * 4 + 1],
+      g1_blend[q * 4 + 2], g1_blend[q * 4 + 3]) * 128.0f)));
+  }
+
+  // 12 triangular waves
+  float2 cpos = uv * float(NTCCBV.dim >> lod);
+  float pe[12];
+  int periods[3] = {8, 4, 2};
+  [unroll]
+  for (int p = 0; p < 3; p++)
+  {
+    [unroll]
+    for (int a = 0; a < 2; a++)
+    {
+      [unroll]
+      for (int h = 0; h < 2; h++)
+      {
+        float P = (float)periods[p];
+        float c = (a == 0) ? floor(cpos.x) : floor(cpos.y);
+        float phase = (h == 0) ? 0.0f : 0.25f * P;
+        float t = (c + 0.5f + phase) / P;
+        pe[p * 4 + a * 2 + h] = 1.0f - 4.0f * abs(frac(t) - 0.5f);
+      }
+    }
+  }
+  [unroll]
+  for (int q = 0; q < 3; q++)
+  {
+    o_feat[11 + q] = PackS8(int4(round(float4(
+      pe[q * 4 + 0], pe[q * 4 + 1], pe[q * 4 + 2], pe[q * 4 + 3]) * 128.0f)));
+  }
+
+  // Lane 56: lod scalar; lanes 57-59: zero pad (must match W0's zero pad rows).
+  o_feat[14] = PackS8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
+}
+
 float hardgelu(float x)
 {
   if (x < -1.5f) return 0.0f;
   else if (x < 1.5f) return (x / 3.0f) * (x + 1.5f);
   return x;
+}
+
+float4 hardgelu4(float4 x)
+{
+  return select(x < -1.5f, 0.0.xxxx, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
 }
 
 PixelShaderOutput ps_main(PixelShaderInput p_in)
@@ -225,49 +397,63 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Samples
 
-  float feat[60];
-  float W0x[64];
-  float W1x[64];
-  float Woutx[9];
-  GetFeatures(p_in.uv, feat);
+  uint feat[60 / 4];
+  uint W0x[64 / 4];
+  uint W1x[64 / 4];
+  float Woutx[12];
+  GetFeaturesPacked(p_in.uv, feat);
 
-  [unroll]
-  for (int i = 0; i < 64; i++)
+  [loop]
+  for (int i = 0; i < 64; i += 4)
   {
-    W0x[i] = 0.0f;
-    W1x[i] = 0.0f;
-  }
-  [unroll]
-  for (int i = 0; i < 9; i++)
-    Woutx[i] = 0.0f;
-  for (int i = 0; i < 64; i++)
-  {
+    int4 acc = int4(0, 0, 0, 0);
     [unroll]
     for (int j = 0; j < 60 / 4; j++)
     {
-      float4 f4 = float4(feat[j * 4], feat[j * 4 + 1], feat[j * 4 + 2], feat[j * 4 + 3]); 
-      W0x[i] += dot(W0.Load(i * (60 / 4) + j), f4);
+      acc.x = dot4add_i8packed(W0.Load((i + 0) * 60 / 4 + j), feat[j], acc.x);
+      acc.y = dot4add_i8packed(W0.Load((i + 1) * 60 / 4 + j), feat[j], acc.y);
+      acc.z = dot4add_i8packed(W0.Load((i + 2) * 60 / 4 + j), feat[j], acc.z);
+      acc.w = dot4add_i8packed(W0.Load((i + 3) * 60 / 4 + j), feat[j], acc.w);
     }
-    W0x[i] = hardgelu(W0x[i]);
+    float4 facc = float4(acc) * W0_scale.Load(i / 4);
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a1;
+    int4 unpacked = int4(round(facc));
+    W0x[i / 4] = PackS8(unpacked);
   }
-  for (int i = 0; i < 64; i++)
+  [loop]
+  for (int i = 0; i < 64; i += 4)
   {
+    int4 acc = int4(0, 0, 0, 0);
     [unroll]
     for (int j = 0; j < 64 / 4; j++)
     {
-      float4 f4 = float4(W0x[j * 4], W0x[j * 4 + 1], W0x[j * 4 + 2], W0x[j * 4 + 3]);
-      W1x[i] += dot(W1.Load(i * (64 / 4) + j), f4);
+      acc.x = dot4add_i8packed(W1.Load((i + 0) * 64 / 4 + j), W0x[j], acc.x);
+      acc.y = dot4add_i8packed(W1.Load((i + 1) * 64 / 4 + j), W0x[j], acc.y);
+      acc.z = dot4add_i8packed(W1.Load((i + 2) * 64 / 4 + j), W0x[j], acc.z);
+      acc.w = dot4add_i8packed(W1.Load((i + 3) * 64 / 4 + j), W0x[j], acc.w);
     }
-    W1x[i] = hardgelu(W1x[i]);
+    float4 facc = float4(acc) * W1_scale.Load(i / 4);
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a2;
+    int4 unpacked = int4(round(facc));
+    W1x[i / 4] = PackS8(unpacked);
   }
-  for (int i = 0; i < 9; i++)
+  [loop]
+  for (int i = 0; i < 9; i += 4)
   {
+    int4 acc = int4(0, 0, 0, 0);
     [unroll]
     for (int j = 0; j < 64 / 4; j++)
     {
-      float4 f4 = float4(W1x[j * 4], W1x[j * 4 + 1], W1x[j * 4 + 2], W1x[j * 4 + 3]);
-      Woutx[i] += dot(Wout.Load(i * (64 / 4) + j), f4);
+      acc.x = dot4add_i8packed(Wout.Load((i + 0) * 64 / 4 + j), W1x[j], acc.x);
+      acc.y = dot4add_i8packed(Wout.Load((i + 1) * 64 / 4 + j), W1x[j], acc.y);
+      acc.z = dot4add_i8packed(Wout.Load((i + 2) * 64 / 4 + j), W1x[j], acc.z);
+      acc.w = dot4add_i8packed(Wout.Load((i + 3) * 64 / 4 + j), W1x[j], acc.w);
     }
+    float4 facc = float4(acc) * Wout_scale.Load(i / 4);
+    Woutx[i + 0] = facc.x;
+    Woutx[i + 1] = facc.y;
+    Woutx[i + 2] = facc.z;
+    Woutx[i + 3] = facc.w;
   }
 
   float3 ntc_albedo = float3(Woutx[0], Woutx[1], Woutx[2]);
