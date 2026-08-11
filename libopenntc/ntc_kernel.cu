@@ -5,7 +5,7 @@
 
 #include <cuda_fp16.h>
 
-#define FEAT_DIM 60
+#define FEAT_DIM 64
 #define OUT_DIM 9
 
 // out_channels = 1 + 3 + 1 + 3 + 1 (AO + Color + Displacement + Normals + Roughness)

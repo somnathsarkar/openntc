@@ -242,7 +242,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   g1_grid_dim_[1] = 32;
   g1_grid_dim_[2] = 8;
   g1_grid_dim_[3] = 2;
-  feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
+  feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 16);
   out_dim_ = 9;
   out_dim_padded_ = RoundUpToNearestK(out_dim_, 4);
   max_batch_ = 8;

@@ -71,9 +71,9 @@ ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
 Buffer<uint> g0[4] : register(t0, space0);
 Buffer<uint> g1[4] : register(t4, space0);
-Buffer<uint> W0 : register(t8, space0);
-Buffer<uint> W1 : register(t9, space0);
-Buffer<uint> Wout : register(t10, space0);
+Buffer<uint4> W0 : register(t8, space0);
+Buffer<uint4> W1 : register(t9, space0);
+Buffer<uint4> Wout : register(t10, space0);
 Buffer<float4> W0_scale : register(t11, space0);
 Buffer<float4> W1_scale : register(t12, space0);
 Buffer<float4> Wout_scale : register(t13, space0);
@@ -159,7 +159,7 @@ float GetG1(int level, int x, int y, int c)
   return ans;
 }
 
-void GetFeatures(float2 uv, out float o_feat[60])
+void GetFeatures(float2 uv, out float o_feat[64])
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
@@ -240,7 +240,7 @@ void GetFeatures(float2 uv, out float o_feat[60])
 
   o_feat[57 - 1] = lod / 8.0f;
 
-  for (int i = 57; i < 60; i++)
+  for (int i = 57; i < 64; i++)
     o_feat[i] = 0.0f;
 }
 
@@ -252,14 +252,14 @@ uint Spread2(uint b)
 }
 
 // clamp to [-128,127] and pack 4 int8 lanes
+// This relies on SM 6.6 with minimal perf benefit, could hardcode it instead.
+
 uint PackS8(int4 v)
 {
-  v = clamp(v, -128, 127);
-  return  (uint)(v.x & 0xFF)        | ((uint)(v.y & 0xFF) <<  8) |
-         ((uint)(v.z & 0xFF) << 16) | ((uint)(v.w & 0xFF) << 24);
+  return pack_clamp_s8(v);
 }
 
-void GetFeaturesPacked(float2 uv, out uint o_feat[15])
+void GetFeaturesPacked(float2 uv, out uint o_feat[16])
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
@@ -371,6 +371,7 @@ void GetFeaturesPacked(float2 uv, out uint o_feat[15])
 
   // Lane 56: lod scalar; lanes 57-59: zero pad (must match W0's zero pad rows).
   o_feat[14] = PackS8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
+  o_feat[15] = 0u;
 }
 
 float hardgelu(float x)
@@ -397,7 +398,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Samples
 
-  uint feat[60 / 4];
+  uint feat[64 / 4];
   uint W0x[64 / 4];
   uint W1x[64 / 4];
   float Woutx[12];
@@ -408,12 +409,20 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 60 / 4; j++)
+    for (int j = 0; j < 64 / 4; j += 4)
     {
-      acc.x = dot4add_i8packed(W0.Load((i + 0) * 60 / 4 + j), feat[j], acc.x);
-      acc.y = dot4add_i8packed(W0.Load((i + 1) * 60 / 4 + j), feat[j], acc.y);
-      acc.z = dot4add_i8packed(W0.Load((i + 2) * 60 / 4 + j), feat[j], acc.z);
-      acc.w = dot4add_i8packed(W0.Load((i + 3) * 60 / 4 + j), feat[j], acc.w);
+      uint4 W0vx = W0.Load((i + 0) * (64 / 16) + (j / 4));
+      uint4 W0vy = W0.Load((i + 1) * (64 / 16) + (j / 4));
+      uint4 W0vz = W0.Load((i + 2) * (64 / 16) + (j / 4));
+      uint4 W0vw = W0.Load((i + 3) * (64 / 16) + (j / 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(W0vx[c], feat[j + c], acc.x);
+        acc.y = dot4add_i8packed(W0vy[c], feat[j + c], acc.y);
+        acc.z = dot4add_i8packed(W0vz[c], feat[j + c], acc.z);
+        acc.w = dot4add_i8packed(W0vw[c], feat[j + c], acc.w);
+      }
     }
     float4 facc = float4(acc) * W0_scale.Load(i / 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a1;
@@ -425,12 +434,20 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 64 / 4; j++)
+    for (int j = 0; j < 64 / 4; j += 4)
     {
-      acc.x = dot4add_i8packed(W1.Load((i + 0) * 64 / 4 + j), W0x[j], acc.x);
-      acc.y = dot4add_i8packed(W1.Load((i + 1) * 64 / 4 + j), W0x[j], acc.y);
-      acc.z = dot4add_i8packed(W1.Load((i + 2) * 64 / 4 + j), W0x[j], acc.z);
-      acc.w = dot4add_i8packed(W1.Load((i + 3) * 64 / 4 + j), W0x[j], acc.w);
+      uint4 W1vx = W1.Load((i + 0) * (64 / 16) + (j / 4));
+      uint4 W1vy = W1.Load((i + 1) * (64 / 16) + (j / 4));
+      uint4 W1vz = W1.Load((i + 2) * (64 / 16) + (j / 4));
+      uint4 W1vw = W1.Load((i + 3) * (64 / 16) + (j / 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(W1vx[c], W0x[j + c], acc.x);
+        acc.y = dot4add_i8packed(W1vy[c], W0x[j + c], acc.y);
+        acc.z = dot4add_i8packed(W1vz[c], W0x[j + c], acc.z);
+        acc.w = dot4add_i8packed(W1vw[c], W0x[j + c], acc.w);
+      }
     }
     float4 facc = float4(acc) * W1_scale.Load(i / 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a2;
@@ -442,12 +459,20 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 64 / 4; j++)
+    for (int j = 0; j < 64 / 4; j += 4)
     {
-      acc.x = dot4add_i8packed(Wout.Load((i + 0) * 64 / 4 + j), W1x[j], acc.x);
-      acc.y = dot4add_i8packed(Wout.Load((i + 1) * 64 / 4 + j), W1x[j], acc.y);
-      acc.z = dot4add_i8packed(Wout.Load((i + 2) * 64 / 4 + j), W1x[j], acc.z);
-      acc.w = dot4add_i8packed(Wout.Load((i + 3) * 64 / 4 + j), W1x[j], acc.w);
+      uint4 Woutvx = Wout.Load((i + 0) * (64 / 16) + (j / 4));
+      uint4 Woutvy = Wout.Load((i + 1) * (64 / 16) + (j / 4));
+      uint4 Woutvz = Wout.Load((i + 2) * (64 / 16) + (j / 4));
+      uint4 Woutvw = Wout.Load((i + 3) * (64 / 16) + (j / 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(Woutvx[c], W1x[j + c], acc.x);
+        acc.y = dot4add_i8packed(Woutvy[c], W1x[j + c], acc.y);
+        acc.z = dot4add_i8packed(Woutvz[c], W1x[j + c], acc.z);
+        acc.w = dot4add_i8packed(Woutvw[c], W1x[j + c], acc.w);
+      }
     }
     float4 facc = float4(acc) * Wout_scale.Load(i / 4);
     Woutx[i + 0] = facc.x;
