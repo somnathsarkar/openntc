@@ -183,6 +183,7 @@ private:
   int g0_grid_dim_[4];
   int g1_grid_dim_[4];
   int feature_dim_;
+  int feature_dim_padded_;
   int out_dim_;
   int out_dim_padded_;
   int max_batch_;

@@ -242,7 +242,8 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   g1_grid_dim_[1] = 32;
   g1_grid_dim_[2] = 8;
   g1_grid_dim_[3] = 2;
-  feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 16);
+  feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
+  feature_dim_padded_ = RoundUpToNearestK(feature_dim_, 16);
   out_dim_ = 9;
   out_dim_padded_ = RoundUpToNearestK(out_dim_, 4);
   max_batch_ = 8;
@@ -312,7 +313,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
     g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bytes_per_channel_) / 32];
     g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bytes_per_channel_) / 32];
   }
-  W0_host_ = new uint32_t[W0_.NumElems() / 4];
+  W0_host_ = new uint32_t[(hidden_dim_ * feature_dim_padded_) / 4];
   W1_host_ = new uint32_t[W1_.NumElems() / 4];
   Wout_host_ = new uint32_t[(out_dim_padded_ * hidden_dim_) / 4];
   W0_scale_ = new float[hidden_dim_];
@@ -626,22 +627,20 @@ void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
 
   caldata_ = Calibrate();
 
-  float* W0_unpack = new float[W0_.NumElems()];
+  float* W0_unpack_unpadded = new float[hidden_dim_ * feature_dim_];
+  float* W0_unpack = new float[hidden_dim_ * feature_dim_padded_]();
   float* W1_unpack = new float[W1_.NumElems()];
   float* Wout_unpack = new float[out_dim_padded_ * hidden_dim_];
 
-  cudaMemcpy(W0_unpack, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
+  cudaMemcpy(W0_unpack_unpadded, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
   cudaMemcpy(W1_unpack, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost);
   cudaMemcpy(Wout_unpack, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost);
 
   for (int i = 0; i < hidden_dim_; i++)
   {
-    for (int j = 57; j < feature_dim_; j++)
-    {
-      W0_unpack[i * feature_dim_ + j] = 0.0f;
-    }
+    memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, 57 * sizeof(float));
   }
-  QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_, 1.0f / 128.0f, W0_host_, W0_scale_);
+  QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_host_, W0_scale_);
   QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1, W1_host_, W1_scale_);
   QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2, Wout_host_, Wout_scale_);
   for (int i = out_dim_; i < out_dim_padded_; i++) Wout_scale_[i] = 0.0f;
@@ -649,6 +648,9 @@ void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
   delete[] W0_unpack;
   delete[] W1_unpack;
   delete[] Wout_unpack;
+  delete[] W0_unpack_unpadded;
+
+  auto res = Eval();
   
   OpenNTCTrainProgress tprogress;
   tprogress.phase = 3;
@@ -820,7 +822,7 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
     data.g1_size_[i] = (g1_[i].NumElems() * g1_bytes_per_channel_) / 8;
   }
   data.W0_ = W0_host_;
-  data.W0_size_ = W0_.SizeBytes() / 4;
+  data.W0_size_ = ((hidden_dim_ * feature_dim_padded_) / 4) * sizeof(uint32_t);
   data.W1_ = W1_host_;
   data.W1_size_ = W1_.SizeBytes() / 4;
   data.Wout_ = Wout_host_;
