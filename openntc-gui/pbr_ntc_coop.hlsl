@@ -413,13 +413,17 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   vector<float, 12> Woutx;
   GetFeaturesPacked(p_in.uv, feat);
 
+  const vector<int32_t, 64> zero64 = (vector<int32_t, 64>)0;
+  const vector<int32_t, 12> zero12 = (vector<int32_t, 12>)0;
+
   // Coop multiplication
   vector<uint, 64 / 4> featv;
   for (int i = 0; i < 64 / 4; i++)
     featv[i] = feat[i];
-  MatrixRef<DATA_TYPE_SINT8, 64, 64, MATRIX_LAYOUT_ROW_MAJOR> W0_coop = {W0, 0, 64};
-  VectorRef<DATA_TYPE_SINT8_T4_PACKED> feat_coop = MakeInterpretedVector<DATA_TYPE_SINT8_T4_PACKED>(featv);
-  vector<int32_t, 64> W0x_acc = Mul<int32_t>(W0_coop, feat_coop);
+  typedef Matrix<ComponentType::I8, 64, 64, MatrixUse::A, MatrixScope::Thread> W0_t;
+  W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(W0, 0, 64);
+  InterpretedVector<uint, 64 / 4, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(featv);
+  vector<int32_t, 64> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero64);
   vector<float, 64> W0_scale_coop = W0_scale.Load< vector<float, 64> >(0);
   vector<float, 64> W0x_facc = vector<float, 64>(W0x_acc) * W0_scale_coop;
   W0x_facc = hardgelu_coop(W0x_facc) * NTCCBV.rcp_s_a1;
@@ -428,9 +432,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   for (int i = 0 ; i < 64; i+=4)
     W0x[i / 4] = pack_clamp_s8(int4(W0x_unpacked[i], W0x_unpacked[i + 1], W0x_unpacked[i + 2], W0x_unpacked[i + 3]));
 
-  MatrixRef<DATA_TYPE_SINT8, 64, 64, MATRIX_LAYOUT_ROW_MAJOR> W1_coop = {W1, 0, 64};
-  VectorRef<DATA_TYPE_SINT8_T4_PACKED> W0x_coop = MakeInterpretedVector<DATA_TYPE_SINT8_T4_PACKED>(W0x);
-  vector<int32_t, 64> W1x_acc = Mul<int32_t>(W1_coop, W0x_coop);
+  typedef Matrix<ComponentType::I8, 64, 64, MatrixUse::A, MatrixScope::Thread> W1_t;
+  W1_t W1_coop = W1_t::Load<MatrixLayout::RowMajor>(W1, 0, 64);
+  InterpretedVector<uint, 64 / 4, ComponentType::I8> W0x_coop = MakeInterpretedVector<ComponentType::I8>(W0x);
+  vector<int32_t, 64> W1x_acc = MultiplyAdd<int32_t>(W1_coop, W0x_coop, zero64);
   vector<float, 64> W1_scale_coop = W1_scale.Load< vector<float, 64> >(0);
   vector<float, 64> W1x_facc = vector<float, 64>(W1x_acc) * W1_scale_coop;
   W1x_facc = hardgelu_coop(W1x_facc) * NTCCBV.rcp_s_a2;
@@ -439,9 +444,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   for (int i = 0 ; i < 64; i+=4)
     W1x[i / 4] = pack_clamp_s8(int4(W1x_unpacked[i], W1x_unpacked[i + 1], W1x_unpacked[i + 2], W1x_unpacked[i + 3]));
 
-  MatrixRef<DATA_TYPE_SINT8, 12, 64, MATRIX_LAYOUT_ROW_MAJOR> Wout_coop = {Wout, 0, 64};
-  VectorRef<DATA_TYPE_SINT8_T4_PACKED> W1x_coop = MakeInterpretedVector<DATA_TYPE_SINT8_T4_PACKED>(W1x);
-  vector<int32_t, 12> Woutx_acc = Mul<int32_t>(Wout_coop, W1x_coop);
+  typedef Matrix<ComponentType::I8, 12, 64, MatrixUse::A, MatrixScope::Thread> Wout_t;
+  Wout_t Wout_coop = Wout_t::Load<MatrixLayout::RowMajor>(Wout, 0, 64);
+  InterpretedVector<uint, 64 / 4, ComponentType::I8> W1x_coop = MakeInterpretedVector<ComponentType::I8>(W1x);
+  vector<int32_t, 12> Woutx_acc = MultiplyAdd<int32_t>(Wout_coop, W1x_coop, zero12);
   vector<float, 12> Wout_scale_coop = Wout_scale.Load< vector<float, 12> >(0);
   Woutx = vector<float, 12>(Woutx_acc) * Wout_scale_coop;
 
