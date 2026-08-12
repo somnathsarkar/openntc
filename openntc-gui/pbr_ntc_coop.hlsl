@@ -131,121 +131,6 @@ int FeatureLevelForLod(int lod)
   return 3;
 }
 
-float GetG0(int level, int x, int y, int c)
-{
-  int vals_per_pack = 32 / G0_BITS;
-  int g0_idx = y * NTCCBV.g0_grid_dim[level] * G0_CHANNELS + x * G0_CHANNELS + c;
-  int pack_idx = g0_idx / vals_per_pack;
-  int pack_subidx = g0_idx % vals_per_pack;
-  uint val = g0[level].Load(pack_idx);
-  val >>= (pack_subidx * G0_BITS);
-  val &= ((1u << G0_BITS) - 1);
-  float ans = val;
-  ans -= (1u << (G0_BITS - 1));
-  ans /= (1u << (G0_BITS - 1));
-  return ans;
-}
-
-float GetG1(int level, int x, int y, int c)
-{
-  int vals_per_pack = 32 / G1_BITS;
-  int g1_idx = y * NTCCBV.g1_grid_dim[level] * G1_CHANNELS + x * G1_CHANNELS + c;
-  int pack_idx = g1_idx / vals_per_pack;
-  int pack_subidx = g1_idx % vals_per_pack;
-  uint val = g1[level].Load(pack_idx);
-  val >>= (pack_subidx * G1_BITS);
-  val &= ((1u << G1_BITS) - 1);
-  float ans = val;
-  ans -= (1u << (G1_BITS - 1));
-  ans /= (1u << (G1_BITS - 1));
-  return ans;
-}
-
-void GetFeatures(float2 uv, out float o_feat[64])
-{
-  float2 dUvdX = ddx(uv) * NTCCBV.dim;
-  float2 dUvdY = ddy(uv) * NTCCBV.dim;
-  float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
-  float lodab = 0.5 * log2(d);
-  int lod = clamp(int(lodab), 0, 8);
-  int feature_level = FeatureLevelForLod(lod);
-
-  int2 g0_xy = int2(floor(uv * NTCCBV.g0_grid_dim[feature_level] - 0.5));
-  int g0_x[2];
-  g0_x[0] = max(g0_xy.x, 0.0);
-  g0_x[1] = min(g0_xy.x + 1, NTCCBV.g0_grid_dim[feature_level] - 1);
-  int g0_y[2];
-  g0_y[0] = max(g0_xy.y, 0.0);
-  g0_y[1] = min(g0_xy.y + 1, NTCCBV.g0_grid_dim[feature_level] - 1);
-
-  for (int i = 0; i < 2; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      int ij = i * 2 + j;
-      for (int k = 0; k < G0_CHANNELS; k++)
-      {
-        o_feat[ij * G0_CHANNELS + k] = GetG0(feature_level, g0_x[j], g0_y[i], k);
-      }
-    }
-  }
-
-  int2 g1_xy = int2(floor((uv * NTCCBV.g1_grid_dim[feature_level] - 0.5)));
-  int g1_x[2];
-  g1_x[0] = max(g1_xy.x, 0.0);
-  g1_x[1] = min(g1_xy.x + 1, NTCCBV.g1_grid_dim[feature_level] - 1);
-  int g1_y[2];
-  g1_y[0] = max(g1_xy.y, 0.0);
-  g1_y[1] = min(g1_xy.y + 1, NTCCBV.g1_grid_dim[feature_level] - 1);
-  float2 xy_frac = frac(uv * NTCCBV.g1_grid_dim[feature_level] - 0.5);
-  float mult[4] = {(1 - xy_frac.x) * (1 - xy_frac.y), xy_frac.x * (1 - xy_frac.y), (1 - xy_frac.x) * xy_frac.y, xy_frac.x * xy_frac.y};
-  float g1_contrib[12];
-  for (int i = 0; i < 12; i++)
-    g1_contrib[i] = 0;
-
-  for (int i = 0; i < 2; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      int ij = i * 2 + j;
-      float m = mult[ij];
-      for (int k = 0; k < G1_CHANNELS; k++)
-      {
-        g1_contrib[k] += m * GetG1(feature_level, g1_x[j], g1_y[i], k);
-      }
-    }
-  }
-
-  for (int i = 0; i < G1_CHANNELS; i++)
-    o_feat[4 * G0_CHANNELS + i] = g1_contrib[i];
-
-  int periods[3] = {8, 4, 2};
-  int pos_off = 4 * G0_CHANNELS + G1_CHANNELS;
-  float2 cpos = uv * float(NTCCBV.dim >> lod);
-  for (int i = 0; i < 3; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      for (int k = 0; k < 2; k++)
-      {
-        int P = periods[i];
-        int c = (j == 0) ? cpos.x : cpos.y;
-        float phase = (k == 0) ? 0.0f : (0.25f * P);
-        float t = (c + 0.5f + phase) / P;
-        float s = t - floor(t);
-        float o = 1 - 4.0f * abs(s - 0.5f);
-        o_feat[pos_off] = o;
-        pos_off++;
-      }
-    }
-  }
-
-  o_feat[57 - 1] = lod / 8.0f;
-
-  for (int i = 57; i < 64; i++)
-    o_feat[i] = 0.0f;
-}
-
 // 4 x 2-bit fields in the low byte of b -> top 2 bits of 4 bytes (k << 6 per lane)
 uint Spread2(uint b)
 {
@@ -253,15 +138,7 @@ uint Spread2(uint b)
          ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
 }
 
-// clamp to [-128,127] and pack 4 int8 lanes
-// This relies on SM 6.6 with minimal perf benefit, could hardcode it instead.
-
-uint PackS8(int4 v)
-{
-  return pack_clamp_s8(v);
-}
-
-void GetFeaturesPacked(float2 uv, out uint o_feat[16])
+void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
@@ -338,7 +215,7 @@ void GetFeaturesPacked(float2 uv, out uint o_feat[16])
   [unroll]
   for (int q = 0; q < 3; q++)
   {
-    o_feat[8 + q] = PackS8(int4(round(float4(
+    o_feat[8 + q] = pack_clamp_s8(int4(round(float4(
       g1_blend[q * 4 + 0], g1_blend[q * 4 + 1],
       g1_blend[q * 4 + 2], g1_blend[q * 4 + 3]) * 128.0f)));
   }
@@ -367,25 +244,13 @@ void GetFeaturesPacked(float2 uv, out uint o_feat[16])
   [unroll]
   for (int q = 0; q < 3; q++)
   {
-    o_feat[11 + q] = PackS8(int4(round(float4(
+    o_feat[11 + q] = pack_clamp_s8(int4(round(float4(
       pe[q * 4 + 0], pe[q * 4 + 1], pe[q * 4 + 2], pe[q * 4 + 3]) * 128.0f)));
   }
 
   // Lane 56: lod scalar; lanes 57-59: zero pad (must match W0's zero pad rows).
-  o_feat[14] = PackS8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
+  o_feat[14] = pack_clamp_s8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
   o_feat[15] = 0u;
-}
-
-float hardgelu(float x)
-{
-  if (x < -1.5f) return 0.0f;
-  else if (x < 1.5f) return (x / 3.0f) * (x + 1.5f);
-  return x;
-}
-
-float4 hardgelu4(float4 x)
-{
-  return select(x < -1.5f, 0.0.xxxx, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
 }
 
 vector<float, 64> hardgelu_coop(vector<float, 64> x)
@@ -407,7 +272,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Samples
 
-  uint feat[64 / 4];
+  vector<uint, 64 / 4> feat;
   vector<uint, 64 / 4> W0x;
   vector<uint, 64 / 4> W1x;
   vector<float, 12> Woutx;
@@ -417,12 +282,9 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   const vector<int32_t, 12> zero12 = (vector<int32_t, 12>)0;
 
   // Coop multiplication
-  vector<uint, 64 / 4> featv;
-  for (int i = 0; i < 64 / 4; i++)
-    featv[i] = feat[i];
   typedef Matrix<ComponentType::I8, 64, 64, MatrixUse::A, MatrixScope::Thread> W0_t;
   W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(W0, 0, 64);
-  InterpretedVector<uint, 64 / 4, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(featv);
+  InterpretedVector<uint, 64 / 4, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(feat);
   vector<int32_t, 64> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero64);
   vector<float, 64> W0_scale_coop = W0_scale.Load< vector<float, 64> >(0);
   vector<float, 64> W0x_facc = vector<float, 64>(W0x_acc) * W0_scale_coop;
