@@ -89,6 +89,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_packagetex;
 ComPtr<ID3D12RootSignature> g_rootsignature_packagetex;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
+ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
+ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
@@ -245,6 +247,7 @@ enum class Shader: int32_t
   Flat,
   GGX,
   PBR_NTC,
+  PBR_NTC_COOP,
 
   Count,
 };
@@ -253,6 +256,7 @@ const char* g_map_shader_to_name[] = {
   "Flat",
   "GGX",
   "PBR_NTC",
+  "PBR_NTC_COOP"
 };
 
 int32_t g_gui_shader = static_cast<int32_t>(Shader::GGX);
@@ -925,10 +929,10 @@ void LoadContent()
 
   {
     ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso", &vertex_shader_blob));
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso", &vertex_shader_blob));
 
     ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso", &pixel_shader_blob));
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso", &pixel_shader_blob));
 
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -1036,6 +1040,123 @@ void LoadContent()
     pdesc.SizeInBytes = sizeof(PipelineStream);
     pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
     VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc)));
+  }
+
+  // PBR NTC COOP
+
+  {
+    ComPtr<ID3DBlob> vertex_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso", &vertex_shader_blob));
+
+    ComPtr<ID3DBlob> pixel_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso", &pixel_shader_blob));
+
+    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
+      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
+    drange_cbv.RegisterSpace = 0;
+    drange_cbv.BaseShaderRegister = 1;
+    drange_cbv.NumDescriptors = 1;
+    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
+    drange_srv.RegisterSpace = 0;
+    drange_srv.BaseShaderRegister = 0;
+    drange_srv.NumDescriptors = 4 + 4 + 3 + 3;
+    drange_srv.OffsetInDescriptorsFromTableStart = 0;
+    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
+    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc_coop)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
+      D3D12_INPUT_LAYOUT_DESC input_layout;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
+      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
+      D3D12_SHADER_BYTECODE vs;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
+      D3D12_SHADER_BYTECODE ps;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
+      DXGI_FORMAT dsv;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
+      D3D12_RT_FORMAT_ARRAY rtv;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_pbr_ntc_coop.Get();
+    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
+    pipeline_stream.input_layout.NumElements = _countof(input_layout);
+    pipeline_stream.input_layout.pInputElementDescs = input_layout;
+    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
+    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
+    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
+    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
+    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
+    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
+    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+    pipeline_stream.rtv.NumRenderTargets = 1;
+    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc_coop)));
   }
 
   // Texture
@@ -1798,6 +1919,11 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
   }
+  else if (shader == Shader::PBR_NTC_COOP)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
+  }
   ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
 
@@ -1827,7 +1953,7 @@ void Render()
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   }
-  else if (shader == Shader::PBR_NTC)
+  else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
   {
     ModelViewProjection mvp = {};
     mvp.model_to_world = g_model_mat;

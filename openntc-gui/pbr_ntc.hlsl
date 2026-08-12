@@ -71,12 +71,12 @@ ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
 Buffer<uint> g0[4] : register(t0, space0);
 Buffer<uint> g1[4] : register(t4, space0);
-Buffer<uint4> W0 : register(t8, space0);
-Buffer<uint4> W1 : register(t9, space0);
-Buffer<uint4> Wout : register(t10, space0);
-Buffer<float4> W0_scale : register(t11, space0);
-Buffer<float4> W1_scale : register(t12, space0);
-Buffer<float4> Wout_scale : register(t13, space0);
+ByteAddressBuffer W0 : register(t8, space0);
+ByteAddressBuffer W1 : register(t9, space0);
+ByteAddressBuffer Wout : register(t10, space0);
+ByteAddressBuffer W0_scale : register(t11, space0);
+ByteAddressBuffer W1_scale : register(t12, space0);
+ByteAddressBuffer Wout_scale : register(t13, space0);
 
 struct PixelShaderInput
 {
@@ -411,10 +411,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
     [unroll]
     for (int j = 0; j < 64 / 4; j += 4)
     {
-      uint4 W0vx = W0.Load((i + 0) * (64 / 16) + (j / 4));
-      uint4 W0vy = W0.Load((i + 1) * (64 / 16) + (j / 4));
-      uint4 W0vz = W0.Load((i + 2) * (64 / 16) + (j / 4));
-      uint4 W0vw = W0.Load((i + 3) * (64 / 16) + (j / 4));
+      uint4 W0vx = W0.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 W0vy = W0.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 W0vz = W0.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 W0vw = W0.Load<uint4>((i + 3) * (64) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -424,7 +424,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
         acc.w = dot4add_i8packed(W0vw[c], feat[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * W0_scale.Load(i / 4);
+    float4 facc = float4(acc) * W0_scale.Load<float4>(i * 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a1;
     int4 unpacked = int4(round(facc));
     W0x[i / 4] = PackS8(unpacked);
@@ -436,10 +436,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
     [unroll]
     for (int j = 0; j < 64 / 4; j += 4)
     {
-      uint4 W1vx = W1.Load((i + 0) * (64 / 16) + (j / 4));
-      uint4 W1vy = W1.Load((i + 1) * (64 / 16) + (j / 4));
-      uint4 W1vz = W1.Load((i + 2) * (64 / 16) + (j / 4));
-      uint4 W1vw = W1.Load((i + 3) * (64 / 16) + (j / 4));
+      uint4 W1vx = W1.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 W1vy = W1.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 W1vz = W1.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 W1vw = W1.Load<uint4>((i + 3) * (64) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -449,7 +449,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
         acc.w = dot4add_i8packed(W1vw[c], W0x[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * W1_scale.Load(i / 4);
+    float4 facc = float4(acc) * W1_scale.Load<float4>(i * 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a2;
     int4 unpacked = int4(round(facc));
     W1x[i / 4] = PackS8(unpacked);
@@ -461,10 +461,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
     [unroll]
     for (int j = 0; j < 64 / 4; j += 4)
     {
-      uint4 Woutvx = Wout.Load((i + 0) * (64 / 16) + (j / 4));
-      uint4 Woutvy = Wout.Load((i + 1) * (64 / 16) + (j / 4));
-      uint4 Woutvz = Wout.Load((i + 2) * (64 / 16) + (j / 4));
-      uint4 Woutvw = Wout.Load((i + 3) * (64 / 16) + (j / 4));
+      uint4 Woutvx = Wout.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 Woutvy = Wout.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 Woutvz = Wout.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 Woutvw = Wout.Load<uint4>((i + 3) * (64) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -474,7 +474,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
         acc.w = dot4add_i8packed(Woutvw[c], W1x[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * Wout_scale.Load(i / 4);
+    float4 facc = float4(acc) * Wout_scale.Load<float4>(i * 4);
     Woutx[i + 0] = facc.x;
     Woutx[i + 1] = facc.y;
     Woutx[i + 2] = facc.z;
