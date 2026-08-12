@@ -24,6 +24,9 @@ using namespace DirectX;
 
 #include <libopenntc/libopenntc.h>
 
+extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 721;}
+extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
+
 #if defined(_DEBUG)
 #define VERIFY(hr) do { assert(!FAILED(hr)); } while(0)
 #else
@@ -86,6 +89,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_packagetex;
 ComPtr<ID3D12RootSignature> g_rootsignature_packagetex;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
+ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
+ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
@@ -242,6 +247,7 @@ enum class Shader: int32_t
   Flat,
   GGX,
   PBR_NTC,
+  PBR_NTC_COOP,
 
   Count,
 };
@@ -250,6 +256,7 @@ const char* g_map_shader_to_name[] = {
   "Flat",
   "GGX",
   "PBR_NTC",
+  "PBR_NTC_COOP"
 };
 
 int32_t g_gui_shader = static_cast<int32_t>(Shader::GGX);
@@ -1035,6 +1042,123 @@ void LoadContent()
     VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc)));
   }
 
+  // PBR NTC COOP
+
+  {
+    ComPtr<ID3DBlob> vertex_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso", &vertex_shader_blob));
+
+    ComPtr<ID3DBlob> pixel_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso", &pixel_shader_blob));
+
+    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
+      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
+    drange_cbv.RegisterSpace = 0;
+    drange_cbv.BaseShaderRegister = 1;
+    drange_cbv.NumDescriptors = 1;
+    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
+    drange_srv.RegisterSpace = 0;
+    drange_srv.BaseShaderRegister = 0;
+    drange_srv.NumDescriptors = 4 + 4 + 3 + 3;
+    drange_srv.OffsetInDescriptorsFromTableStart = 0;
+    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
+    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc_coop)));
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
+      D3D12_INPUT_LAYOUT_DESC input_layout;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
+      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
+      D3D12_SHADER_BYTECODE vs;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
+      D3D12_SHADER_BYTECODE ps;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
+      DXGI_FORMAT dsv;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
+      D3D12_RT_FORMAT_ARRAY rtv;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_pbr_ntc_coop.Get();
+    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
+    pipeline_stream.input_layout.NumElements = _countof(input_layout);
+    pipeline_stream.input_layout.pInputElementDescs = input_layout;
+    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
+    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
+    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
+    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
+    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
+    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
+    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+    pipeline_stream.rtv.NumRenderTargets = 1;
+    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc_coop)));
+  }
+
   // Texture
 
   D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
@@ -1438,11 +1562,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W0)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W0_size_ / (sizeof(uint32_t) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.W0_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1479,11 +1603,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W1)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W1_size_ / (sizeof(uint32_t) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.W1_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1521,11 +1645,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_Wout)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.Wout_size_ / (sizeof(uint32_t) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.Wout_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1562,11 +1686,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W0_scale)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W0_scale_size_ / (sizeof(float) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.W0_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1603,11 +1727,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_W1_scale)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.W1_scale_size_ / (sizeof(float) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.W1_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1644,11 +1768,11 @@ void LoadCompressedData()
     VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_Wout_scale)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.Wout_scale_size_ / (sizeof(float) * 4);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv_desc.Buffer.NumElements = cdata.Wout_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
@@ -1795,6 +1919,11 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
   }
+  else if (shader == Shader::PBR_NTC_COOP)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
+  }
   ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
 
@@ -1824,7 +1953,7 @@ void Render()
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   }
-  else if (shader == Shader::PBR_NTC)
+  else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
   {
     ModelViewProjection mvp = {};
     mvp.model_to_world = g_model_mat;
@@ -2069,6 +2198,12 @@ ComPtr<IDXGIAdapter4> GetAdapter()
 
 ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
 {
+  char path[MAX_PATH];
+  GetModuleFileNameA(GetModuleHandleA("D3D12Core.dll"), path, MAX_PATH);
+
+  UUID experimental[1] = { D3D12ExperimentalShaderModels };
+  HRESULT hr_exp = D3D12EnableExperimentalFeatures(_countof(experimental), experimental, nullptr, nullptr);
+
   ComPtr<ID3D12Device2> device2;
   VERIFY(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_2, IID_PPV_ARGS(&device2)));
 
@@ -2100,6 +2235,24 @@ ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
     VERIFY(info_queue->PushStorageFilter(&new_filter));
   }
 #endif
+
+  D3D12_FEATURE_DATA_LINEAR_ALGEBRA_SUPPORT la = {};
+  VERIFY(device2->CheckFeatureSupport(D3D12_FEATURE_LINEAR_ALGEBRA_SUPPORT, &la, sizeof(la)));
+  assert(la.LinearAlgebraTier != D3D12_LINEAR_ALGEBRA_TIER_NOT_SUPPORTED);
+
+  D3D12_FEATURE_DATA_LINEAR_ALGEBRA_MATRIX_OPERATION_SUPPORT op = {};
+  op.OperationType = D3D12_LINEAR_ALGEBRA_OPERATION_TYPE_THREAD_VECTOR_MATRIX_MULTIPLY;
+  op.ThreadVectorMatrixMultiply.VectorInputType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT8;
+  op.ThreadVectorMatrixMultiply.MatrixInputType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT8;
+  op.ThreadVectorMatrixMultiply.BiasInputType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT32;
+  op.ThreadVectorMatrixMultiply.VectorResultType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT32;
+  VERIFY(device2->CheckFeatureSupport(D3D12_FEATURE_LINEAR_ALGEBRA_LINEAR_ALGEBRA_MATRIX_OPERATION_SUPPORT, &op, sizeof(op)));
+
+  D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAGS flags = op.ThreadVectorMatrixMultiply.SupportFlags;
+  bool native_support = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_SUPPORTED;
+  bool emu_input = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_EMULATED_INPUTS;
+  bool emu_output = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_EMULATED_OUTPUTS;
+
   return device2;
 }
 
