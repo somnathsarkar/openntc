@@ -2,10 +2,12 @@
 
 #include <cassert>
 #include <bit>
+#include <fstream>
 
 #include <curand_kernel.h>
 
 #include <libopenntc/ntc_kernel.cuh>
+#include <libopenntc/json.hpp>
 
 Tensor2d::Tensor2d() : initialized_(false), dev_(nullptr) {}
 
@@ -649,8 +651,6 @@ void OpenNTCContext::Train(std::atomic<OpenNTCTrainProgress>& progress)
   delete[] W1_unpack;
   delete[] Wout_unpack;
   delete[] W0_unpack_unpadded;
-
-  auto res = Eval();
   
   OpenNTCTrainProgress tprogress;
   tprogress.phase = 3;
@@ -849,6 +849,125 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
   data.caldata_ = caldata_;
 
   return data;
+}
+
+static OpenNTCSemantic SemanticFromName(const std::string& s)
+{
+  static std::pair<std::string, OpenNTCSemantic> s_map_name_to_sem[] = {
+    std::make_pair("Albedo", OpenNTCSemantic::Albedo),
+    std::make_pair("Diffuse", OpenNTCSemantic::Albedo),
+    std::make_pair("Alpha", OpenNTCSemantic::Alpha),
+    std::make_pair("Mask", OpenNTCSemantic::Alpha),
+    std::make_pair("AlphaMask", OpenNTCSemantic::Alpha),
+    std::make_pair("Displ", OpenNTCSemantic::Displacement),
+    std::make_pair("Displacement", OpenNTCSemantic::Displacement),
+    std::make_pair("Emissive", OpenNTCSemantic::Emissive),
+    std::make_pair("Emission", OpenNTCSemantic::Emissive),
+    std::make_pair("Glossiness", OpenNTCSemantic::Gloss),
+    std::make_pair("Gloss", OpenNTCSemantic::Gloss),
+    std::make_pair("Metalness", OpenNTCSemantic::Metallic),
+    std::make_pair("Metallic", OpenNTCSemantic::Metallic),
+    std::make_pair("Normal", OpenNTCSemantic::Normal),
+    std::make_pair("Occlusion", OpenNTCSemantic::AO),
+    std::make_pair("AO", OpenNTCSemantic::AO),
+    std::make_pair("AmbientOcclusion", OpenNTCSemantic::AO),
+    std::make_pair("Roughness", OpenNTCSemantic::Roughness),
+    std::make_pair("SpecularColor", OpenNTCSemantic::Specular),
+    std::make_pair("Specular", OpenNTCSemantic::Specular),
+    std::make_pair("Transmission", OpenNTCSemantic::Transmission),
+  };
+
+  for (int i = 0; i < _countof(s_map_name_to_sem); i++)
+  {
+    if (s_map_name_to_sem[i].first == s)
+      return s_map_name_to_sem[i].second;
+  }
+
+  return OpenNTCSemantic::None;
+}
+
+static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string& channels)
+{
+  static const std::string rgba = "RGBA";
+  if (channels.length() == 0 || channels.length() > 4)
+    return false;
+  int p = 0;
+  for (int i = 0; i < channels.length(); i++)
+  {
+    while (p < 4 && rgba[p] != channels[i]) p++;
+    if (p >= 4)
+      return false;
+    p++;
+  }
+
+  static const int32_t s_map_sem_to_channel_count[] = {
+    -1,               // None (any channel count)
+    3,                // Albedo
+    1,                // Alpha
+    1,                // Displacement
+    1,                // Emissive
+    1,                // Gloss
+    1,                // Metallic
+    3,                // Normal
+    1,                // AO
+    1,                // Roughness
+    3,                // Specular
+    1,                // Transmission
+    -1,               // Count (invalid)
+  };
+
+  if (sem != OpenNTCSemantic::None && s_map_sem_to_channel_count[static_cast<int32_t>(sem)] != channels.length())
+    return false;
+
+  return true;
+}
+
+// TODO: Better error codes for manifest parsing
+
+OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
+{
+  std::ifstream fil(filepath);
+  auto jfil = nlohmann::json::parse(fil);
+  if (!jfil.contains("textures"))
+    return OpenNTCResult::InvalidManifest;
+  int source_count = 0;
+  int32_t dim = -1;
+  int32_t width = jfil.value("width", -1);
+  int32_t height = jfil.value("height", -1);
+  if (width == -1 && height == -1)
+    return OpenNTCResult::InvalidManifest;
+  if (width != -1 && height != -1 && width != height)
+    return OpenNTCResult::InvalidManifest;
+  dim = (width == -1) ? height : width;
+  if (dim < OpenNTCContext::kMinDimension || dim > OpenNTCContext::kMaxDimension)
+    return OpenNTCResult::InvalidManifest;
+  for (const auto& t : jfil["textures"])
+  {
+    if (!t.contains("semantics") || !t["semantics"].is_object())
+      return OpenNTCResult::InvalidManifest;
+    if (!t.contains("fileName") || !t["fileName"].is_string())
+      return OpenNTCResult::InvalidManifest;
+    for (const auto& [sem_name, sem_channels] : t["semantics"].items())
+    {
+      if (!sem_channels.is_string())
+        return OpenNTCResult::InvalidManifest;
+      OpenNTCSemantic sem = SemanticFromName(sem_name);
+      bool valid_sem_channels = IsValidSemanticChannels(sem, sem_channels.get<std::string>());
+      if (!valid_sem_channels)
+        return OpenNTCResult::InvalidManifest;
+      manifest_.sources_[source_count].path_ = t.value("fileName", "");
+      manifest_.sources_[source_count].name_ = t.value("name", "");
+      manifest_.sources_[source_count].semantic_ = sem;
+      manifest_.sources_[source_count].is_srgb_ = t.value("isSRGB", false);
+      manifest_.sources_[source_count].vertical_flip_ = t.value("verticalFlip", false);
+      manifest_.sources_[source_count].channel_subset_ = sem_channels;
+      source_count++;
+    }
+  }
+  manifest_.source_count_ = source_count;
+  manifest_.dim_ = dim;
+
+  return OpenNTCResult::Success;
 }
 
 void OpenNTCContext::Destroy()

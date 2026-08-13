@@ -1170,6 +1170,8 @@ void LoadContent()
   D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
   UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
+  g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_1K-JPG/manifest.json");
+
   for (int tex_i = 0; tex_i < static_cast<int32_t>(TexType::Count); tex_i++)
   {
     std::wstring filepath = L"C:/Code/openntc/img/Bricks101_1K-JPG/Bricks101_1K-JPG_";

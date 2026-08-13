@@ -21,6 +21,7 @@ enum class OpenNTCResult
 
   InvalidDimension,
   AllocationFailure,
+  InvalidManifest,
 };
 
 class Tensor2d
@@ -137,6 +138,44 @@ struct OpenNTCCompressedData
   OpenNTCCalibration caldata_;
 };
 
+enum class OpenNTCSemantic : int32_t
+{
+  None = 0,
+
+  Albedo = 1,
+  Alpha = 2,
+  Displacement = 3,
+  Emissive = 4,
+  Gloss = 5,
+  Metallic = 6,
+  Normal = 7,
+  AO = 8,
+  Roughness = 9,
+  Specular = 10,
+  Transmission = 11,
+
+  Count = 12,
+};
+
+struct OpenNTCTextureSource
+{
+  std::string path_;
+  std::string name_;
+  bool is_srgb_;
+  OpenNTCSemantic semantic_;
+  std::string channel_subset_;
+  bool vertical_flip_;
+};
+
+constexpr int32_t kMaxSources = 16;
+
+struct OpenNTCManifest
+{
+  OpenNTCTextureSource sources_[kMaxSources];
+  int32_t source_count_;
+  int32_t dim_;
+};
+
 class OpenNTCContext
 {
 public:
@@ -153,6 +192,7 @@ public:
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
+  OpenNTCResult LoadManifest(const std::string& filepath);
 
   // Host-side parameters after training
 
@@ -170,6 +210,7 @@ private:
   static const int kMinDimension = 1024;
   static const int kMaxDimension = 1024;
   static const int kMaxMips = 9;
+  static const int kMaxChannels = 16;
 
   bool initialized_;
   int g0_bytes_per_channel_;
@@ -255,4 +296,8 @@ private:
   Tensor2d x_;
   Tensor3d package_[OpenNTCContext::kMaxMips];
   cudaExternalMemory_t extmem_[OpenNTCContext::kMaxMips];
+
+  // File management
+
+  OpenNTCManifest manifest_;
 };
