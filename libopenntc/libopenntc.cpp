@@ -6,6 +6,8 @@
 
 #include <curand_kernel.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <libopenntc/stb_image.h>
 #include <libopenntc/ntc_kernel.cuh>
 #include <libopenntc/json.hpp>
 
@@ -322,22 +324,21 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   W1_scale_ = new float[hidden_dim_];
   Wout_scale_ = new float[out_dim_padded_];
 
-  return OpenNTCResult::Success;
-}
+  for (int i = 0; i < kMaxSources; i++)
+  {
+    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
+    {
+      mips_[i][j].Init(mip_dim_[j], mip_dim_[j], 4);
+    }
+  }
+  tex_prep_.Init(mip_dim_[0], mip_dim_[0], 4);
+  tex_filter_.Init(mip_dim_[0], mip_dim_[0], 4);
+  for (int i = 0; i < mip_count_; i++)
+  {
+    package_[i].Init(mip_dim_[i], mip_dim_[i], out_dim_);
+  }
 
-void OpenNTCContext::LoadPackage(void* handle, long long size, int mip)
-{
-  cudaExternalMemoryHandleDesc desc = {};
-  desc.type = cudaExternalMemoryHandleTypeD3D12Resource;
-  desc.handle.win32.handle = handle;
-  desc.size = size;
-  desc.flags = cudaExternalMemoryDedicated;
-  cudaImportExternalMemory(&extmem_[mip], &desc);
-  cudaExternalMemoryBufferDesc mdesc = {};
-  mdesc.offset = 0;
-  mdesc.flags = 0;
-  mdesc.size = size;
-  cudaExternalMemoryGetMappedBuffer((void**)package_[mip].DeviceDPtr(), extmem_[mip], &mdesc);
+  return OpenNTCResult::Success;
 }
 
 // C = A * B, where A, B, C are row-major. C is n x m, A is n x k, B is k x m
@@ -886,20 +887,8 @@ static OpenNTCSemantic SemanticFromName(const std::string& s)
   return OpenNTCSemantic::None;
 }
 
-static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string& channels)
+static int GetChannelCountForSemantic(const OpenNTCSemantic sem)
 {
-  static const std::string rgba = "RGBA";
-  if (channels.length() == 0 || channels.length() > 4)
-    return false;
-  int p = 0;
-  for (int i = 0; i < channels.length(); i++)
-  {
-    while (p < 4 && rgba[p] != channels[i]) p++;
-    if (p >= 4)
-      return false;
-    p++;
-  }
-
   static const int32_t s_map_sem_to_channel_count[] = {
     -1,               // None (any channel count)
     3,                // Albedo
@@ -916,7 +905,24 @@ static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string
     -1,               // Count (invalid)
   };
 
-  if (sem != OpenNTCSemantic::None && s_map_sem_to_channel_count[static_cast<int32_t>(sem)] != channels.length())
+  return s_map_sem_to_channel_count[static_cast<int32_t>(sem)];
+}
+
+static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string& channels)
+{
+  static const std::string rgba = "RGBA";
+  if (channels.length() == 0 || channels.length() > 4)
+    return false;
+  int p = 0;
+  for (int i = 0; i < channels.length(); i++)
+  {
+    while (p < 4 && rgba[p] != channels[i]) p++;
+    if (p >= 4)
+      return false;
+    p++;
+  }
+
+  if (sem != OpenNTCSemantic::None && GetChannelCountForSemantic(sem) != channels.length())
     return false;
 
   return true;
@@ -952,7 +958,8 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       if (!sem_channels.is_string())
         return OpenNTCResult::InvalidManifest;
       OpenNTCSemantic sem = SemanticFromName(sem_name);
-      bool valid_sem_channels = IsValidSemanticChannels(sem, sem_channels.get<std::string>());
+      std::string sem_str = sem_channels.get<std::string>();
+      bool valid_sem_channels = IsValidSemanticChannels(sem, sem_str);
       if (!valid_sem_channels)
         return OpenNTCResult::InvalidManifest;
       manifest_.sources_[source_count].path_ = t.value("fileName", "");
@@ -960,12 +967,80 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       manifest_.sources_[source_count].semantic_ = sem;
       manifest_.sources_[source_count].is_srgb_ = t.value("isSRGB", false);
       manifest_.sources_[source_count].vertical_flip_ = t.value("verticalFlip", false);
-      manifest_.sources_[source_count].channel_subset_ = sem_channels;
+      manifest_.sources_[source_count].num_channels_ = GetChannelCountForSemantic(sem);
+      for (int i = 0; i < 4; i++)
+      {
+        OpenNTCChannel ch = OpenNTCChannel::Invalid;
+        if (i < manifest_.sources_[source_count].num_channels_)
+        {
+          if (sem_str[i] == 'R')
+            ch = OpenNTCChannel::R;
+          else if (sem_str[i] == 'G')
+            ch = OpenNTCChannel::G;
+          else if (sem_str[i] == 'B')
+            ch = OpenNTCChannel::B;
+          else
+            ch = OpenNTCChannel::A;
+        }
+        manifest_.sources_[source_count].channel_mapping_[i] = ch;
+      }
       source_count++;
     }
   }
   manifest_.source_count_ = source_count;
   manifest_.dim_ = dim;
+
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    int w;
+    int h;
+    int c;
+    int desired_channels = 4;
+    stbi_ldr_to_hdr_gamma(1.0f);
+    float* tex_data = stbi_loadf(manifest_.sources_[i].path_.c_str(), &w, &h, &c, desired_channels);
+    if (tex_data == nullptr)
+    {
+      return OpenNTCResult::FileNotFound;
+    }
+    if (w != h || w != manifest_.dim_)
+    {
+      stbi_image_free(tex_data);
+      return OpenNTCResult::InvalidManifest;
+    }
+    cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(float), cudaMemcpyHostToDevice);
+
+    PrepareTexInput prepare_in = {};
+    for (int j = 0; j < 4; j++) prepare_in.cmap[j] = static_cast<int32_t>(manifest_.sources_[i].channel_mapping_[j]);
+    launch_prepare_tex(manifest_.dim_, desired_channels, prepare_in, tex_prep_.DevicePtr(), mips_[i][0].DevicePtr());
+    for (int j = 1; j < mip_count_; j++)
+    {
+      launch_filter_lanczos(mip_dim_[j - 1], manifest_.sources_[i].num_channels_, 3, mips_[i][j - 1].DevicePtr(), tex_filter_.DevicePtr(), mips_[i][j].DevicePtr());
+    }
+    stbi_image_free(tex_data);
+  }
+
+  PackageTexInput package_in = {};
+  int p = 0;
+  for (int j = 0; j < manifest_.source_count_; j++)
+  {
+    package_in.source_channels[j] = manifest_.sources_[j].num_channels_;
+    for (int c = 0; c < manifest_.sources_[j].num_channels_; c++)
+    {
+      package_in.map_feat_id_to_source_id[p] = j;
+      package_in.map_feat_id_to_channel_id[p] = c;
+      p++;
+    }
+  }
+
+  if (p != out_dim_)
+    return OpenNTCResult::InvalidManifest;
+
+  for (int i = 0; i < mip_count_; i++)
+  {
+    for (int j = 0; j < manifest_.source_count_; j++)
+      package_in.tex[j] = mips_[j][i].DevicePtr();
+    launch_package_tex(mip_dim_[i], out_dim_, package_in, package_[i].DevicePtr());
+  }
 
   return OpenNTCResult::Success;
 }
@@ -1025,13 +1100,18 @@ void OpenNTCContext::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
 
-  for (int i = 0; i < kMaxMips; i++)
+  for (int i = 0; i < kMaxSources; i++)
   {
-    if (package_[i].IsInitialized())
+    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
     {
-      cudaFree(package_[i].DevicePtr());
-      cudaDestroyExternalMemory(extmem_[i]);
+      mips_[i][j].Destroy();
     }
+  }
+  tex_prep_.Destroy();
+  tex_filter_.Destroy();
+  for (int i = 0; i < mip_count_; i++)
+  {
+    package_[i].Destroy();
   }
 
   cudaFree(rstate_);

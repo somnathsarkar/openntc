@@ -22,6 +22,7 @@ enum class OpenNTCResult
   InvalidDimension,
   AllocationFailure,
   InvalidManifest,
+  FileNotFound,
 };
 
 class Tensor2d
@@ -157,14 +158,26 @@ enum class OpenNTCSemantic : int32_t
   Count = 12,
 };
 
+enum class OpenNTCChannel : int32_t
+{
+  R = 0,
+  G = 1,
+  B = 2,
+  A = 3,
+
+  Count,
+  Invalid = -1
+};
+
 struct OpenNTCTextureSource
 {
   std::string path_;
   std::string name_;
   bool is_srgb_;
   OpenNTCSemantic semantic_;
-  std::string channel_subset_;
   bool vertical_flip_;
+  int32_t num_channels_;
+  OpenNTCChannel channel_mapping_[4];
 };
 
 constexpr int32_t kMaxSources = 16;
@@ -187,7 +200,6 @@ public:
 
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
-  void LoadPackage(void* handle, long long size, int mip);
   void Train(std::atomic<OpenNTCTrainProgress>& progress);
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
@@ -295,9 +307,11 @@ private:
   IntTensor1d grid_draws_;
   Tensor2d x_;
   Tensor3d package_[OpenNTCContext::kMaxMips];
-  cudaExternalMemory_t extmem_[OpenNTCContext::kMaxMips];
 
   // File management
 
   OpenNTCManifest manifest_;
+  Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
+  Tensor3d tex_prep_;
+  Tensor3d tex_filter_;
 };

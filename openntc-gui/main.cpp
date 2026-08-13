@@ -1848,8 +1848,6 @@ void Render()
     OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_seq_cst);
     if (progress.phase == 0)
     {
-      for (int mip_i = 0; mip_i < 9; mip_i++)
-        g_ctx.LoadPackage(g_package_handle[mip_i], g_package_res_size[mip_i], mip_i);
     }
     progress.phase = 1;
     g_train_progress.store(progress, std::memory_order_seq_cst);

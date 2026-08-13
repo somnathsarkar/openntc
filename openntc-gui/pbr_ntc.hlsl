@@ -366,8 +366,8 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
     Woutx[i + 3] = facc.w;
   }
 
-  float3 ntc_albedo = float3(Woutx[0], Woutx[1], Woutx[2]);
-  float ntc_ao = Woutx[3];
+  float ntc_ao = Woutx[0];
+  float3 ntc_albedo = float3(Woutx[1], Woutx[2], Woutx[3]);
   float ntc_displacement = Woutx[4];
   float3 ntc_normal = float3(Woutx[5], Woutx[6], Woutx[7]);
   float ntc_roughness = Woutx[8];

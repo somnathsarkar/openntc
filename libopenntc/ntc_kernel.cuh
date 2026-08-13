@@ -73,3 +73,20 @@ void launch_backward_pass(
   float* o_dLdW1x);
 void launch_quantize_pack(int n, int n_bytes, int bits, float* input, uint32_t* output);
 void launch_max_abs(int n, float* data, float* result);
+
+typedef struct
+{
+  int cmap[4];
+} PrepareTexInput;
+void launch_prepare_tex(int dim, int c, PrepareTexInput pt, float* tex, float* o_mip0);
+
+void launch_filter_lanczos(int dim_src, int c, int a, float* mip_src, float* tmp, float* mip_dst);
+
+typedef struct
+{
+  int source_channels[16];
+  int map_feat_id_to_source_id[16];
+  int map_feat_id_to_channel_id[16];
+  float* tex[16];
+} PackageTexInput;
+void launch_package_tex(int dim, int c, PackageTexInput pt, float* o_package);
