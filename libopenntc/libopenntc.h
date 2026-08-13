@@ -99,12 +99,21 @@ struct OpenNTCCalibration
   float s_a2;
 };
 
-class OpenNTCTrainProgress
+enum OpenNTCTrainPhase : int32_t
 {
-public:
-  int phase; // 0: initial, 1: received package, 2: training, 3: finished training
-  int step;
-  int total_steps;
+  ManifestLoaded = 0,
+  TrainInProgress = 1,
+  TrainComplete = 2,
+
+  TrainError = -1,
+};
+
+struct OpenNTCTrainProgress
+{
+  OpenNTCTrainPhase phase_;
+  OpenNTCResult result_;
+  int batches_complete_;
+  int total_batches_;
 };
 
 struct OpenNTCCompressedData
@@ -198,6 +207,12 @@ struct OpenNTCManifest
   int32_t dim_;
 };
 
+struct OpenNTCTrainInfo
+{
+  int batch_count_;
+  int grids_per_batch_;
+};
+
 class OpenNTCContext
 {
 public:
@@ -209,7 +224,9 @@ public:
 
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
-  void Train(std::atomic<OpenNTCTrainProgress>& progress);
+  void BeginTraining(const OpenNTCTrainInfo& train_info);
+  OpenNTCTrainProgress Train(int num_batches);
+  OpenNTCTrainProgress TrainUntilComplete();
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
@@ -256,6 +273,15 @@ private:
   int max_batch_;
   int max_batch_dim_;
   int hidden_dim_;
+
+  // Per training run
+
+  int batch_count_;
+  int batch_i_;
+  int lock_i_;
+  int grids_per_batch_;
+  int grid_batch_i_[4];
+  OpenNTCTrainPhase train_phase_;
 
   std::mt19937 gen_;
   cublasHandle_t handle_;

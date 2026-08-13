@@ -47,8 +47,7 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::C
 };
 
 OpenNTCContext g_ctx;
-std::atomic<OpenNTCTrainProgress> g_train_progress;
-std::thread g_thread_train;
+bool g_train_in_progress = false;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -1505,33 +1504,28 @@ void Render()
   ImGui::End();
 
   ImGui::Begin("Train");
-  if (ImGui::Button("Load Package"))
-  {
-    OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_seq_cst);
-    if (progress.phase == 0)
-    {
-    }
-    progress.phase = 1;
-    g_train_progress.store(progress, std::memory_order_seq_cst);
-  }
   if (ImGui::Button("Train"))
   {
-    OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_seq_cst);
-    if (progress.phase == 1)
+    if (!g_train_in_progress)
     {
-      g_thread_train = std::thread(&OpenNTCContext::Train, &g_ctx, std::ref(g_train_progress));
+      OpenNTCTrainInfo train_info = {};
+      train_info.grids_per_batch_ = 1;
+      train_info.batch_count_ = 10000;
+      g_ctx.BeginTraining(train_info);
+      g_train_in_progress = true;
     }
   }
-  OpenNTCTrainProgress progress = g_train_progress.load(std::memory_order_relaxed);
-  if (progress.phase == 2)
+  if (g_train_in_progress)
   {
-    ImGui::ProgressBar((float)progress.step / progress.total_steps);
-  }
-  else if (progress.phase == 3)
-  {
-    if (ImGui::Button("Load Compressed Data"))
+    OpenNTCTrainProgress tprogress = g_ctx.Train(64);
+    if (tprogress.phase_ == OpenNTCTrainPhase::TrainComplete)
     {
+      g_train_in_progress = false;
       LoadCompressedData();
+    }
+    else if (tprogress.phase_ == OpenNTCTrainPhase::TrainInProgress)
+    {
+      ImGui::ProgressBar((float)tprogress.batches_complete_ / tprogress.total_batches_);
     }
   }
   ImGui::End();
@@ -2032,10 +2026,6 @@ HANDLE CreateEventHandle()
 
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
-  OpenNTCTrainProgress progress = {};
-  progress.phase = 0;
-  g_train_progress.store(progress, std::memory_order_relaxed);
-
   OpenNTCContextInitInfo init_info = {};
   init_info.dim = 1024;
   init_info.profile = OpenNTCProfile::Bpp_0_2;
@@ -2114,8 +2104,6 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
   ::CloseHandle(g_fence_event);
-  if (g_thread_train.joinable())
-    g_thread_train.join();
 
   return 0;
 }
