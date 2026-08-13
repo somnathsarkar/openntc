@@ -182,6 +182,15 @@ struct OpenNTCTextureSource
 
 constexpr int32_t kMaxSources = 16;
 
+struct OpenNTCTextureData
+{
+  int32_t tex_count_;
+  int32_t mip_count_;
+  int32_t channels_[kMaxSources];
+  OpenNTCSemantic semantics_[kMaxSources];
+  float* mips_[kMaxSources][9];
+};
+
 struct OpenNTCManifest
 {
   OpenNTCTextureSource sources_[kMaxSources];
@@ -205,9 +214,11 @@ public:
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
   OpenNTCResult LoadManifest(const std::string& filepath);
+  OpenNTCTextureData GetTextureData();
 
   // Host-side parameters after training
 
+  uint32_t* tex_data_[4];
   uint32_t* g0_host_[4];
   uint32_t* g1_host_[4];
   uint32_t* W0_host_;
@@ -218,6 +229,8 @@ public:
   float* Wout_scale_;
   OpenNTCCalibration caldata_;
 
+  float* mips_host_[kMaxSources][9];
+
 private:
   static const int kMinDimension = 1024;
   static const int kMaxDimension = 1024;
@@ -225,6 +238,7 @@ private:
   static const int kMaxChannels = 16;
 
   bool initialized_;
+  bool manifest_loaded_;
   int g0_bytes_per_channel_;
   int g1_bytes_per_channel_;
   float g0_delta_;

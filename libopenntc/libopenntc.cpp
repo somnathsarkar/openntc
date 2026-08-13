@@ -327,6 +327,12 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   for (int i = 0; i < kMaxSources; i++)
   {
     for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
+      mips_host_[i][j] = new float[mip_dim_[j] * mip_dim_[j] * 4];
+  }
+
+  for (int i = 0; i < kMaxSources; i++)
+  {
+    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
     {
       mips_[i][j].Init(mip_dim_[j], mip_dim_[j], 4);
     }
@@ -1008,6 +1014,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       return OpenNTCResult::InvalidManifest;
     }
     cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(float), cudaMemcpyHostToDevice);
+    stbi_image_free(tex_data);
 
     PrepareTexInput prepare_in = {};
     for (int j = 0; j < 4; j++) prepare_in.cmap[j] = static_cast<int32_t>(manifest_.sources_[i].channel_mapping_[j]);
@@ -1016,7 +1023,8 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     {
       launch_filter_lanczos(mip_dim_[j - 1], manifest_.sources_[i].num_channels_, 3, mips_[i][j - 1].DevicePtr(), tex_filter_.DevicePtr(), mips_[i][j].DevicePtr());
     }
-    stbi_image_free(tex_data);
+    for (int j = 0; j < mip_count_; j++)
+      cudaMemcpy(mips_host_[i][j], mips_[i][j].DevicePtr(), sizeof(float) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_, cudaMemcpyDeviceToHost);
   }
 
   PackageTexInput package_in = {};
@@ -1042,7 +1050,23 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     launch_package_tex(mip_dim_[i], out_dim_, package_in, package_[i].DevicePtr());
   }
 
+  manifest_loaded_ = true;
   return OpenNTCResult::Success;
+}
+
+OpenNTCTextureData OpenNTCContext::GetTextureData()
+{
+  OpenNTCTextureData tex_data = {};
+  tex_data.tex_count_ = manifest_.source_count_;
+  tex_data.mip_count_ = mip_count_;
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    tex_data.semantics_[i] = manifest_.sources_[i].semantic_;
+    tex_data.channels_[i] = manifest_.sources_[i].num_channels_;
+    for (int j = 0; j < mip_count_; j++)
+      tex_data.mips_[i][j] = mips_host_[i][j];
+  }
+  return tex_data;
 }
 
 void OpenNTCContext::Destroy()
@@ -1127,4 +1151,10 @@ void OpenNTCContext::Destroy()
   delete[] W0_scale_;
   delete[] W1_scale_;
   delete[] Wout_scale_;
+
+  for (int i = 0; i < kMaxSources; i++)
+  {
+    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
+      delete[] mips_host_[i][j];
+  }
 }
