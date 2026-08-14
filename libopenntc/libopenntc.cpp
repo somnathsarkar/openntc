@@ -1316,8 +1316,6 @@ struct OpenNTCBlobSlot
   bool found_;
 };
 
-// TODO: Handle memory leak in OpenNTCFileData
-
 OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_data)
 {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -1421,4 +1419,14 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   }
 
   return OpenNTCResult::Success;
+}
+
+OpenNTCFileData::OpenNTCFileData() : raw_(nullptr) {}
+OpenNTCFileData::~OpenNTCFileData()
+{
+  delete[] raw_;
+}
+const OpenNTCCompressedData& OpenNTCFileData::Data()
+{
+  return data_;
 }

@@ -1071,7 +1071,7 @@ void LoadCompressedData(bool from_file = false)
   if (from_file)
   {
     OpenNTCResult res = OpenNTCContext::Load("bricks101.ntc", g_fil_data);
-    cdata = g_fil_data.data_;
+    cdata = g_fil_data.Data();
   }
   else
   {

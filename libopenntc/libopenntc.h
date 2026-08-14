@@ -214,11 +214,7 @@ struct OpenNTCTrainInfo
   int grids_per_batch_;
 };
 
-struct OpenNTCFileData
-{
-  OpenNTCCompressedData data_;
-  uint8_t* raw_;
-};
+class OpenNTCFileData;
 
 class OpenNTCContext
 {
@@ -364,4 +360,23 @@ private:
   Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
   Tensor3d tex_prep_;
   Tensor3d tex_filter_;
+};
+
+class OpenNTCFileData
+{
+  friend OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_data);
+
+public:
+  OpenNTCFileData();
+  ~OpenNTCFileData();
+
+  // Uncopyable
+  OpenNTCFileData(const OpenNTCFileData& cd) = delete;
+  OpenNTCFileData& operator=(const OpenNTCFileData& cd) = delete;
+
+  const OpenNTCCompressedData& Data();
+
+private:
+  OpenNTCCompressedData data_;
+  uint8_t* raw_;
 };
