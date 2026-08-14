@@ -49,8 +49,8 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   return v_out;
 }
 
-Texture2D<float4> tex_albedo : register(t1, space0);
-Texture2D<float4> tex_ao : register(t2, space0);
+Texture2D<float4> tex_ao : register(t1, space0);
+Texture2D<float4> tex_albedo : register(t2, space0);
 Texture2D<float4> tex_displacement : register(t3, space0);
 Texture2D<float4> tex_normal : register(t4, space0);
 Texture2D<float4> tex_roughness : register(t5, space0);

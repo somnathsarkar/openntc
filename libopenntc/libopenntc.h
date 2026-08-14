@@ -21,6 +21,10 @@ enum class OpenNTCResult
 
   InvalidDimension,
   AllocationFailure,
+  InvalidManifest,
+  FileNotFound,
+  InvalidFile,
+  FileWriteFailure
 };
 
 class Tensor2d
@@ -56,7 +60,6 @@ public:
   void FillUniform(std::mt19937& gen, float lb, float ub);
   void Destroy();
   float* DevicePtr();
-  float** DeviceDPtr();
   bool IsInitialized() const;
   size_t SizeBytes() const;
   size_t NumElems() const;
@@ -97,12 +100,21 @@ struct OpenNTCCalibration
   float s_a2;
 };
 
-class OpenNTCTrainProgress
+enum OpenNTCTrainPhase : int32_t
 {
-public:
-  int phase; // 0: initial, 1: received package, 2: training, 3: finished training
-  int step;
-  int total_steps;
+  ManifestLoaded = 0,
+  TrainInProgress = 1,
+  TrainComplete = 2,
+
+  TrainError = -1,
+};
+
+struct OpenNTCTrainProgress
+{
+  OpenNTCTrainPhase phase_;
+  OpenNTCResult result_;
+  int batches_complete_;
+  int total_batches_;
 };
 
 struct OpenNTCCompressedData
@@ -137,6 +149,73 @@ struct OpenNTCCompressedData
   OpenNTCCalibration caldata_;
 };
 
+enum class OpenNTCSemantic : int32_t
+{
+  None = 0,
+
+  Albedo = 1,
+  Alpha = 2,
+  Displacement = 3,
+  Emissive = 4,
+  Gloss = 5,
+  Metallic = 6,
+  Normal = 7,
+  AO = 8,
+  Roughness = 9,
+  Specular = 10,
+  Transmission = 11,
+
+  Count = 12,
+};
+
+enum class OpenNTCChannel : int32_t
+{
+  R = 0,
+  G = 1,
+  B = 2,
+  A = 3,
+
+  Count,
+  Invalid = -1
+};
+
+struct OpenNTCTextureSource
+{
+  std::string path_;
+  std::string name_;
+  bool is_srgb_;
+  OpenNTCSemantic semantic_;
+  bool vertical_flip_;
+  int32_t num_channels_;
+  OpenNTCChannel channel_mapping_[4];
+};
+
+constexpr int32_t kMaxSources = 16;
+
+struct OpenNTCTextureData
+{
+  int32_t tex_count_;
+  int32_t mip_count_;
+  int32_t channels_[kMaxSources];
+  OpenNTCSemantic semantics_[kMaxSources];
+  float* mips_[kMaxSources][9];
+};
+
+struct OpenNTCManifest
+{
+  OpenNTCTextureSource sources_[kMaxSources];
+  int32_t source_count_;
+  int32_t dim_;
+};
+
+struct OpenNTCTrainInfo
+{
+  int batch_count_;
+  int grids_per_batch_;
+};
+
+class OpenNTCFileData;
+
 class OpenNTCContext
 {
 public:
@@ -148,14 +227,21 @@ public:
 
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
-  void LoadPackage(void* handle, long long size, int mip);
-  void Train(std::atomic<OpenNTCTrainProgress>& progress);
+  void BeginTraining(const OpenNTCTrainInfo& train_info);
+  OpenNTCTrainProgress Train(int num_batches);
+  OpenNTCTrainProgress TrainUntilComplete();
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
+  OpenNTCResult LoadManifest(const std::string& filepath);
+  OpenNTCTextureData GetTextureData();
+
+  static OpenNTCResult Dump(const std::string& path, const OpenNTCCompressedData& data);
+  static OpenNTCResult Load(const std::string& path, OpenNTCFileData& data);
 
   // Host-side parameters after training
 
+  uint32_t* tex_data_[4];
   uint32_t* g0_host_[4];
   uint32_t* g1_host_[4];
   uint32_t* W0_host_;
@@ -166,12 +252,16 @@ public:
   float* Wout_scale_;
   OpenNTCCalibration caldata_;
 
+  float* mips_host_[kMaxSources][9];
+
 private:
   static const int kMinDimension = 1024;
   static const int kMaxDimension = 1024;
   static const int kMaxMips = 9;
+  static const int kMaxChannels = 16;
 
   bool initialized_;
+  bool manifest_loaded_;
   int g0_bytes_per_channel_;
   int g1_bytes_per_channel_;
   float g0_delta_;
@@ -189,6 +279,15 @@ private:
   int max_batch_;
   int max_batch_dim_;
   int hidden_dim_;
+
+  // Per training run
+
+  int batch_count_;
+  int batch_i_;
+  int lock_i_;
+  int grids_per_batch_;
+  int grid_batch_i_[4];
+  OpenNTCTrainPhase train_phase_;
 
   std::mt19937 gen_;
   cublasHandle_t handle_;
@@ -254,5 +353,30 @@ private:
   IntTensor1d grid_draws_;
   Tensor2d x_;
   Tensor3d package_[OpenNTCContext::kMaxMips];
-  cudaExternalMemory_t extmem_[OpenNTCContext::kMaxMips];
+
+  // File management
+
+  OpenNTCManifest manifest_;
+  Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
+  Tensor3d tex_prep_;
+  Tensor3d tex_filter_;
+};
+
+class OpenNTCFileData
+{
+  friend OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_data);
+
+public:
+  OpenNTCFileData();
+  ~OpenNTCFileData();
+
+  // Uncopyable
+  OpenNTCFileData(const OpenNTCFileData& cd) = delete;
+  OpenNTCFileData& operator=(const OpenNTCFileData& cd) = delete;
+
+  const OpenNTCCompressedData& Data();
+
+private:
+  OpenNTCCompressedData data_;
+  uint8_t* raw_;
 };

@@ -1,4 +1,4 @@
-#include <openntc/ntc_kernel.cuh>
+#include <libopenntc/ntc_kernel.cuh>
 
 #include <cassert>
 #include <cstdio>
@@ -7,6 +7,7 @@
 
 #define FEAT_DIM 64
 #define OUT_DIM 9
+#define PI 3.14159265359
 
 // out_channels = 1 + 3 + 1 + 3 + 1 (AO + Color + Displacement + Normals + Roughness)
 
@@ -659,4 +660,115 @@ void launch_max_abs(int n, float* data, float* result)
 {
   int block_count = (n + 1023) / 1024;
   max_abs<<<block_count, 1024>>>(n, data, result);
+}
+
+__global__ void prepare_tex(int w, int h, int c, int cmap_count, PrepareTexInput pt, float *tex, float *o_mip0)
+{
+  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+  int tidy = blockDim.y * blockIdx.y + threadIdx.y;
+  if (tidx >= w || tidy >= h) return;
+  int cpre_src = tidy * w * c + tidx * c;
+  int cpre_dst = tidy * w * cmap_count + tidx * cmap_count;
+  for (int i = 0; i < cmap_count; i++)
+  {
+    o_mip0[cpre_dst + i] = tex[cpre_src + pt.cmap[i]];
+  }
+}
+
+void launch_prepare_tex(int dim, int c, PrepareTexInput pt, float* tex, float* o_mip0)
+{
+  int cmap_count = 0;
+  for (int i = 0; i < 4; i++)
+  {
+    if (pt.cmap[i] < 0 || pt.cmap[i] >= 4)
+      break;
+    cmap_count++;
+  }
+  assert(cmap_count > 0);
+  unsigned int block_dim = (dim + 31) / 32;
+  dim3 launch_dims = {block_dim, block_dim, 1u};
+  dim3 block_size = {32u, 32u, 1u};
+  prepare_tex<<<launch_dims, block_size>>>(dim, dim, c, cmap_count, pt, tex, o_mip0);
+}
+
+__device__ float sinc(float x)
+{
+  if (abs(x) < 1e-8)
+    return 1.0f;
+  return sin(x) / x;
+}
+
+__device__ float lanczos(float x, float a)
+{
+  return sinc(PI * x) * sinc(PI * x / a);
+}
+
+__global__ void filter_lanczos(int w_src, int h_src, int c, int a, bool is_y, float* mip_src, float* mip_dst)
+{
+  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+  int tidy = blockDim.y * blockIdx.y + threadIdx.y;
+  int2 tid = make_int2(tidx, tidy);
+  int2 out_dim = is_y ? make_int2(w_src, h_src / 2) : make_int2(w_src / 2, h_src);
+  if (tid.x >= out_dim.x || tid.y >= out_dim.y) return;
+
+  int2 texel_center = is_y ? make_int2(tid.x, tid.y * 2 + 1) : make_int2(tid.x * 2 + 1, tid.y);
+  int lim = is_y ? h_src : w_src;
+
+  float total[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float total_weight = 0.0f;
+  for (int i = -2 * a; i < 2 * a; i++)
+  {
+    int sample_loc = is_y ? texel_center.y + i : texel_center.x + i;
+    if (sample_loc < 0 || sample_loc >= lim)
+      continue;
+    float weight = lanczos((0.5f + i) * 0.5f, a);
+    for (int j = 0; j < c; j++)
+    {
+      int sx = is_y ? tid.x : sample_loc;
+      int sy = is_y ? sample_loc : tid.y;
+      float sampc = mip_src[sy * w_src * c + sx * c + j];
+      total[j] += sampc * weight;
+    }
+    total_weight += weight;
+  }
+  for (int j = 0; j < c; j++)
+  {
+    mip_dst[tid.y * out_dim.x * c + tid.x * c + j] = total[j] / total_weight;
+  }
+}
+
+void launch_filter_lanczos(int dim_src, int c, int a, float* mip_src, float* tmp, float* mip_dst)
+{
+  assert(dim_src % 2 == 0);
+  unsigned int block_dim_small = ((dim_src / 2) + 31) / 32;
+  unsigned int block_dim_big = (dim_src + 31) / 32;
+  dim3 launch_dims_0 = {block_dim_small, block_dim_big, 1u};
+  dim3 launch_dims_1 = {block_dim_small, block_dim_small, 1u};
+  dim3 block_size = {32u, 32u, 1u};
+
+  filter_lanczos<<<launch_dims_0, block_size>>>(dim_src, dim_src, c, a, false, mip_src, tmp);
+  filter_lanczos<<<launch_dims_1, block_size>>>(dim_src / 2, dim_src, c, a, true, tmp, mip_dst);
+}
+
+__global__ void package_tex(int dim, int c, PackageTexInput pt, float* o_package)
+{
+  int tidx = blockDim.x * blockIdx.x + threadIdx.x;
+  int tidy = blockDim.y * blockIdx.y + threadIdx.y;
+  if (tidx >= dim || tidy >= dim) return;
+
+  for (int i = 0; i < c; i++)
+  {
+    int sid = pt.map_feat_id_to_source_id[i];
+    int cid = tidy * dim * pt.source_channels[sid] + tidx * pt.source_channels[sid] + pt.map_feat_id_to_channel_id[i];
+    float samp = pt.tex[sid][cid];
+    o_package[tidy * dim * c + tidx * c + i] = samp;
+  }
+}
+
+void launch_package_tex(int dim, int c, PackageTexInput pt, float* o_package)
+{
+  unsigned int block_dim = (dim + 31) / 32;
+  dim3 launch_dims = {block_dim, block_dim, 1u};
+  dim3 block_size = {32u, 32u, 1u};
+  package_tex<<<launch_dims, block_size>>>(dim, c, pt, o_package);
 }
