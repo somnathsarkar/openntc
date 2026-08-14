@@ -150,13 +150,6 @@ float* Tensor3d::DevicePtr()
   return dev_;
 }
 
-float** Tensor3d::DeviceDPtr()
-{
-  assert(!initialized_);
-  initialized_ = true;
-  return &dev_;
-}
-
 bool Tensor3d::IsInitialized() const
 {
   return initialized_;

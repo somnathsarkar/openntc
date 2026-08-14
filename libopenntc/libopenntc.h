@@ -58,7 +58,6 @@ public:
   void FillUniform(std::mt19937& gen, float lb, float ub);
   void Destroy();
   float* DevicePtr();
-  float** DeviceDPtr();
   bool IsInitialized() const;
   size_t SizeBytes() const;
   size_t NumElems() const;
