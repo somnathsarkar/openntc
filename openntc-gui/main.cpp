@@ -84,6 +84,7 @@ UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
+OpenNTCFileData g_fil_data;
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
 ComPtr<ID3D12Resource> g_buffer_g0[4];
@@ -1062,11 +1063,21 @@ void LoadContent()
   ResizeDepthBuffer(g_width, g_height);
 }
 
-void LoadCompressedData()
+void LoadCompressedData(bool from_file = false)
 {
   if (g_compressed_data_loaded) return;
 
-  OpenNTCCompressedData cdata = g_ctx.GetCompressedData();
+  OpenNTCCompressedData cdata;
+  if (from_file)
+  {
+    OpenNTCResult res = OpenNTCContext::Load("bricks101.ntc", g_fil_data);
+    cdata = g_fil_data.data_;
+  }
+  else
+  {
+    cdata = g_ctx.GetCompressedData();
+    OpenNTCContext::Dump("bricks101.ntc", cdata);
+  }
 
   {
     NTCInfo ntc_info = {};
@@ -1527,6 +1538,10 @@ void Render()
     {
       ImGui::ProgressBar((float)tprogress.batches_complete_ / tprogress.total_batches_);
     }
+  }
+  if (ImGui::Button("Load"))
+  {
+    LoadCompressedData(true);
   }
   ImGui::End();
 

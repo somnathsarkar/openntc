@@ -1184,3 +1184,241 @@ void OpenNTCContext::Destroy()
       delete[] mips_host_[i][j];
   }
 }
+
+struct OpenNTCBlob
+{
+  std::string name;
+  uint64_t data_size;
+  void* data;
+};
+
+OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompressedData& data)
+{
+  OpenNTCBlob blobs[] = {
+    {"g0_0", data.g0_size_[0], data.g0_[0]},
+    {"g0_1", data.g0_size_[1], data.g0_[1]},
+    {"g0_2", data.g0_size_[2], data.g0_[2]},
+    {"g0_3", data.g0_size_[3], data.g0_[3]},
+    {"g1_0", data.g1_size_[0], data.g1_[0]},
+    {"g1_1", data.g1_size_[1], data.g1_[1]},
+    {"g1_2", data.g1_size_[2], data.g1_[2]},
+    {"g1_3", data.g1_size_[3], data.g1_[3]},
+    {"W0", data.W0_size_, data.W0_},
+    {"W1", data.W1_size_, data.W1_},
+    {"Wout", data.Wout_size_, data.Wout_},
+    {"W0_scale", data.W0_scale_size_, data.W0_scale_},
+    {"W1_scale", data.W1_scale_size_, data.W1_scale_},
+    {"Wout_scale", data.Wout_scale_size_, data.Wout_scale_},
+  };
+
+  nlohmann::json j;
+  j["source"] = {{"generator", "openntc"}, {"version", 1}};
+  j["dim"] = data.dim_;
+  j["g0"] = {
+    {"grid_dims", {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3]}},
+    {"bits", data.g0_bytes_per_channel_},
+    {"channels", data.g0_channels_}
+  };
+  j["g1"] = {
+    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3]}},
+    {"bits", data.g1_bytes_per_channel_},
+    {"channels", data.g1_channels_}
+  };
+  j["calibration"] = {
+    {"max_abs_a1", data.caldata_.max_abs_a1},
+    {"max_abs_a2", data.caldata_.max_abs_a2},
+    {"s_a1", data.caldata_.s_a1},
+    {"s_a2", data.caldata_.s_a2}
+  };
+
+  uint64_t off = 0;
+  for (int i = 0; i < _countof(blobs); i++)
+  {
+    off = RoundUpToNearestK(off, 256);
+    j["blobs"].push_back({{"name", blobs[i].name}, {"size", blobs[i].data_size}, {"offset", off}});
+    off += blobs[i].data_size;
+  }
+
+  std::string js = j.dump();
+  // 4 byte magic word: ONTC = 0x43544E4F
+  uint32_t header[4] = {0x43544E4F, 1, (uint32_t)js.size(), (uint32_t)off};
+
+  std::ofstream f(path, std::ios::binary);
+  if (!f) return OpenNTCResult::FileNotFound;
+  f.write((const char*)header, sizeof(header));
+  f.write(js.data(), js.length());
+  off = 0;
+  for (int i = 0; i < _countof(blobs); i++)
+  {
+    uint64_t new_off = RoundUpToNearestK(off, 256);
+    for (; off < new_off; off++)
+      f.put(0);
+    f.write((const char*)blobs[i].data, blobs[i].data_size);
+    off += blobs[i].data_size;
+  }
+
+  OpenNTCResult res = OpenNTCResult::FileWriteFailure;
+  if (f.good())
+    res = OpenNTCResult::Success;
+  f.close();
+
+  return res;
+}
+
+template <typename T>
+static bool TryGet(const nlohmann::json& j, const char* key, T& o_val)
+{
+  auto it = j.find(key);
+  if (it == j.end())
+    return false;
+  
+  if constexpr (std::is_integral_v<T>)
+  {
+    if (!it->is_number_integer())
+      return false;
+  }
+  else if constexpr (std::is_floating_point_v<T>) {
+    if (!it->is_number())
+      return false;
+  }
+  else if constexpr (std::is_same_v<T, std::string>)
+  {
+    if (!it->is_string())
+      return false;
+  }
+  it->get_to(o_val);
+  return true;
+}
+
+static bool TryGetArray(const nlohmann::json& j, const char* key, int* o_vals, int n)
+{
+  auto it = j.find(key);
+  if (it == j.end() || !it->is_array() || (int)it->size() != n) return false;
+  for (int i = 0; i < n; i++)
+  {
+    if (!(*it)[i].is_number_integer()) return false;
+    o_vals[i] = (*it)[i];
+  }
+  return true;
+}
+
+static const nlohmann::json* TryGetObj(const nlohmann::json& j, const char* key)
+{
+  auto it = j.find(key);
+  return (it != j.end() && it->is_object()) ? &*it : nullptr;
+}
+
+struct OpenNTCBlobSlot
+{
+  std::string name_;
+  void** dst_;
+  size_t* size_;
+  bool found_;
+};
+
+// TODO: Handle memory leak in OpenNTCFileData
+
+OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_data)
+{
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f)
+    return OpenNTCResult::FileNotFound;
+  size_t raw_size = f.tellg();
+  o_data.raw_ = new uint8_t[raw_size];
+  f.seekg(0);
+  f.read((char*)o_data.raw_, raw_size);
+
+  // Validate header
+  if (raw_size < 16)
+    return OpenNTCResult::InvalidFile;
+  uint32_t* header = (uint32_t*)o_data.raw_;
+  if (header[0] != 0x43544E4F || header[1] != 1)
+    return OpenNTCResult::InvalidFile;
+
+  // Validate json
+  uint64_t header_size = sizeof(uint32_t) * 4;
+  uint64_t json_size = header[2];
+  uint64_t blob_size = header[3];
+  uint64_t fil_size = header_size + json_size + blob_size;
+  uint64_t blob_off = json_size + header_size;
+  if (header_size + json_size > fil_size)
+    return OpenNTCResult::InvalidFile;
+  nlohmann::json j = nlohmann::json::parse(o_data.raw_ + header_size, o_data.raw_ + header_size + json_size, nullptr, false);
+  if (j.is_discarded())
+    return OpenNTCResult::InvalidFile;
+
+  // Parse metadata from json
+  const nlohmann::json* jg0 = TryGetObj(j, "g0");
+  const nlohmann::json* jg1 = TryGetObj(j, "g1");
+  const nlohmann::json* jcal = TryGetObj(j, "calibration");
+  if (!jg0 || !jg1 || !jcal)
+    return OpenNTCResult::InvalidFile;
+
+  bool success = true;
+  success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, 4);
+  success &= TryGet(*jg0, "bits", o_data.data_.g0_bytes_per_channel_);
+  success &= TryGet(*jg0, "channels", o_data.data_.g0_channels_);
+  success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, 4);
+  success &= TryGet(*jg1, "bits", o_data.data_.g1_bytes_per_channel_);
+  success &= TryGet(*jg1, "channels", o_data.data_.g1_channels_);
+  success &= TryGet(j, "dim", o_data.data_.dim_);
+  success &= TryGet(*jcal, "max_abs_a1", o_data.data_.caldata_.max_abs_a1);
+  success &= TryGet(*jcal, "s_a1", o_data.data_.caldata_.s_a1);
+  success &= TryGet(*jcal, "max_abs_a2", o_data.data_.caldata_.max_abs_a2);
+  success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2);
+  if (!success)
+    return OpenNTCResult::InvalidFile;
+
+  OpenNTCBlobSlot slots[] = {
+    {"g0_0", (void**)&o_data.data_.g0_[0], &o_data.data_.g0_size_[0], false},
+    {"g0_1", (void**)&o_data.data_.g0_[1], &o_data.data_.g0_size_[1], false},
+    {"g0_2", (void**)&o_data.data_.g0_[2], &o_data.data_.g0_size_[2], false},
+    {"g0_3", (void**)&o_data.data_.g0_[3], &o_data.data_.g0_size_[3], false},
+    {"g1_0", (void**)&o_data.data_.g1_[0], &o_data.data_.g1_size_[0], false},
+    {"g1_1", (void**)&o_data.data_.g1_[1], &o_data.data_.g1_size_[1], false},
+    {"g1_2", (void**)&o_data.data_.g1_[2], &o_data.data_.g1_size_[2], false},
+    {"g1_3", (void**)&o_data.data_.g1_[3], &o_data.data_.g1_size_[3], false},
+    {"W0", (void**)&o_data.data_.W0_, &o_data.data_.W0_size_, false},
+    {"W1", (void**)&o_data.data_.W1_, &o_data.data_.W1_size_, false},
+    {"Wout", (void**)&o_data.data_.Wout_, &o_data.data_.Wout_size_, false},
+    {"W0_scale", (void**)&o_data.data_.W0_scale_, &o_data.data_.W0_scale_size_, false},
+    {"W1_scale", (void**)&o_data.data_.W1_scale_, &o_data.data_.W1_scale_size_, false},
+    {"Wout_scale", (void**)&o_data.data_.Wout_scale_, &o_data.data_.Wout_scale_size_, false},
+  };
+  
+  const nlohmann::json* jblobs = nullptr;
+  {
+    auto it = j.find("blobs");
+    if (it == j.end() || !it->is_array())
+      return OpenNTCResult::InvalidFile;
+    jblobs = &*it;
+  }
+
+  for (const auto& jb : *jblobs)
+  {
+    std::string name;
+    uint64_t off = 0, size = 0;
+    if (!TryGet(jb, "name", name) || !TryGet(jb, "offset", off) || !TryGet(jb, "size", size))
+      return OpenNTCResult::InvalidFile;
+    if (blob_off + off + size > fil_size)
+      return OpenNTCResult::InvalidFile;
+    for (int slot_i = 0; slot_i < _countof(slots); slot_i++)
+    {
+      OpenNTCBlobSlot& s = slots[slot_i];
+      if (name == s.name_)
+      {
+        *s.dst_ = o_data.raw_ + blob_off + off;
+        *s.size_ = size;
+        s.found_ = true;
+      }
+    }
+  }
+
+  for (int slot_i = 0; slot_i < _countof(slots); slot_i++)
+  {
+    if (slots[slot_i].found_ == false)
+      return OpenNTCResult::InvalidFile;
+  }
+
+  return OpenNTCResult::Success;
+}

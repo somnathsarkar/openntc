@@ -23,6 +23,8 @@ enum class OpenNTCResult
   AllocationFailure,
   InvalidManifest,
   FileNotFound,
+  InvalidFile,
+  FileWriteFailure
 };
 
 class Tensor2d
@@ -212,6 +214,12 @@ struct OpenNTCTrainInfo
   int grids_per_batch_;
 };
 
+struct OpenNTCFileData
+{
+  OpenNTCCompressedData data_;
+  uint8_t* raw_;
+};
+
 class OpenNTCContext
 {
 public:
@@ -231,6 +239,9 @@ public:
   OpenNTCCompressedData GetCompressedData();
   OpenNTCResult LoadManifest(const std::string& filepath);
   OpenNTCTextureData GetTextureData();
+
+  static OpenNTCResult Dump(const std::string& path, const OpenNTCCompressedData& data);
+  static OpenNTCResult Load(const std::string& path, OpenNTCFileData& data);
 
   // Host-side parameters after training
 
