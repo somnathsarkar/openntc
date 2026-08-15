@@ -48,7 +48,7 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::C
 
 OpenNTCContext g_ctx;
 bool g_train_in_progress = false;
-int32_t g_dim = 1024;
+int32_t g_dim = 2048;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -936,7 +936,7 @@ void LoadContent()
   D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
   UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_1K-JPG/manifest.json");
+  g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
   OpenNTCTextureData tex_data = g_ctx.GetTextureData();
 
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
@@ -981,7 +981,7 @@ void LoadContent()
   UINT64 scratch_size = 0llu;
   for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
   {
-    int mip_dim = 1024 / (1 << mip_i);
+    int mip_dim = g_ctx.GetMipDim(mip_i);
     UINT64 mip_row = RoundUpTo(sizeof(float) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
     scratch_size += mip_row * mip_dim;
   }
@@ -1020,7 +1020,7 @@ void LoadContent()
     g_buffer_scratch->Map(0, &read_range, &mapped);
     for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
     {
-      UINT64 mip_dim = 1024 / (1 << mip_i);
+      UINT64 mip_dim = g_ctx.GetMipDim(mip_i);
       UINT64 mip_row = sizeof(float) * mip_dim * tex_data.channels_[tex_i];
       UINT64 mip_row_padded = RoundUpTo(mip_row, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
       UINT64 mip_size = mip_row_padded * mip_dim;
@@ -1074,14 +1074,14 @@ void LoadCompressedData(bool from_file = false)
   OpenNTCCompressedData cdata;
   if (from_file)
   {
-    OpenNTCResult res = OpenNTCContext::Load("bricks101.ntc", g_fil_data);
+    OpenNTCResult res = OpenNTCContext::Load("bricks101_2k.ntc", g_fil_data);
     VERIFY(res == OpenNTCResult::Success);
     cdata = g_fil_data.Data();
   }
   else
   {
     cdata = g_ctx.GetCompressedData();
-    OpenNTCContext::Dump("bricks101.ntc", cdata);
+    OpenNTCContext::Dump("bricks101_2k.ntc", cdata);
   }
 
   {

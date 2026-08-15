@@ -526,7 +526,7 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
       g1_grid_dim_[feature_level],
       g0_channels_,
       g1_channels_,
-      lod / 8.0f,
+      lod / static_cast<float>(mip_count_ - 1),
       grid_draws_.DevicePtr(),
       g0_noise_.DevicePtr(),
       g1_noise_.DevicePtr(),
@@ -746,7 +746,7 @@ OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
         g1_grid_dim_[feature_level],
         g0_channels_,
         g1_channels_,
-        mip_i / 8.0f,
+        mip_i / static_cast<float>(mip_count_ - 1),
         grid_draws_.DevicePtr(),
         g0_noise_.DevicePtr(),
         g1_noise_.DevicePtr(),
@@ -823,7 +823,7 @@ OpenNTCEvalResults OpenNTCContext::Eval()
         g1_grid_dim_[feature_level],
         g0_channels_,
         g1_channels_,
-        mip_i / 8.0f,
+        mip_i / static_cast<float>(mip_count_ - 1),
         grid_draws_.DevicePtr(),
         g0_noise_.DevicePtr(),
         g1_noise_.DevicePtr(),
@@ -1219,9 +1219,9 @@ struct OpenNTCBlob
 OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompressedData& data)
 {
   std::vector<OpenNTCBlob> blobs;
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < data.level_count_; i++)
     blobs.push_back({std::format("g0_{}", i), data.g0_size_[i], data.g0_[i]});
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < data.level_count_; i++)
     blobs.push_back({std::format("g1_{}", i), data.g1_size_[i], data.g1_[i]});
   blobs.push_back({"W0", data.W0_size_, data.W0_});
   blobs.push_back({"W1", data.W1_size_, data.W1_});
@@ -1390,6 +1390,14 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2);
   if (!success)
     return OpenNTCResult::InvalidFile;
+
+  if (o_data.data_.level_count_ < 1 ||
+      o_data.data_.level_count_ > OpenNTCContext::kMaxLevels ||
+      o_data.data_.mip_count_ < 1 ||
+      o_data.data_.mip_count_ > OpenNTCContext::kMaxMips)
+  {
+    return OpenNTCResult::InvalidFile;
+  }
 
   std::vector<OpenNTCBlobSlot> slots;
   for (int i = 0; i < o_data.data_.level_count_; i++)
