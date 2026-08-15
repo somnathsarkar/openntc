@@ -59,8 +59,10 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
 struct NTC
 {
-  int4 g0_grid_dim;
-  int4 g1_grid_dim;
+  int4 g0_grid_dim[2];
+  int4 g1_grid_dim[2];
+  uint4 g0_offset[2];
+  uint4 g1_offset[2];
   int g0_bytes_per_channel;
   int g1_bytes_per_channel;
   int g0_channels;
@@ -73,14 +75,14 @@ struct NTC
 
 ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
-Buffer<uint> g0[4] : register(t0, space0);
-Buffer<uint> g1[4] : register(t4, space0);
-ByteAddressBuffer W0 : register(t8, space0);
-ByteAddressBuffer W1 : register(t9, space0);
-ByteAddressBuffer Wout : register(t10, space0);
-ByteAddressBuffer W0_scale : register(t11, space0);
-ByteAddressBuffer W1_scale : register(t12, space0);
-ByteAddressBuffer Wout_scale : register(t13, space0);
+Buffer<uint> g0 : register(t0, space0);
+Buffer<uint> g1 : register(t1, space0);
+ByteAddressBuffer W0 : register(t2, space0);
+ByteAddressBuffer W1 : register(t3, space0);
+ByteAddressBuffer Wout : register(t4, space0);
+ByteAddressBuffer W0_scale : register(t5, space0);
+ByteAddressBuffer W1_scale : register(t6, space0);
+ByteAddressBuffer Wout_scale : register(t7, space0);
 
 struct PixelShaderInput
 {
@@ -150,8 +152,10 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
   float lodab = 0.5 * log2(d);
   int lod = clamp(int(lodab), 0, 8);
   int feature_level = FeatureLevelForLod(lod);
-  int g0_dim = NTCCBV.g0_grid_dim[feature_level];
-  int g1_dim = NTCCBV.g1_grid_dim[feature_level];
+  int fli = (feature_level / 4);
+  int flj = (feature_level % 4);
+  int g0_dim = NTCCBV.g0_grid_dim[fli][flj];
+  int g1_dim = NTCCBV.g1_grid_dim[fli][flj];
 
   // G0: 8ch x 2b = 16b per cell, half-word aligned; exact integer decode.
   int2 g0_xy = int2(floor(uv * g0_dim - 0.5));
@@ -162,6 +166,9 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
   g0_y[0] = max(g0_xy.y, 0);
   g0_y[1] = min(g0_xy.y + 1, g0_dim - 1);
 
+  uint g0_off = NTCCBV.g0_offset[fli][flj] / 4;
+  uint g1_off = NTCCBV.g1_offset[fli][flj] / 4;
+
   [unroll]
   for (int i = 0; i < 2; i++)
   {
@@ -170,7 +177,7 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
     {
       int ij = i * 2 + j;
       uint cell = (uint)(g0_y[i] * g0_dim + g0_x[j]);
-      uint word = g0[feature_level].Load(cell >> 1);
+      uint word = g0.Load(g0_off + (cell >> 1));
       uint c16 = (word >> ((cell & 1u) * 16u)) & 0xFFFFu;
       // (k << 6) - 128 == (k << 6) ^ 0x80 per byte: lane = f * 128 exactly
       o_feat[ij * 2 + 0] = Spread2(c16 & 0xFFu) ^ 0x80808080u;  // ch 0-3
@@ -203,8 +210,8 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
       float m = mult[i * 2 + j];
       uint cell = (uint)(g1_y[i] * g1_dim + g1_x[j]);
       uint bitpos = cell * 48u;
-      uint w0 = g1[feature_level].Load(bitpos >> 5);
-      uint w1 = g1[feature_level].Load((bitpos >> 5) + 1u);
+      uint w0 = g1.Load(g1_off + (bitpos >> 5));
+      uint w1 = g1.Load(g1_off + (bitpos >> 5) + 1u);
       uint shift = bitpos & 31u;   // 0 or 16
       [unroll]
       for (int k = 0; k < G1_CHANNELS; k++)

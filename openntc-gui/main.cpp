@@ -88,8 +88,8 @@ bool g_compressed_data_loaded = false;
 OpenNTCFileData g_fil_data;
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
-ComPtr<ID3D12Resource> g_buffer_g0[OpenNTCContext::kMaxLevels];
-ComPtr<ID3D12Resource> g_buffer_g1[OpenNTCContext::kMaxLevels];
+ComPtr<ID3D12Resource> g_buffer_g0;
+ComPtr<ID3D12Resource> g_buffer_g1;
 ComPtr<ID3D12Resource> g_buffer_W0;
 ComPtr<ID3D12Resource> g_buffer_W1;
 ComPtr<ID3D12Resource> g_buffer_Wout;
@@ -115,8 +115,10 @@ struct ModelViewProjection
 
 struct NTCInfo
 {
-  int g0_grid_dim[4];
-  int g1_grid_dim[4];
+  int g0_grid_dim[8];
+  int g1_grid_dim[8];
+  uint32_t g0_offset[8];
+  uint32_t g1_offset[8];
   int g0_bytes_per_channel;
   int g1_bytes_per_channel;
   int g0_channels;
@@ -144,7 +146,7 @@ D3D12_INDEX_BUFFER_VIEW g_ibv;
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_fov = 110.0f;
 
-constexpr int32_t g_nonimgui_srv_count = kMaxSources + 1 + (4 + 4 + 3 + 3);
+constexpr int32_t g_nonimgui_srv_count = kMaxSources + 1 + (1 + 1 + 3 + 3);
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -728,7 +730,7 @@ void LoadContent()
     D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
     drange_srv.RegisterSpace = 0;
     drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 4 + 4 + 3 + 3;
+    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
     drange_srv.OffsetInDescriptorsFromTableStart = 0;
     drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -1073,6 +1075,7 @@ void LoadCompressedData(bool from_file = false)
   if (from_file)
   {
     OpenNTCResult res = OpenNTCContext::Load("bricks101.ntc", g_fil_data);
+    VERIFY(res == OpenNTCResult::Success);
     cdata = g_fil_data.Data();
   }
   else
@@ -1083,11 +1086,14 @@ void LoadCompressedData(bool from_file = false)
 
   {
     NTCInfo ntc_info = {};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < cdata.level_count_; i++)
     {
       ntc_info.g0_grid_dim[i] = cdata.g0_grid_dim_[i];
       ntc_info.g1_grid_dim[i] = cdata.g1_grid_dim_[i];
+      ntc_info.g0_offset[i] = static_cast<uint32_t>(cdata.g0_offset_[i]);
+      ntc_info.g1_offset[i] = static_cast<uint32_t>(cdata.g1_offset_[i]);
     }
+
     ntc_info.g0_bytes_per_channel = cdata.g0_bytes_per_channel_;
     ntc_info.g1_bytes_per_channel = cdata.g1_bytes_per_channel_;
     ntc_info.g0_channels = cdata.g0_channels_;
@@ -1132,56 +1138,21 @@ void LoadCompressedData(bool from_file = false)
     g_buffer_ntc_info->Unmap(0, &read_range);
   }
 
-  for (int level_i = 0; level_i < 4; level_i++)
+  uint64_t g0_size = 0;
+  uint64_t g1_size = 0;
+  for (int level_i = 0; level_i < cdata.level_count_; level_i++)
   {
-    D3D12_RESOURCE_DESC buf_desc = {};
-    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
-    buf_desc.Alignment = 0;
-    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    buf_desc.Width = cdata.g0_size_[level_i];
-    buf_desc.Height = 1;
-    buf_desc.DepthOrArraySize = 1;
-    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    buf_desc.MipLevels = 1;
-    buf_desc.SampleDesc.Count = 1;
-    buf_desc.SampleDesc.Quality = 0;
-
-    D3D12_HEAP_PROPERTIES heap_props;
-    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
-    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap_props.CreationNodeMask = 1;
-    heap_props.VisibleNodeMask = 1;
-
-    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_g0[level_i])));
-    
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_UINT;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.g0_size_[level_i] / sizeof(uint32_t);
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
-
-    g_device->CreateShaderResourceView(g_buffer_g0[level_i].Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(level_i));
-    
-    void* mapped = nullptr;
-    D3D12_RANGE read_range = {0, 0};
-    g_buffer_g0[level_i]->Map(0, &read_range, &mapped);
-    memcpy(mapped, cdata.g0_[level_i], cdata.g0_size_[level_i]);
-    g_buffer_g0[level_i]->Unmap(0, &read_range);
+    g0_size += cdata.g0_size_[level_i];
+    g1_size += cdata.g1_size_[level_i];
   }
 
-  for (int level_i = 0; level_i < 4; level_i++)
   {
     D3D12_RESOURCE_DESC buf_desc = {};
     buf_desc.Format = DXGI_FORMAT_UNKNOWN;
     buf_desc.Alignment = 0;
     buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    buf_desc.Width = cdata.g1_size_[level_i];
+    buf_desc.Width = g0_size;
     buf_desc.Height = 1;
     buf_desc.DepthOrArraySize = 1;
     buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
@@ -1196,24 +1167,67 @@ void LoadCompressedData(bool from_file = false)
     heap_props.CreationNodeMask = 1;
     heap_props.VisibleNodeMask = 1;
 
-    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_g1[level_i])));
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_g0)));
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_UINT;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    srv_desc.Buffer.NumElements = cdata.g1_size_[level_i] / sizeof(uint32_t);
+    srv_desc.Buffer.NumElements = g0_size / sizeof(uint32_t);
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_g1[level_i].Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(4 + level_i));
+    g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(0));
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
-    g_buffer_g1[level_i]->Map(0, &read_range, &mapped);
-    memcpy(mapped, cdata.g1_[level_i], cdata.g1_size_[level_i]);
-    g_buffer_g1[level_i]->Unmap(0, &read_range);
+    g_buffer_g0->Map(0, &read_range, &mapped);
+    for (int level_i = 0; level_i < cdata.level_count_; level_i++)
+      memcpy(static_cast<char*>(mapped) + cdata.g0_offset_[level_i], cdata.g0_[level_i], cdata.g0_size_[level_i]);
+    g_buffer_g0->Unmap(0, nullptr);
+  }
+
+  {
+    D3D12_RESOURCE_DESC buf_desc = {};
+    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+    buf_desc.Alignment = 0;
+    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    buf_desc.Width = g1_size;
+    buf_desc.Height = 1;
+    buf_desc.DepthOrArraySize = 1;
+    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    buf_desc.MipLevels = 1;
+    buf_desc.SampleDesc.Count = 1;
+    buf_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_g1)));
+    
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = DXGI_FORMAT_R32_UINT;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv_desc.Buffer.FirstElement = 0;
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    srv_desc.Buffer.NumElements = g1_size / sizeof(uint32_t);
+    srv_desc.Buffer.StructureByteStride = 0;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(1));
+    
+    void* mapped = nullptr;
+    D3D12_RANGE read_range = {0, 0};
+    g_buffer_g1->Map(0, &read_range, &mapped);
+    for (int level_i = 0; level_i < cdata.level_count_; level_i++)
+      memcpy(static_cast<char*>(mapped) + cdata.g1_offset_[level_i], cdata.g1_[level_i], cdata.g1_size_[level_i]);
+    g_buffer_g1->Unmap(0, nullptr);
   }
 
   {
@@ -1248,7 +1262,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(8));
+    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(2));
 
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1290,7 +1304,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
 
-    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(9));
+    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(3));
 
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1331,7 +1345,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(10));
+    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(4));
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1372,7 +1386,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(11));
+    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(5));
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1413,7 +1427,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(12));
+    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(6));
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1454,7 +1468,7 @@ void LoadCompressedData(bool from_file = false)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(13));
+    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(7));
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};

@@ -865,6 +865,11 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
     data.g1_[i] = g1_host_[i];
     data.g1_size_[i] = (g1_[i].NumElems() * g1_bytes_per_channel_) / 8;
   }
+  for (int i = 1; i < level_count_; i++)
+  {
+    data.g0_offset_[i] = data.g0_offset_[i - 1] + data.g0_size_[i - 1];
+    data.g1_offset_[i] = data.g1_offset_[i - 1] + data.g1_size_[i - 1];
+  }
   data.W0_ = W0_host_;
   data.W0_size_ = ((hidden_dim_ * feature_dim_padded_) / 4) * sizeof(uint32_t);
   data.W1_ = W1_host_;
@@ -1226,17 +1231,17 @@ OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompres
   blobs.push_back({"Wout_scale", data.Wout_scale_size_, data.Wout_scale_});
 
   nlohmann::json j;
-  j["source"] = {{"generator", "openntc"}, {"version", 2}};
+  j["source"] = {{"generator", "openntc"}, {"version", 3}};
   j["dim"] = data.dim_;
   j["mip_count"] = data.mip_count_;
   j["level_count"] = data.level_count_;
   j["g0"] = {
-    {"grid_dims", {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3]}},
+    {"grid_dims", {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4]}},
     {"bits", data.g0_bytes_per_channel_},
     {"channels", data.g0_channels_}
   };
   j["g1"] = {
-    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3]}},
+    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g0_grid_dim_[4]}},
     {"bits", data.g1_bytes_per_channel_},
     {"channels", data.g1_channels_}
   };
@@ -1257,7 +1262,7 @@ OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompres
 
   std::string js = j.dump();
   // 4 byte magic word: ONTC = 0x43544E4F
-  uint32_t header[4] = {0x43544E4F, 2, (uint32_t)js.size(), (uint32_t)off};
+  uint32_t header[4] = {0x43544E4F, 3, (uint32_t)js.size(), (uint32_t)off};
 
   std::ofstream f(path, std::ios::binary);
   if (!f) return OpenNTCResult::FileNotFound;
@@ -1306,7 +1311,8 @@ static bool TryGet(const nlohmann::json& j, const char* key, T& o_val)
   return true;
 }
 
-static bool TryGetArray(const nlohmann::json& j, const char* key, int* o_vals, int n)
+template <typename T>
+static bool TryGetArray(const nlohmann::json& j, const char* key, T* o_vals, int n)
 {
   auto it = j.find(key);
   if (it == j.end() || !it->is_array() || (int)it->size() != n) return false;
@@ -1346,7 +1352,7 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   if (raw_size < 16)
     return OpenNTCResult::InvalidFile;
   uint32_t* header = (uint32_t*)o_data.raw_;
-  if (header[0] != 0x43544E4F || header[1] != 2)
+  if (header[0] != 0x43544E4F || header[1] != 3)
     return OpenNTCResult::InvalidFile;
 
   // Validate json
@@ -1369,10 +1375,10 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
     return OpenNTCResult::InvalidFile;
 
   bool success = true;
-  success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, 4);
+  success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, OpenNTCContext::kMaxLevels);
   success &= TryGet(*jg0, "bits", o_data.data_.g0_bytes_per_channel_);
   success &= TryGet(*jg0, "channels", o_data.data_.g0_channels_);
-  success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, 4);
+  success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, OpenNTCContext::kMaxLevels);
   success &= TryGet(*jg1, "bits", o_data.data_.g1_bytes_per_channel_);
   success &= TryGet(*jg1, "channels", o_data.data_.g1_channels_);
   success &= TryGet(j, "dim", o_data.data_.dim_);
@@ -1429,6 +1435,14 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   {
     if (slots[slot_i].found_ == false)
       return OpenNTCResult::InvalidFile;
+  }
+
+  o_data.data_.g0_offset_[0] = 0;
+  o_data.data_.g1_offset_[0] = 0;
+  for (int level_i = 1; level_i < o_data.data_.level_count_; level_i++)
+  {
+    o_data.data_.g0_offset_[level_i] = o_data.data_.g0_size_[level_i - 1] + o_data.data_.g0_offset_[level_i - 1];
+    o_data.data_.g1_offset_[level_i] = o_data.data_.g1_size_[level_i - 1] + o_data.data_.g1_offset_[level_i - 1];
   }
 
   return OpenNTCResult::Success;

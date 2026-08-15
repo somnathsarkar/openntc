@@ -349,6 +349,8 @@ struct OpenNTCCompressedData
 
   size_t g0_size_[OpenNTCContext::kMaxLevels];
   size_t g1_size_[OpenNTCContext::kMaxLevels];
+  size_t g0_offset_[OpenNTCContext::kMaxLevels];
+  size_t g1_offset_[OpenNTCContext::kMaxLevels];
   size_t W0_size_;
   size_t W1_size_;
   size_t Wout_size_;
