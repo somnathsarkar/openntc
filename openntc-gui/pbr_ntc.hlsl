@@ -4,6 +4,7 @@
 #define G1_BITS 4
 #define G0_CHANNELS 8
 #define G1_CHANNELS 12
+#define MAX_LEVELS 5
 
 struct ModelViewProjection
 {
@@ -63,6 +64,7 @@ struct NTC
   int g0_channels;
   int g1_channels;
   int dim;
+  int mip_count;
   float rcp_s_a1;
   float rcp_s_a2;
 };
@@ -126,7 +128,9 @@ int FeatureLevelForLod(int lod)
     return 1;
   else if (lod <= 7)
     return 2;
-  return 3;
+  else if (lod <= 9)
+    return 3;
+  return 4;
 }
 
 // 4 x 2-bit fields in the low byte of b -> top 2 bits of 4 bytes (k << 6 per lane)
@@ -255,7 +259,7 @@ void GetFeaturesPacked(float2 uv, out uint o_feat[16])
   }
 
   // Lane 56: lod scalar; lanes 57-59: zero pad (must match W0's zero pad rows).
-  o_feat[14] = PackS8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
+  o_feat[14] = PackS8(int4(int(round(lod / float(NTCCBV.mip_count - 1) * 128.0f)), 0, 0, 0));
   o_feat[15] = 0u;
 }
 

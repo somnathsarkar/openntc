@@ -48,6 +48,7 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::C
 
 OpenNTCContext g_ctx;
 bool g_train_in_progress = false;
+int32_t g_dim = 1024;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -87,8 +88,8 @@ bool g_compressed_data_loaded = false;
 OpenNTCFileData g_fil_data;
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
-ComPtr<ID3D12Resource> g_buffer_g0[4];
-ComPtr<ID3D12Resource> g_buffer_g1[4];
+ComPtr<ID3D12Resource> g_buffer_g0[OpenNTCContext::kMaxLevels];
+ComPtr<ID3D12Resource> g_buffer_g1[OpenNTCContext::kMaxLevels];
 ComPtr<ID3D12Resource> g_buffer_W0;
 ComPtr<ID3D12Resource> g_buffer_W1;
 ComPtr<ID3D12Resource> g_buffer_Wout;
@@ -121,6 +122,7 @@ struct NTCInfo
   int g0_channels;
   int g1_channels;
   int dim;
+  int mip_count;
   float rcp_s_a1;
   float rcp_s_a2;
 };
@@ -945,8 +947,8 @@ void LoadContent()
     tex_desc.Alignment = 0;
     tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    tex_desc.Width = 1024;
-    tex_desc.Height = 1024;
+    tex_desc.Width = g_ctx.GetMipDim(0);
+    tex_desc.Height = g_ctx.GetMipDim(0);
     tex_desc.DepthOrArraySize = 1;
     tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     tex_desc.MipLevels = tex_data.mip_count_;
@@ -1091,6 +1093,7 @@ void LoadCompressedData(bool from_file = false)
     ntc_info.g0_channels = cdata.g0_channels_;
     ntc_info.g1_channels = cdata.g1_channels_;
     ntc_info.dim = cdata.dim_;
+    ntc_info.mip_count = cdata.mip_count_;
     ntc_info.rcp_s_a1 = 1.0f / cdata.caldata_.s_a1;
     ntc_info.rcp_s_a2 = 1.0f / cdata.caldata_.s_a2;
 
@@ -2042,7 +2045,7 @@ HANDLE CreateEventHandle()
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
   OpenNTCContextInitInfo init_info = {};
-  init_info.dim = 1024;
+  init_info.dim = g_dim;
   init_info.profile = OpenNTCProfile::Bpp_0_2;
   g_ctx.Init(init_info);
 
