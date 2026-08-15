@@ -48,6 +48,9 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::C
 
 OpenNTCContext g_ctx;
 bool g_train_in_progress = false;
+bool g_eval_results_received = false;
+double g_eval_psnr;
+double g_eval_mse;
 int32_t g_dim = 2048;
 
 const uint8_t g_numframes = 2;
@@ -1550,11 +1553,20 @@ void Render()
     {
       g_train_in_progress = false;
       LoadCompressedData();
+      g_eval_results_received = true;
+      OpenNTCEvalResults eval_results = g_ctx.Eval();
+      g_eval_psnr = eval_results.psnr;
+      g_eval_mse = eval_results.mse;
     }
     else if (tprogress.phase_ == OpenNTCTrainPhase::TrainInProgress)
     {
       ImGui::ProgressBar((float)tprogress.batches_complete_ / tprogress.total_batches_);
     }
+  }
+  if (g_eval_results_received)
+  {
+    ImGui::LabelText("PSNR", "%f", g_eval_psnr);
+    ImGui::LabelText("MSE", "%f", g_eval_mse);
   }
   if (ImGui::Button("Load"))
   {

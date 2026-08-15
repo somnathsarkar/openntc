@@ -203,7 +203,7 @@ public:
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
   void BeginTraining(const OpenNTCTrainInfo& train_info);
-  OpenNTCTrainProgress Train(int num_batches);
+  OpenNTCTrainProgress Train(int32_t num_batches);
   OpenNTCTrainProgress TrainUntilComplete();
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
