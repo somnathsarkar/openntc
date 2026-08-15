@@ -70,6 +70,27 @@ public:
     float* dev_;
 };
 
+class U8Tensor3d
+{
+public:
+  U8Tensor3d();
+  ~U8Tensor3d();
+
+  OpenNTCResult Init(int x, int y, int z);
+  OpenNTCResult InitLike(const U8Tensor3d& t0);
+  void FillZero();
+  void Destroy();
+  uint8_t* DevicePtr();
+  bool IsInitialized() const;
+  size_t SizeBytes() const;
+  size_t NumElems() const;
+
+  private:
+    bool initialized_;
+    int shape_[3];
+    uint8_t* dev_;
+};
+
 class IntTensor1d
 {
 public:
@@ -160,15 +181,6 @@ struct OpenNTCTextureSource
 
 constexpr int32_t kMaxSources = 16;
 
-struct OpenNTCTextureData
-{
-  int32_t tex_count_;
-  int32_t mip_count_;
-  int32_t channels_[kMaxSources];
-  OpenNTCSemantic semantics_[kMaxSources];
-  float* mips_[kMaxSources][9];
-};
-
 struct OpenNTCManifest
 {
   OpenNTCTextureSource sources_[kMaxSources];
@@ -184,6 +196,7 @@ struct OpenNTCTrainInfo
 
 class OpenNTCCompressedData;
 class OpenNTCFileData;
+struct OpenNTCTextureData;
 
 class OpenNTCContext
 {
@@ -218,7 +231,6 @@ public:
 
   // Host-side parameters after training
 
-  uint32_t* tex_data_[kMaxLevels];
   uint32_t* g0_host_[kMaxLevels];
   uint32_t* g1_host_[kMaxLevels];
   uint32_t* W0_host_;
@@ -229,7 +241,7 @@ public:
   float* Wout_scale_;
   OpenNTCCalibration caldata_;
 
-  float* mips_host_[kMaxSources][kMaxMips];
+  uint8_t* mips_host_[kMaxSources][kMaxMips];
 
 private:
 
@@ -326,14 +338,23 @@ private:
 
   IntTensor1d grid_draws_;
   Tensor2d x_;
-  Tensor3d package_[OpenNTCContext::kMaxMips];
+  U8Tensor3d package_[OpenNTCContext::kMaxMips];
 
   // File management
 
   OpenNTCManifest manifest_;
-  Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
-  Tensor3d tex_prep_;
+  U8Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
+  U8Tensor3d tex_prep_;
   Tensor3d tex_filter_;
+};
+
+struct OpenNTCTextureData
+{
+  int32_t tex_count_;
+  int32_t mip_count_;
+  int32_t channels_[kMaxSources];
+  OpenNTCSemantic semantics_[kMaxSources];
+  uint8_t* mips_[kMaxSources][OpenNTCContext::kMaxMips];
 };
 
 struct OpenNTCCompressedData

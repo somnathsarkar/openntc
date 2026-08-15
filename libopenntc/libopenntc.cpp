@@ -165,6 +165,65 @@ size_t Tensor3d::NumElems() const
   return (size_t)shape_[0] * shape_[1] * shape_[2];
 }
 
+U8Tensor3d::U8Tensor3d() : initialized_(false), dev_(nullptr) {}
+
+U8Tensor3d::~U8Tensor3d()
+{
+  Destroy();
+}
+
+OpenNTCResult U8Tensor3d::Init(int x, int y, int z)
+{
+  shape_[0] = x;
+  shape_[1] = y;
+  shape_[2] = z;
+  cudaMalloc(&dev_, sizeof(uint8_t) * x * y * z);
+  if (dev_ == nullptr)
+    return OpenNTCResult::AllocationFailure;
+  initialized_ = true;
+  return OpenNTCResult::Success;
+}
+
+OpenNTCResult U8Tensor3d::InitLike(const U8Tensor3d& t0)
+{
+  return Init(t0.shape_[0], t0.shape_[1], t0.shape_[2]);
+}
+
+void U8Tensor3d::FillZero()
+{
+  cudaMemset(dev_, 0, sizeof(uint8_t) * shape_[0] * shape_[1] * shape_[2]);
+}
+
+void U8Tensor3d::Destroy()
+{
+  if (initialized_)
+  {
+    cudaFree(dev_);
+    initialized_ = false;
+  }
+}
+
+uint8_t* U8Tensor3d::DevicePtr()
+{
+  assert(initialized_);
+  return dev_;
+}
+
+bool U8Tensor3d::IsInitialized() const
+{
+  return initialized_;
+}
+
+size_t U8Tensor3d::SizeBytes() const
+{
+  return sizeof(uint8_t) * shape_[0] * shape_[1] * shape_[2];
+}
+
+size_t U8Tensor3d::NumElems() const
+{
+  return (size_t)shape_[0] * shape_[1] * shape_[2];
+}
+
 IntTensor1d::IntTensor1d() : initialized_(false), dev_(nullptr) {}
 
 IntTensor1d::~IntTensor1d()
@@ -1034,7 +1093,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   for (int i = 0; i < manifest_.source_count_; i++)
   {
     for (int j = 0; j < mip_count_; j++)
-      mips_host_[i][j] = new float[mip_dim_[j] * mip_dim_[j] * 4];
+      mips_host_[i][j] = new uint8_t[mip_dim_[j] * mip_dim_[j] * 4];
   }
   for (int i = 0; i < manifest_.source_count_; i++)
   {
@@ -1053,8 +1112,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     int h;
     int c;
     int desired_channels = 4;
-    stbi_ldr_to_hdr_gamma(1.0f);
-    float* tex_data = stbi_loadf(manifest_.sources_[i].path_.c_str(), &w, &h, &c, desired_channels);
+    uint8_t* tex_data = stbi_load(manifest_.sources_[i].path_.c_str(), &w, &h, &c, desired_channels);
     if (tex_data == nullptr)
     {
       UnloadManifest();
@@ -1066,7 +1124,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       UnloadManifest();
       return OpenNTCResult::InvalidManifest;
     }
-    cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(uint8_t), cudaMemcpyHostToDevice);
     stbi_image_free(tex_data);
 
     PrepareTexInput prepare_in = {};
@@ -1077,7 +1135,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       launch_filter_lanczos(mip_dim_[j - 1], manifest_.sources_[i].num_channels_, 3, mips_[i][j - 1].DevicePtr(), tex_filter_.DevicePtr(), mips_[i][j].DevicePtr());
     }
     for (int j = 0; j < mip_count_; j++)
-      cudaMemcpy(mips_host_[i][j], mips_[i][j].DevicePtr(), sizeof(float) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_, cudaMemcpyDeviceToHost);
+      cudaMemcpy(mips_host_[i][j], mips_[i][j].DevicePtr(), sizeof(uint8_t) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_, cudaMemcpyDeviceToHost);
   }
 
   PackageTexInput package_in = {};

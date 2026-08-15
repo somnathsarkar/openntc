@@ -376,7 +376,7 @@ void launch_draw_features(
   draw_features<<<block_count, 1024>>>(batch_dim, grid_dim, feature_dim, mip_dim, g0_dim, g1_dim, g0_channels, g1_channels, norm_lod, grid_draws, g0_noise, g1_noise, g0, g1, out_features);
 }
 
-__global__ void draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, float* mip, float* out_targets)
+__global__ void draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= batch_dim * grid_dim * grid_dim) return;
@@ -386,11 +386,11 @@ __global__ void draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_
   int y = xy / grid_dim + grid_draws[batch_i + batch_i + 1];
   for (int i = 0; i < pred_dim; i++)
   {
-    out_targets[i * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = mip[(y * mip_dim * pred_dim) + x * pred_dim + i];
+    out_targets[i * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = mip[(y * mip_dim * pred_dim) + x * pred_dim + i] / 255.0f;
   }
 }
 
-void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, float* mip, float* out_targets)
+void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets)
 {
   int thread_count = batch_dim * grid_dim * grid_dim;
   int block_count = (thread_count + 1023) / 1024;
@@ -662,7 +662,7 @@ void launch_max_abs(int n, float* data, float* result)
   max_abs<<<block_count, 1024>>>(n, data, result);
 }
 
-__global__ void prepare_tex(int w, int h, int c, int cmap_count, PrepareTexInput pt, float *tex, float *o_mip0)
+__global__ void prepare_tex(int w, int h, int c, int cmap_count, PrepareTexInput pt, uint8_t *tex, uint8_t *o_mip0)
 {
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
   int tidy = blockDim.y * blockIdx.y + threadIdx.y;
@@ -675,7 +675,7 @@ __global__ void prepare_tex(int w, int h, int c, int cmap_count, PrepareTexInput
   }
 }
 
-void launch_prepare_tex(int dim, int c, PrepareTexInput pt, float* tex, float* o_mip0)
+void launch_prepare_tex(int dim, int c, PrepareTexInput pt, uint8_t* tex, uint8_t* o_mip0)
 {
   int cmap_count = 0;
   for (int i = 0; i < 4; i++)
@@ -703,7 +703,7 @@ __device__ float lanczos(float x, float a)
   return sinc(PI * x) * sinc(PI * x / a);
 }
 
-__global__ void filter_lanczos(int w_src, int h_src, int c, int a, bool is_y, float* mip_src, float* mip_dst)
+__global__ void filter_lanczos(int w_src, int h_src, int c, int a, bool is_y, void* mip_src, void* mip_dst)
 {
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
   int tidy = blockDim.y * blockIdx.y + threadIdx.y;
@@ -726,18 +726,41 @@ __global__ void filter_lanczos(int w_src, int h_src, int c, int a, bool is_y, fl
     {
       int sx = is_y ? tid.x : sample_loc;
       int sy = is_y ? sample_loc : tid.y;
-      float sampc = mip_src[sy * w_src * c + sx * c + j];
+      float sampc = 0.0f;
+      int src_idx = sy * w_src * c + sx * c + j;
+      if (is_y)
+      {
+        // Source: float temp buffer
+        sampc = ((float*)mip_src)[src_idx];
+      }
+      else
+      {
+        // Source: uint8 texture data
+        sampc = (((uint8_t*)mip_src)[src_idx]) / 255.0f;
+      }
       total[j] += sampc * weight;
     }
     total_weight += weight;
   }
   for (int j = 0; j < c; j++)
   {
-    mip_dst[tid.y * out_dim.x * c + tid.x * c + j] = total[j] / total_weight;
+    int dst_idx = tid.y * out_dim.x * c + tid.x * c + j;
+    float dst_val = (total[j] / total_weight);
+    if (is_y)
+    {
+      // Dest: uint8 texture data
+      float dst_val_uint = min(255.0f, max(0.0f, dst_val * 255.0f));
+      ((uint8_t*)mip_dst)[dst_idx] = (uint8_t)dst_val_uint;
+    }
+    else
+    {
+      // Dest: float temp buffer
+      ((float*)mip_dst)[dst_idx] = (total[j] / total_weight);
+    }
   }
 }
 
-void launch_filter_lanczos(int dim_src, int c, int a, float* mip_src, float* tmp, float* mip_dst)
+void launch_filter_lanczos(int dim_src, int c, int a, uint8_t* mip_src, float* tmp, uint8_t* mip_dst)
 {
   assert(dim_src % 2 == 0);
   unsigned int block_dim_small = ((dim_src / 2) + 31) / 32;
@@ -746,11 +769,11 @@ void launch_filter_lanczos(int dim_src, int c, int a, float* mip_src, float* tmp
   dim3 launch_dims_1 = {block_dim_small, block_dim_small, 1u};
   dim3 block_size = {32u, 32u, 1u};
 
-  filter_lanczos<<<launch_dims_0, block_size>>>(dim_src, dim_src, c, a, false, mip_src, tmp);
-  filter_lanczos<<<launch_dims_1, block_size>>>(dim_src / 2, dim_src, c, a, true, tmp, mip_dst);
+  filter_lanczos<<<launch_dims_0, block_size>>>(dim_src, dim_src, c, a, false, (void*)mip_src, (void*)tmp);
+  filter_lanczos<<<launch_dims_1, block_size>>>(dim_src / 2, dim_src, c, a, true, (void*)tmp, (void*)mip_dst);
 }
 
-__global__ void package_tex(int dim, int c, PackageTexInput pt, float* o_package)
+__global__ void package_tex(int dim, int c, PackageTexInput pt, uint8_t* o_package)
 {
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
   int tidy = blockDim.y * blockIdx.y + threadIdx.y;
@@ -765,7 +788,7 @@ __global__ void package_tex(int dim, int c, PackageTexInput pt, float* o_package
   }
 }
 
-void launch_package_tex(int dim, int c, PackageTexInput pt, float* o_package)
+void launch_package_tex(int dim, int c, PackageTexInput pt, uint8_t* o_package)
 {
   unsigned int block_dim = (dim + 31) / 32;
   dim3 launch_dims = {block_dim, block_dim, 1u};

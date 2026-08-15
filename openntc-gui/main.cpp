@@ -946,8 +946,8 @@ void LoadContent()
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
   {
     g_formats[tex_i] = (tex_data.channels_[tex_i] == 1) ?
-                        DXGI_FORMAT_R32_FLOAT :
-                        DXGI_FORMAT_R32G32B32_FLOAT;
+                        DXGI_FORMAT_R8_UNORM :
+                        DXGI_FORMAT_R8G8B8A8_UNORM;
     D3D12_RESOURCE_DESC tex_desc = {};
     tex_desc.Format = g_formats[tex_i];
     tex_desc.Alignment = 0;
@@ -986,7 +986,7 @@ void LoadContent()
   for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
   {
     int mip_dim = g_ctx.GetMipDim(mip_i);
-    UINT64 mip_row = RoundUpTo(sizeof(float) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    UINT64 mip_row = RoundUpTo(sizeof(uint8_t) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
     scratch_size += mip_row * mip_dim;
   }
 
@@ -1025,11 +1025,28 @@ void LoadContent()
     for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
     {
       UINT64 mip_dim = g_ctx.GetMipDim(mip_i);
-      UINT64 mip_row = sizeof(float) * mip_dim * tex_data.channels_[tex_i];
+      UINT64 channels_padded = (tex_data.channels_[tex_i] == 1) ? 1 : 4; // Pad 3 channels to 4
+      UINT64 mip_row = sizeof(uint8_t) * mip_dim * channels_padded;
       UINT64 mip_row_padded = RoundUpTo(mip_row, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
       UINT64 mip_size = mip_row_padded * mip_dim;
-      for (int y = 0; y < mip_dim; y++)
-        memcpy(static_cast<char*>(mapped) + y * mip_row_padded + mip_off, tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i], mip_row);
+      if (channels_padded == 1)
+      {
+        for (int y = 0; y < mip_dim; y++)
+          memcpy(static_cast<char*>(mapped) + y * mip_row_padded + mip_off, tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i], mip_row);
+      }
+      else
+      {
+        for (int y = 0; y < mip_dim; y++)
+        {
+          for (int x = 0; x < mip_dim; x++)
+          {
+            memcpy(
+              static_cast<char*>(mapped) + y * mip_row_padded + mip_off + x * channels_padded,
+              tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i] + x * tex_data.channels_[tex_i], 3 * sizeof(uint8_t));
+            static_cast<char*>(mapped)[y * mip_row_padded + mip_off + x * channels_padded + 3] = 255;
+          }
+        }
+      }
 
       D3D12_TEXTURE_COPY_LOCATION src_tex_loc = {};
       src_tex_loc.pResource = g_buffer_scratch.Get();
