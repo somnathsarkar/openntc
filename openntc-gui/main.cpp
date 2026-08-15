@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <ShObjIdl.h>
 
 #include <wrl.h>
 using namespace Microsoft::WRL;
@@ -341,6 +342,153 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   dsv_desc.Texture2D.MipSlice = 0;
 
   g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart());
+}
+
+static void RebuildTextureResources()
+{
+  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+  OpenNTCTextureData tex_data = g_ctx.GetTextureData();
+
+  for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
+  {
+    g_formats[tex_i] = (tex_data.channels_[tex_i] == 1) ?
+                        DXGI_FORMAT_R8_UNORM :
+                        DXGI_FORMAT_R8G8B8A8_UNORM;
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Format = g_formats[tex_i];
+    tex_desc.Alignment = 0;
+    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    tex_desc.Width = g_ctx.GetMipDim(0);
+    tex_desc.Height = g_ctx.GetMipDim(0);
+    tex_desc.DepthOrArraySize = 1;
+    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    tex_desc.MipLevels = tex_data.mip_count_;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex[tex_i])));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = g_formats[tex_i];
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = tex_data.mip_count_;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.PlaneSlice = 0;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, SrvDescriptorForTex<D3D12_CPU_DESCRIPTOR_HANDLE>(tex_i));
+    g_compressed_data_loaded = false;
+  }
+
+  UINT64 scratch_size = 0llu;
+  for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
+  {
+    int mip_dim = g_ctx.GetMipDim(mip_i);
+    UINT64 mip_row = RoundUpTo(sizeof(uint8_t) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    scratch_size += mip_row * mip_dim;
+  }
+
+  {
+    D3D12_RESOURCE_DESC buf_desc = {};
+    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+    buf_desc.Alignment = 0;
+    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    buf_desc.Width = scratch_size;
+    buf_desc.Height = 1;
+    buf_desc.DepthOrArraySize = 1;
+    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    buf_desc.MipLevels = 1;
+    buf_desc.SampleDesc.Count = 1;
+    buf_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_scratch)));
+  }
+
+  for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
+  {
+    g_commandlist->Reset(g_commandallocators[g_frame_i].Get(), nullptr);
+    UINT64 mip_off = 0llu;
+
+    void* mapped = nullptr;
+    D3D12_RANGE read_range = {0, 0};
+    g_buffer_scratch->Map(0, &read_range, &mapped);
+    for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
+    {
+      UINT64 mip_dim = g_ctx.GetMipDim(mip_i);
+      UINT64 channels_padded = (tex_data.channels_[tex_i] == 1) ? 1 : 4; // Pad 3 channels to 4
+      UINT64 mip_row = sizeof(uint8_t) * mip_dim * channels_padded;
+      UINT64 mip_row_padded = RoundUpTo(mip_row, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+      UINT64 mip_size = mip_row_padded * mip_dim;
+      if (channels_padded == 1)
+      {
+        for (int y = 0; y < mip_dim; y++)
+          memcpy(static_cast<char*>(mapped) + y * mip_row_padded + mip_off, tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i], mip_row);
+      }
+      else
+      {
+        for (int y = 0; y < mip_dim; y++)
+        {
+          for (int x = 0; x < mip_dim; x++)
+          {
+            memcpy(
+              static_cast<char*>(mapped) + y * mip_row_padded + mip_off + x * channels_padded,
+              tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i] + x * tex_data.channels_[tex_i], 3 * sizeof(uint8_t));
+            static_cast<char*>(mapped)[y * mip_row_padded + mip_off + x * channels_padded + 3] = 255;
+          }
+        }
+      }
+
+      D3D12_TEXTURE_COPY_LOCATION src_tex_loc = {};
+      src_tex_loc.pResource = g_buffer_scratch.Get();
+      src_tex_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      src_tex_loc.PlacedFootprint.Footprint.Width = mip_dim;
+      src_tex_loc.PlacedFootprint.Footprint.Height = mip_dim;
+      src_tex_loc.PlacedFootprint.Footprint.Depth = 1;
+      src_tex_loc.PlacedFootprint.Footprint.Format = g_formats[tex_i];
+      src_tex_loc.PlacedFootprint.Footprint.RowPitch = mip_row_padded;
+      src_tex_loc.PlacedFootprint.Offset = mip_off;
+
+      D3D12_TEXTURE_COPY_LOCATION dst_tex_loc = {};
+      dst_tex_loc.pResource = g_tex[tex_i].Get();
+      dst_tex_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      dst_tex_loc.SubresourceIndex = mip_i;
+      g_commandlist->CopyTextureRegion(&dst_tex_loc, 0, 0, 0, &src_tex_loc, nullptr);
+
+      mip_off += mip_size;
+    }
+
+    D3D12_RESOURCE_BARRIER rbar = {};
+    rbar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    rbar.Transition.pResource = g_tex[tex_i].Get();
+    rbar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    rbar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    rbar.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    rbar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    g_commandlist->ResourceBarrier(1, &rbar);
+
+    g_buffer_scratch->Unmap(0, nullptr);
+    g_commandlist->Close();
+    ID3D12CommandList* lists[] = { g_commandlist.Get() };
+    g_queue->ExecuteCommandLists(1, lists);
+    Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+  }
 }
 
 void LoadContent()
@@ -941,147 +1089,8 @@ void LoadContent()
 
   OpenNTCResult load_res = g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_8K-JPG/manifest.json");
   VERIFY(load_res == OpenNTCResult::Success);
-  OpenNTCTextureData tex_data = g_ctx.GetTextureData();
-
-  for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
-  {
-    g_formats[tex_i] = (tex_data.channels_[tex_i] == 1) ?
-                        DXGI_FORMAT_R8_UNORM :
-                        DXGI_FORMAT_R8G8B8A8_UNORM;
-    D3D12_RESOURCE_DESC tex_desc = {};
-    tex_desc.Format = g_formats[tex_i];
-    tex_desc.Alignment = 0;
-    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    tex_desc.Width = g_ctx.GetMipDim(0);
-    tex_desc.Height = g_ctx.GetMipDim(0);
-    tex_desc.DepthOrArraySize = 1;
-    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    tex_desc.MipLevels = tex_data.mip_count_;
-    tex_desc.SampleDesc.Count = 1;
-    tex_desc.SampleDesc.Quality = 0;
-
-    D3D12_HEAP_PROPERTIES heap_props;
-    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
-    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap_props.CreationNodeMask = 1;
-    heap_props.VisibleNodeMask = 1;
-
-    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex[tex_i])));
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = g_formats[tex_i];
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv_desc.Texture2D.MipLevels = tex_data.mip_count_;
-    srv_desc.Texture2D.MostDetailedMip = 0;
-    srv_desc.Texture2D.PlaneSlice = 0;
-    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
-
-    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, SrvDescriptorForTex<D3D12_CPU_DESCRIPTOR_HANDLE>(tex_i));
-  }
-
-  UINT64 scratch_size = 0llu;
-  for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
-  {
-    int mip_dim = g_ctx.GetMipDim(mip_i);
-    UINT64 mip_row = RoundUpTo(sizeof(uint8_t) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-    scratch_size += mip_row * mip_dim;
-  }
-
-  {
-    D3D12_RESOURCE_DESC buf_desc = {};
-    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
-    buf_desc.Alignment = 0;
-    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    buf_desc.Width = scratch_size;
-    buf_desc.Height = 1;
-    buf_desc.DepthOrArraySize = 1;
-    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    buf_desc.MipLevels = 1;
-    buf_desc.SampleDesc.Count = 1;
-    buf_desc.SampleDesc.Quality = 0;
-
-    D3D12_HEAP_PROPERTIES heap_props;
-    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
-    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap_props.CreationNodeMask = 1;
-    heap_props.VisibleNodeMask = 1;
-
-    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_scratch)));
-  }
-
-  for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
-  {
-    g_commandlist->Reset(g_commandallocators[g_frame_i].Get(), nullptr);
-    UINT64 mip_off = 0llu;
-
-    void* mapped = nullptr;
-    D3D12_RANGE read_range = {0, 0};
-    g_buffer_scratch->Map(0, &read_range, &mapped);
-    for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
-    {
-      UINT64 mip_dim = g_ctx.GetMipDim(mip_i);
-      UINT64 channels_padded = (tex_data.channels_[tex_i] == 1) ? 1 : 4; // Pad 3 channels to 4
-      UINT64 mip_row = sizeof(uint8_t) * mip_dim * channels_padded;
-      UINT64 mip_row_padded = RoundUpTo(mip_row, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-      UINT64 mip_size = mip_row_padded * mip_dim;
-      if (channels_padded == 1)
-      {
-        for (int y = 0; y < mip_dim; y++)
-          memcpy(static_cast<char*>(mapped) + y * mip_row_padded + mip_off, tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i], mip_row);
-      }
-      else
-      {
-        for (int y = 0; y < mip_dim; y++)
-        {
-          for (int x = 0; x < mip_dim; x++)
-          {
-            memcpy(
-              static_cast<char*>(mapped) + y * mip_row_padded + mip_off + x * channels_padded,
-              tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i] + x * tex_data.channels_[tex_i], 3 * sizeof(uint8_t));
-            static_cast<char*>(mapped)[y * mip_row_padded + mip_off + x * channels_padded + 3] = 255;
-          }
-        }
-      }
-
-      D3D12_TEXTURE_COPY_LOCATION src_tex_loc = {};
-      src_tex_loc.pResource = g_buffer_scratch.Get();
-      src_tex_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-      src_tex_loc.PlacedFootprint.Footprint.Width = mip_dim;
-      src_tex_loc.PlacedFootprint.Footprint.Height = mip_dim;
-      src_tex_loc.PlacedFootprint.Footprint.Depth = 1;
-      src_tex_loc.PlacedFootprint.Footprint.Format = g_formats[tex_i];
-      src_tex_loc.PlacedFootprint.Footprint.RowPitch = mip_row_padded;
-      src_tex_loc.PlacedFootprint.Offset = mip_off;
-
-      D3D12_TEXTURE_COPY_LOCATION dst_tex_loc = {};
-      dst_tex_loc.pResource = g_tex[tex_i].Get();
-      dst_tex_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-      dst_tex_loc.SubresourceIndex = mip_i;
-      g_commandlist->CopyTextureRegion(&dst_tex_loc, 0, 0, 0, &src_tex_loc, nullptr);
-
-      mip_off += mip_size;
-    }
-
-    D3D12_RESOURCE_BARRIER rbar = {};
-    rbar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    rbar.Transition.pResource = g_tex[tex_i].Get();
-    rbar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    rbar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    rbar.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    rbar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    g_commandlist->ResourceBarrier(1, &rbar);
-
-    g_buffer_scratch->Unmap(0, nullptr);
-    g_commandlist->Close();
-    ID3D12CommandList* lists[] = { g_commandlist.Get() };
-    g_queue->ExecuteCommandLists(1, lists);
-    Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
-  }
+  
+  RebuildTextureResources();
 
   g_contentloaded = true;
 
@@ -1589,6 +1598,36 @@ void Render()
   if (ImGui::Button("Load"))
   {
     LoadCompressedData(true);
+  }
+  ImGui::End();
+  ImGui::Begin("Load");
+  if (ImGui::Button("Load Manifest"))
+  {
+    ComPtr<IFileOpenDialog> open_dialog;
+
+    VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, &open_dialog));
+
+    if (SUCCEEDED(open_dialog->Show(NULL)))
+    {
+      ComPtr<IShellItem> open_item;
+      if (SUCCEEDED(open_dialog->GetResult(&open_item)))
+      {
+        PWSTR wfile_path;
+        VERIFY(open_item->GetDisplayName(SIGDN_FILESYSPATH, &wfile_path));
+        int file_path_size = WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, nullptr, 0, nullptr, nullptr);
+        std::string file_path(file_path_size - 1, 0);
+        WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, file_path.data(), file_path_size, nullptr, nullptr);
+        CoTaskMemFree(wfile_path);
+        OpenNTCResult load_res = g_ctx.LoadManifest(file_path);
+        
+        // TODO: Log failure in GUI.
+
+        if (load_res == OpenNTCResult::Success)
+        {
+          RebuildTextureResources();
+        }
+      }
+    }
   }
   ImGui::End();
 
