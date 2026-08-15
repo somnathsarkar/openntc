@@ -209,6 +209,7 @@ public:
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
   OpenNTCResult LoadManifest(const std::string& filepath);
+  void UnloadManifest();
   OpenNTCTextureData GetTextureData();
   int32_t GetMipDim(int mip) const;
 

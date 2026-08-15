@@ -51,7 +51,7 @@ bool g_train_in_progress = false;
 bool g_eval_results_received = false;
 double g_eval_psnr;
 double g_eval_mse;
-int32_t g_dim = 2048;
+int32_t g_dim = 4096;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -939,7 +939,8 @@ void LoadContent()
   D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
   UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
+  OpenNTCResult load_res = g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_4K-JPG/manifest.json");
+  VERIFY(load_res == OpenNTCResult::Success);
   OpenNTCTextureData tex_data = g_ctx.GetTextureData();
 
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
@@ -1077,14 +1078,14 @@ void LoadCompressedData(bool from_file = false)
   OpenNTCCompressedData cdata;
   if (from_file)
   {
-    OpenNTCResult res = OpenNTCContext::Load("bricks101_2k.ntc", g_fil_data);
+    OpenNTCResult res = OpenNTCContext::Load("bricks101_4k.ntc", g_fil_data);
     VERIFY(res == OpenNTCResult::Success);
     cdata = g_fil_data.Data();
   }
   else
   {
     cdata = g_ctx.GetCompressedData();
-    OpenNTCContext::Dump("bricks101_2k.ntc", cdata);
+    OpenNTCContext::Dump("bricks101_4k.ntc", cdata);
   }
 
   {

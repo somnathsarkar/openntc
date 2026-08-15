@@ -321,21 +321,6 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   W1_scale_ = new float[hidden_dim_];
   Wout_scale_ = new float[out_dim_padded_];
 
-  for (int i = 0; i < kMaxSources; i++)
-  {
-    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
-      mips_host_[i][j] = new float[mip_dim_[j] * mip_dim_[j] * 4];
-  }
-
-  for (int i = 0; i < kMaxSources; i++)
-  {
-    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
-    {
-      mips_[i][j].Init(mip_dim_[j], mip_dim_[j], 4);
-    }
-  }
-  tex_prep_.Init(mip_dim_[0], mip_dim_[0], 4);
-  tex_filter_.Init(mip_dim_[0], mip_dim_[0], 4);
   for (int i = 0; i < mip_count_; i++)
   {
     package_[i].Init(mip_dim_[i], mip_dim_[i], out_dim_);
@@ -982,9 +967,13 @@ static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string
 
 OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
 {
+  UnloadManifest();
+
   std::ifstream fil(filepath);
-  auto jfil = nlohmann::json::parse(fil);
-  if (!jfil.contains("textures"))
+  if (!fil)
+    return OpenNTCResult::FileNotFound;
+  auto jfil = nlohmann::json::parse(fil, nullptr, false);
+  if (jfil.is_discarded() || !jfil.contains("textures"))
     return OpenNTCResult::InvalidManifest;
   int source_count = 0;
   int32_t dim = -1;
@@ -1039,6 +1028,24 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   }
   manifest_.source_count_ = source_count;
   manifest_.dim_ = dim;
+  if (manifest_.dim_ != mip_dim_[0])
+    return OpenNTCResult::InvalidManifest;
+
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    for (int j = 0; j < mip_count_; j++)
+      mips_host_[i][j] = new float[mip_dim_[j] * mip_dim_[j] * 4];
+  }
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    for (int j = 0; j < mip_count_; j++)
+    {
+      mips_[i][j].Init(mip_dim_[j], mip_dim_[j], 4);
+    }
+  }
+  tex_prep_.Init(mip_dim_[0], mip_dim_[0], 4);
+  tex_filter_.Init(mip_dim_[0], mip_dim_[0], 4);
+  manifest_loaded_ = true;
 
   for (int i = 0; i < manifest_.source_count_; i++)
   {
@@ -1050,11 +1057,13 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     float* tex_data = stbi_loadf(manifest_.sources_[i].path_.c_str(), &w, &h, &c, desired_channels);
     if (tex_data == nullptr)
     {
+      UnloadManifest();
       return OpenNTCResult::FileNotFound;
     }
     if (w != h || w != manifest_.dim_)
     {
       stbi_image_free(tex_data);
+      UnloadManifest();
       return OpenNTCResult::InvalidManifest;
     }
     cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(float), cudaMemcpyHostToDevice);
@@ -1085,7 +1094,10 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   }
 
   if (p != out_dim_)
+  {
+    UnloadManifest();
     return OpenNTCResult::InvalidManifest;
+  }
 
   for (int i = 0; i < mip_count_; i++)
   {
@@ -1098,9 +1110,33 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   return OpenNTCResult::Success;
 }
 
+void OpenNTCContext::UnloadManifest()
+{
+  if (!manifest_loaded_)
+    return;
+
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    for (int j = 0; j < mip_count_; j++)
+      delete[] mips_host_[i][j];
+  }
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    for (int j = 0; j < mip_count_; j++)
+      mips_[i][j].Destroy();
+  }
+  tex_prep_.Destroy();
+  tex_filter_.Destroy();
+
+  manifest_loaded_ = false;
+}
+
 OpenNTCTextureData OpenNTCContext::GetTextureData()
 {
   OpenNTCTextureData tex_data = {};
+  if (!manifest_loaded_)
+    return tex_data;
+
   tex_data.tex_count_ = manifest_.source_count_;
   tex_data.mip_count_ = mip_count_;
   for (int i = 0; i < manifest_.source_count_; i++)
@@ -1115,6 +1151,11 @@ OpenNTCTextureData OpenNTCContext::GetTextureData()
 
 void OpenNTCContext::Destroy()
 {
+  if (manifest_loaded_)
+  {
+    UnloadManifest();
+  }
+
   for (int i = 0; i < level_count_; i++)
   {
     g0_[i].Destroy();
@@ -1168,15 +1209,6 @@ void OpenNTCContext::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
 
-  for (int i = 0; i < kMaxSources; i++)
-  {
-    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
-    {
-      mips_[i][j].Destroy();
-    }
-  }
-  tex_prep_.Destroy();
-  tex_filter_.Destroy();
   for (int i = 0; i < mip_count_; i++)
   {
     package_[i].Destroy();
@@ -1195,12 +1227,6 @@ void OpenNTCContext::Destroy()
   delete[] W0_scale_;
   delete[] W1_scale_;
   delete[] Wout_scale_;
-
-  for (int i = 0; i < kMaxSources; i++)
-  {
-    for (int j = 0; j < OpenNTCContext::kMaxMips; j++)
-      delete[] mips_host_[i][j];
-  }
 }
 
 int32_t OpenNTCContext::GetMipDim(int mip) const
@@ -1241,7 +1267,7 @@ OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompres
     {"channels", data.g0_channels_}
   };
   j["g1"] = {
-    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g0_grid_dim_[4]}},
+    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4]}},
     {"bits", data.g1_bytes_per_channel_},
     {"channels", data.g1_channels_}
   };
