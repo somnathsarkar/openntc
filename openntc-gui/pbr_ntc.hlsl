@@ -150,13 +150,16 @@ uint PackS8(int4 v)
   return pack_clamp_s8(v);
 }
 
-void GetFeaturesPacked(float2 uv, out uint o_feat[16])
+void GetFeaturesPacked(float2 uv, float2 pos_screen, out uint o_feat[16])
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
   float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
   float lodab = 0.5 * log2(d);
-  int lod = clamp(int(lodab), 0, 8);
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
+  float ign = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
+  int lod = int(lodab_clamped) + (ign < frac(lodab_clamped) ? 1 : 0);
   int feature_level = FeatureLevelForLod(lod);
   int fli = (feature_level / 4);
   int flj = (feature_level % 4);
@@ -298,7 +301,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   uint W0x[64 / 4];
   uint W1x[64 / 4];
   float Woutx[12];
-  GetFeaturesPacked(p_in.uv, feat);
+  GetFeaturesPacked(p_in.uv, p_in.pos.xy, feat);
 
   [loop]
   for (int i = 0; i < 64; i += 4)

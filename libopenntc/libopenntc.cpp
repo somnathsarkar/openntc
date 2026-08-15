@@ -505,7 +505,7 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
 
   std::bernoulli_distribution dist_batch_type(0.05);
   std::uniform_real_distribution<float> dist_u(0.0f, 1.0f);
-  std::uniform_int_distribution<int> dist_lod(0, 8);
+  std::uniform_int_distribution<int> dist_lod(0, mip_count_ - 1);
 
   for (batch_i_; batch_i_ < batch_target; batch_i_++)
   {

@@ -51,7 +51,7 @@ bool g_train_in_progress = false;
 bool g_eval_results_received = false;
 double g_eval_psnr;
 double g_eval_mse;
-int32_t g_dim = 4096;
+int32_t g_dim = 8192;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -850,7 +850,7 @@ void LoadContent()
     D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
     drange_srv.RegisterSpace = 0;
     drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 4 + 4 + 3 + 3;
+    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
     drange_srv.OffsetInDescriptorsFromTableStart = 0;
     drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -939,7 +939,7 @@ void LoadContent()
   D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
   UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  OpenNTCResult load_res = g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_4K-JPG/manifest.json");
+  OpenNTCResult load_res = g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_8K-JPG/manifest.json");
   VERIFY(load_res == OpenNTCResult::Success);
   OpenNTCTextureData tex_data = g_ctx.GetTextureData();
 
@@ -1095,14 +1095,14 @@ void LoadCompressedData(bool from_file = false)
   OpenNTCCompressedData cdata;
   if (from_file)
   {
-    OpenNTCResult res = OpenNTCContext::Load("bricks101_4k.ntc", g_fil_data);
+    OpenNTCResult res = OpenNTCContext::Load("bricks101_8k.ntc", g_fil_data);
     VERIFY(res == OpenNTCResult::Success);
     cdata = g_fil_data.Data();
   }
   else
   {
     cdata = g_ctx.GetCompressedData();
-    OpenNTCContext::Dump("bricks101_4k.ntc", cdata);
+    OpenNTCContext::Dump("bricks101_8k.ntc", cdata);
   }
 
   {
@@ -1559,7 +1559,7 @@ void Render()
     {
       OpenNTCTrainInfo train_info = {};
       train_info.grids_per_batch_ = 1;
-      train_info.batch_count_ = 10000;
+      train_info.batch_count_ = 30000;
       g_ctx.BeginTraining(train_info);
       g_train_in_progress = true;
     }

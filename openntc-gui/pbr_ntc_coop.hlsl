@@ -144,13 +144,16 @@ uint Spread2(uint b)
          ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
 }
 
-void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
+void GetFeaturesPacked(float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_feat)
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
   float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
   float lodab = 0.5 * log2(d);
-  int lod = clamp(int(lodab), 0, 8);
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
+  float ign = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
+  int lod = int(lodab_clamped) + (ign < frac(lodab_clamped) ? 1 : 0);
   int feature_level = FeatureLevelForLod(lod);
   int fli = (feature_level / 4);
   int flj = (feature_level % 4);
@@ -287,7 +290,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   vector<uint, 64 / 4> W0x;
   vector<uint, 64 / 4> W1x;
   vector<float, 12> Woutx;
-  GetFeaturesPacked(p_in.uv, feat);
+  GetFeaturesPacked(p_in.uv, p_in.pos.xy, feat);
 
   const vector<int32_t, 64> zero64 = (vector<int32_t, 64>)0;
   const vector<int32_t, 12> zero12 = (vector<int32_t, 12>)0;
