@@ -265,6 +265,7 @@ private:
   int max_batch_;
   int max_batch_dim_;
   int hidden_dim_;
+  int rand_dim_;
 
   // Per training run
 

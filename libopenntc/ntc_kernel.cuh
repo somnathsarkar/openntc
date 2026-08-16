@@ -46,7 +46,7 @@ void launch_update_adam(
   float* v,
   float* params);
 void launch_initialize_rand(int n, curandState* o_rstate);
-void launch_generate_noise(int n, float delta, curandState* rstate, float* o_noise);
+void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise);
 void launch_quantize_grid(int n, int num_bytes, float delta, float* g);
 void launch_clamp_grid(int n, int num_bytes, float delta, float* g);
 void launch_forward_pass(

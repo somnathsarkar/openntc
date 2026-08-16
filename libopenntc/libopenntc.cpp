@@ -320,7 +320,10 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
 
   cublasCreate(&handle_);
   cublasSetMathMode(handle_, CUBLAS_TF32_TENSOR_OP_MATH);
-  
+
+  rand_dim_ = 1024 * 1024;
+  cudaMalloc(&rstate_, sizeof(curandState) * rand_dim_);
+  launch_initialize_rand(rand_dim_, rstate_);
 
   W0_host_ = new uint32_t[(hidden_dim_ * feature_dim_padded_) / 4];
   W1_host_ = new uint32_t[W1_.NumElems() / 4];
@@ -494,8 +497,8 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
     int grid_dim_draw = std::min(mip_dim_[lod], 256);
     if (batch_i_ < lock_i_)
     {
-      launch_generate_noise(g0_grid_dim_[feature_level] * g0_grid_dim_[feature_level] * g0_channels_, g0_delta_, rstate_, g0_noise_.DevicePtr());
-      launch_generate_noise(g1_grid_dim_[feature_level] * g1_grid_dim_[feature_level] * g1_channels_, g1_delta_, rstate_, g1_noise_.DevicePtr());
+      launch_generate_noise(g0_grid_dim_[feature_level] * g0_grid_dim_[feature_level] * g0_channels_, rand_dim_, g0_delta_, rstate_, g0_noise_.DevicePtr());
+      launch_generate_noise(g1_grid_dim_[feature_level] * g1_grid_dim_[feature_level] * g1_channels_, rand_dim_, g1_delta_, rstate_, g1_noise_.DevicePtr());
     }
     else if (batch_i_ == lock_i_)
     {
@@ -1114,9 +1117,6 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     package_[i].Init(mip_dim_[i], mip_dim_[i], out_dim_);
   }
 
-  cudaMalloc(&rstate_, sizeof(curandState) * g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_);
-  launch_initialize_rand(g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_, rstate_);
-
   // Build mips
 
   for (int i = 0; i < manifest_.source_count_; i++)
@@ -1233,8 +1233,6 @@ void OpenNTCContext::UnloadManifest()
     package_[i].Destroy();
   }
 
-  cudaFree(rstate_);
-
   for(int i = 0; i < level_count_; i++)
   {
     delete[] g0_host_[i];
@@ -1313,6 +1311,8 @@ void OpenNTCContext::Destroy()
 
   grid_draws_.Destroy();
   x_.Destroy();
+  
+  cudaFree(rstate_);
 
   delete[] W0_host_;
   delete[] W1_host_;

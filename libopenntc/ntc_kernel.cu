@@ -570,12 +570,16 @@ __global__ void generate_noise(
 {
   int tid = blockDim.x * blockIdx.x + threadIdx.x;
   if (tid >= n) return;
-  o_noise[tid] = curand_uniform(&rstate[tid]) * delta - (delta / 2.0f);
+  int stride = gridDim.x * blockDim.x;
+  curandState rs = rstate[tid];
+  for (int i = tid; i < n; i += stride)
+    o_noise[i] = curand_uniform(&rs) * delta - (delta / 2.0f);
+  rstate[tid] = rs;
 }
 
-void launch_generate_noise(int n, float delta, curandState* rstate, float* o_noise)
+void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise)
 {
-  int block_count = (n + 1023) / 1024;
+  int block_count = (rand_n + 1023) / 1024;
   generate_noise<<<block_count, 1024>>>(n, delta, rstate, o_noise);
 }
 
