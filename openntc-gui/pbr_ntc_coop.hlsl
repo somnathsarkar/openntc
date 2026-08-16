@@ -6,6 +6,7 @@
 #define G1_BITS 4
 #define G0_CHANNELS 8
 #define G1_CHANNELS 12
+#define MAX_LEVELS 5
 
 struct ModelViewProjection
 {
@@ -58,27 +59,30 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
 struct NTC
 {
-  int4 g0_grid_dim;
-  int4 g1_grid_dim;
+  int4 g0_grid_dim[2];
+  int4 g1_grid_dim[2];
+  uint4 g0_offset[2];
+  uint4 g1_offset[2];
   int g0_bytes_per_channel;
   int g1_bytes_per_channel;
   int g0_channels;
   int g1_channels;
   int dim;
+  int mip_count;
   float rcp_s_a1;
   float rcp_s_a2;
 };
 
 ConstantBuffer<NTC> NTCCBV : register(b1, space0);
 
-Buffer<uint> g0[4] : register(t0, space0);
-Buffer<uint> g1[4] : register(t4, space0);
-ByteAddressBuffer W0 : register(t8, space0);
-ByteAddressBuffer W1 : register(t9, space0);
-ByteAddressBuffer Wout : register(t10, space0);
-ByteAddressBuffer W0_scale : register(t11, space0);
-ByteAddressBuffer W1_scale : register(t12, space0);
-ByteAddressBuffer Wout_scale : register(t13, space0);
+Buffer<uint> g0 : register(t0, space0);
+Buffer<uint> g1 : register(t1, space0);
+ByteAddressBuffer W0 : register(t2, space0);
+ByteAddressBuffer W1 : register(t3, space0);
+ByteAddressBuffer Wout : register(t4, space0);
+ByteAddressBuffer W0_scale : register(t5, space0);
+ByteAddressBuffer W1_scale : register(t6, space0);
+ByteAddressBuffer Wout_scale : register(t7, space0);
 
 struct PixelShaderInput
 {
@@ -128,7 +132,9 @@ int FeatureLevelForLod(int lod)
     return 1;
   else if (lod <= 7)
     return 2;
-  return 3;
+  else if (lod <= 9)
+    return 3;
+  return 4;
 }
 
 // 4 x 2-bit fields in the low byte of b -> top 2 bits of 4 bytes (k << 6 per lane)
@@ -138,16 +144,21 @@ uint Spread2(uint b)
          ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
 }
 
-void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
+void GetFeaturesPacked(float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_feat)
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
   float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
   float lodab = 0.5 * log2(d);
-  int lod = clamp(int(lodab), 0, 8);
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
+  float ign = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
+  int lod = int(lodab_clamped) + (ign < frac(lodab_clamped) ? 1 : 0);
   int feature_level = FeatureLevelForLod(lod);
-  int g0_dim = NTCCBV.g0_grid_dim[feature_level];
-  int g1_dim = NTCCBV.g1_grid_dim[feature_level];
+  int fli = (feature_level / 4);
+  int flj = (feature_level % 4);
+  int g0_dim = NTCCBV.g0_grid_dim[fli][flj];
+  int g1_dim = NTCCBV.g1_grid_dim[fli][flj];
 
   // G0: 8ch x 2b = 16b per cell, half-word aligned; exact integer decode.
   int2 g0_xy = int2(floor(uv * g0_dim - 0.5));
@@ -158,6 +169,9 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
   g0_y[0] = max(g0_xy.y, 0);
   g0_y[1] = min(g0_xy.y + 1, g0_dim - 1);
 
+  uint g0_off = NTCCBV.g0_offset[fli][flj] / 4;
+  uint g1_off = NTCCBV.g1_offset[fli][flj] / 4;
+
   [unroll]
   for (int i = 0; i < 2; i++)
   {
@@ -166,7 +180,7 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
     {
       int ij = i * 2 + j;
       uint cell = (uint)(g0_y[i] * g0_dim + g0_x[j]);
-      uint word = g0[feature_level].Load(cell >> 1);
+      uint word = g0.Load(g0_off + (cell >> 1));
       uint c16 = (word >> ((cell & 1u) * 16u)) & 0xFFFFu;
       // (k << 6) - 128 == (k << 6) ^ 0x80 per byte: lane = f * 128 exactly
       o_feat[ij * 2 + 0] = Spread2(c16 & 0xFFu) ^ 0x80808080u;  // ch 0-3
@@ -199,8 +213,8 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
       float m = mult[i * 2 + j];
       uint cell = (uint)(g1_y[i] * g1_dim + g1_x[j]);
       uint bitpos = cell * 48u;
-      uint w0 = g1[feature_level].Load(bitpos >> 5);
-      uint w1 = g1[feature_level].Load((bitpos >> 5) + 1u);
+      uint w0 = g1.Load(g1_off + (bitpos >> 5));
+      uint w1 = g1.Load(g1_off + (bitpos >> 5) + 1u);
       uint shift = bitpos & 31u;   // 0 or 16
       [unroll]
       for (int k = 0; k < G1_CHANNELS; k++)
@@ -249,7 +263,7 @@ void GetFeaturesPacked(float2 uv, out vector<uint, 64 / 4> o_feat)
   }
 
   // Lane 56: lod scalar; lanes 57-59: zero pad (must match W0's zero pad rows).
-  o_feat[14] = pack_clamp_s8(int4(int(round(lod / 8.0f * 128.0f)), 0, 0, 0));
+  o_feat[14] = pack_clamp_s8(int4(int(round(lod / float(NTCCBV.mip_count - 1) * 128.0f)), 0, 0, 0));
   o_feat[15] = 0u;
 }
 
@@ -276,7 +290,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   vector<uint, 64 / 4> W0x;
   vector<uint, 64 / 4> W1x;
   vector<float, 12> Woutx;
-  GetFeaturesPacked(p_in.uv, feat);
+  GetFeaturesPacked(p_in.uv, p_in.pos.xy, feat);
 
   const vector<int32_t, 64> zero64 = (vector<int32_t, 64>)0;
   const vector<int32_t, 12> zero12 = (vector<int32_t, 12>)0;

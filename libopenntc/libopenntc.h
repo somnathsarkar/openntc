@@ -12,7 +12,6 @@ enum class OpenNTCProfile
 struct OpenNTCContextInitInfo
 {
   OpenNTCProfile profile;
-  int dim;
 };
 
 enum class OpenNTCResult
@@ -24,7 +23,8 @@ enum class OpenNTCResult
   InvalidManifest,
   FileNotFound,
   InvalidFile,
-  FileWriteFailure
+  FileWriteFailure,
+  InvalidState,
 };
 
 class Tensor2d
@@ -68,6 +68,27 @@ public:
     bool initialized_;
     int shape_[3];
     float* dev_;
+};
+
+class U8Tensor3d
+{
+public:
+  U8Tensor3d();
+  ~U8Tensor3d();
+
+  OpenNTCResult Init(int x, int y, int z);
+  OpenNTCResult InitLike(const U8Tensor3d& t0);
+  void FillZero();
+  void Destroy();
+  uint8_t* DevicePtr();
+  bool IsInitialized() const;
+  size_t SizeBytes() const;
+  size_t NumElems() const;
+
+  private:
+    bool initialized_;
+    int shape_[3];
+    uint8_t* dev_;
 };
 
 class IntTensor1d
@@ -117,38 +138,6 @@ struct OpenNTCTrainProgress
   int total_batches_;
 };
 
-struct OpenNTCCompressedData
-{
-  uint32_t* g0_[4];
-  uint32_t* g1_[4];
-  uint32_t* W0_;
-  uint32_t* W1_;
-  uint32_t* Wout_;
-
-  float* W0_scale_;
-  float* W1_scale_;
-  float* Wout_scale_;
-
-  size_t g0_size_[4];
-  size_t g1_size_[4];
-  size_t W0_size_;
-  size_t W1_size_;
-  size_t Wout_size_;
-  size_t W0_scale_size_;
-  size_t W1_scale_size_;
-  size_t Wout_scale_size_;
-  
-  int g0_grid_dim_[4];
-  int g1_grid_dim_[4];
-  int g0_bytes_per_channel_;
-  int g1_bytes_per_channel_;
-  int g0_channels_;
-  int g1_channels_;
-  int dim_;
-
-  OpenNTCCalibration caldata_;
-};
-
 enum class OpenNTCSemantic : int32_t
 {
   None = 0,
@@ -192,15 +181,6 @@ struct OpenNTCTextureSource
 
 constexpr int32_t kMaxSources = 16;
 
-struct OpenNTCTextureData
-{
-  int32_t tex_count_;
-  int32_t mip_count_;
-  int32_t channels_[kMaxSources];
-  OpenNTCSemantic semantics_[kMaxSources];
-  float* mips_[kMaxSources][9];
-};
-
 struct OpenNTCManifest
 {
   OpenNTCTextureSource sources_[kMaxSources];
@@ -214,11 +194,19 @@ struct OpenNTCTrainInfo
   int grids_per_batch_;
 };
 
+class OpenNTCCompressedData;
 class OpenNTCFileData;
+struct OpenNTCTextureData;
 
 class OpenNTCContext
 {
 public:
+  static const int kMinDimension = 1024;
+  static const int kMaxDimension = 8192;
+  static const int kMaxMips = 12;
+  static const int kMaxChannels = 16;
+  static const int kMaxLevels = 5;
+
   OpenNTCContext();
   ~OpenNTCContext();
 
@@ -228,22 +216,23 @@ public:
   OpenNTCResult Init(const OpenNTCContextInitInfo& init_info);
   void Destroy();
   void BeginTraining(const OpenNTCTrainInfo& train_info);
-  OpenNTCTrainProgress Train(int num_batches);
+  OpenNTCTrainProgress Train(int32_t num_batches);
   OpenNTCTrainProgress TrainUntilComplete();
   OpenNTCEvalResults Eval();
   OpenNTCCalibration Calibrate(float headroom = 1.1f);
   OpenNTCCompressedData GetCompressedData();
   OpenNTCResult LoadManifest(const std::string& filepath);
+  void UnloadManifest();
   OpenNTCTextureData GetTextureData();
+  int32_t GetMipDim(int mip) const;
 
   static OpenNTCResult Dump(const std::string& path, const OpenNTCCompressedData& data);
   static OpenNTCResult Load(const std::string& path, OpenNTCFileData& data);
 
   // Host-side parameters after training
 
-  uint32_t* tex_data_[4];
-  uint32_t* g0_host_[4];
-  uint32_t* g1_host_[4];
+  uint32_t* g0_host_[kMaxLevels];
+  uint32_t* g1_host_[kMaxLevels];
   uint32_t* W0_host_;
   uint32_t* W1_host_;
   uint32_t* Wout_host_;
@@ -252,13 +241,9 @@ public:
   float* Wout_scale_;
   OpenNTCCalibration caldata_;
 
-  float* mips_host_[kMaxSources][9];
+  uint8_t* mips_host_[kMaxSources][kMaxMips];
 
 private:
-  static const int kMinDimension = 1024;
-  static const int kMaxDimension = 1024;
-  static const int kMaxMips = 9;
-  static const int kMaxChannels = 16;
 
   bool initialized_;
   bool manifest_loaded_;
@@ -270,8 +255,9 @@ private:
   int g1_channels_;
   int mip_count_;
   int mip_dim_[OpenNTCContext::kMaxMips];
-  int g0_grid_dim_[4];
-  int g1_grid_dim_[4];
+  int level_count_;
+  int g0_grid_dim_[OpenNTCContext::kMaxLevels];
+  int g1_grid_dim_[OpenNTCContext::kMaxLevels];
   int feature_dim_;
   int feature_dim_padded_;
   int out_dim_;
@@ -279,6 +265,7 @@ private:
   int max_batch_;
   int max_batch_dim_;
   int hidden_dim_;
+  int rand_dim_;
 
   // Per training run
 
@@ -286,7 +273,7 @@ private:
   int batch_i_;
   int lock_i_;
   int grids_per_batch_;
-  int grid_batch_i_[4];
+  int grid_batch_i_[OpenNTCContext::kMaxLevels];
   OpenNTCTrainPhase train_phase_;
 
   std::mt19937 gen_;
@@ -295,8 +282,8 @@ private:
 
   // Feature grids
 
-  Tensor3d g0_[4];
-  Tensor3d g1_[4];
+  Tensor3d g0_[OpenNTCContext::kMaxLevels];
+  Tensor3d g1_[OpenNTCContext::kMaxLevels];
 
   // Quantization Noise
 
@@ -328,8 +315,8 @@ private:
   Tensor2d dLdW0x_;
   Tensor2d dLdW0_;
   Tensor2d dLdx_;
-  Tensor3d dLdG0_[4];
-  Tensor3d dLdG1_[4];
+  Tensor3d dLdG0_[OpenNTCContext::kMaxLevels];
+  Tensor3d dLdG1_[OpenNTCContext::kMaxLevels];
 
   // Loss
 
@@ -337,10 +324,10 @@ private:
 
   // Adam parameters
 
-  Tensor3d mG0_[4];
-  Tensor3d vG0_[4];
-  Tensor3d mG1_[4];
-  Tensor3d vG1_[4];
+  Tensor3d mG0_[OpenNTCContext::kMaxLevels];
+  Tensor3d vG0_[OpenNTCContext::kMaxLevels];
+  Tensor3d mG1_[OpenNTCContext::kMaxLevels];
+  Tensor3d vG1_[OpenNTCContext::kMaxLevels];
   Tensor2d mW0_;
   Tensor2d vW0_;
   Tensor2d mW1_;
@@ -352,14 +339,59 @@ private:
 
   IntTensor1d grid_draws_;
   Tensor2d x_;
-  Tensor3d package_[OpenNTCContext::kMaxMips];
+  U8Tensor3d package_[OpenNTCContext::kMaxMips];
 
   // File management
 
   OpenNTCManifest manifest_;
-  Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
-  Tensor3d tex_prep_;
+  U8Tensor3d mips_[kMaxSources][OpenNTCContext::kMaxMips];
+  U8Tensor3d tex_prep_;
   Tensor3d tex_filter_;
+};
+
+struct OpenNTCTextureData
+{
+  int32_t tex_count_;
+  int32_t mip_count_;
+  int32_t channels_[kMaxSources];
+  OpenNTCSemantic semantics_[kMaxSources];
+  uint8_t* mips_[kMaxSources][OpenNTCContext::kMaxMips];
+};
+
+struct OpenNTCCompressedData
+{
+  uint32_t* g0_[OpenNTCContext::kMaxLevels];
+  uint32_t* g1_[OpenNTCContext::kMaxLevels];
+  uint32_t* W0_;
+  uint32_t* W1_;
+  uint32_t* Wout_;
+
+  float* W0_scale_;
+  float* W1_scale_;
+  float* Wout_scale_;
+
+  size_t g0_size_[OpenNTCContext::kMaxLevels];
+  size_t g1_size_[OpenNTCContext::kMaxLevels];
+  size_t g0_offset_[OpenNTCContext::kMaxLevels];
+  size_t g1_offset_[OpenNTCContext::kMaxLevels];
+  size_t W0_size_;
+  size_t W1_size_;
+  size_t Wout_size_;
+  size_t W0_scale_size_;
+  size_t W1_scale_size_;
+  size_t Wout_scale_size_;
+  
+  int g0_grid_dim_[OpenNTCContext::kMaxLevels];
+  int g1_grid_dim_[OpenNTCContext::kMaxLevels];
+  int g0_bytes_per_channel_;
+  int g1_bytes_per_channel_;
+  int g0_channels_;
+  int g1_channels_;
+  int dim_;
+  int mip_count_;
+  int level_count_;
+
+  OpenNTCCalibration caldata_;
 };
 
 class OpenNTCFileData

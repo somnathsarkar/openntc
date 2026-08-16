@@ -20,7 +20,7 @@ void launch_draw_features(
   float* g0,
   float* g1,
   float* out_features);
-void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, float* mip, float* out_targets);
+void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets);
 void launch_accumulate_grid_gradients(
   int batch_dim,
   int grid_dim,
@@ -46,7 +46,7 @@ void launch_update_adam(
   float* v,
   float* params);
 void launch_initialize_rand(int n, curandState* o_rstate);
-void launch_generate_noise(int n, float delta, curandState* rstate, float* o_noise);
+void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise);
 void launch_quantize_grid(int n, int num_bytes, float delta, float* g);
 void launch_clamp_grid(int n, int num_bytes, float delta, float* g);
 void launch_forward_pass(
@@ -78,15 +78,15 @@ typedef struct
 {
   int cmap[4];
 } PrepareTexInput;
-void launch_prepare_tex(int dim, int c, PrepareTexInput pt, float* tex, float* o_mip0);
+void launch_prepare_tex(int dim, int c, PrepareTexInput pt, uint8_t* tex, uint8_t* o_mip0);
 
-void launch_filter_lanczos(int dim_src, int c, int a, float* mip_src, float* tmp, float* mip_dst);
+void launch_filter_lanczos(int dim_src, int c, int a, uint8_t* mip_src, float* tmp, uint8_t* mip_dst);
 
 typedef struct
 {
   int source_channels[16];
   int map_feat_id_to_source_id[16];
   int map_feat_id_to_channel_id[16];
-  float* tex[16];
+  uint8_t* tex[16];
 } PackageTexInput;
-void launch_package_tex(int dim, int c, PackageTexInput pt, float* o_package);
+void launch_package_tex(int dim, int c, PackageTexInput pt, uint8_t* o_package);
