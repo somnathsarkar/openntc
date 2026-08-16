@@ -16,13 +16,14 @@ using namespace DirectX;
 #include <chrono>
 #include <cmath>
 #include <thread>
-#include <atomic>
+#include <mutex>
+#include <future>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 
-#include <libopenntc/libopenntc.h>
+#include <openntc-gui/thread.h>
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 721;}
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
@@ -47,12 +48,9 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::C
   "Transmission",
 };
 
-OpenNTCContext g_ctx;
-bool g_train_in_progress = false;
-bool g_eval_results_received = false;
-double g_eval_psnr;
-double g_eval_mse;
-int32_t g_dim = 8192;
+SharedContext g_ctx;
+std::future<void> g_train_job;
+std::atomic<bool> g_stop_training;
 
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
@@ -89,6 +87,7 @@ UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
+std::atomic<SharedFields> g_shared_fields;
 OpenNTCFileData g_fil_data;
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
@@ -153,6 +152,44 @@ float g_fov = 110.0f;
 constexpr int32_t g_nonimgui_srv_count = kMaxSources + 1 + (1 + 1 + 3 + 3);
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
+
+void PerformTrainingJob()
+{
+  OpenNTCTrainInfo train_info = {};
+  train_info.grids_per_batch_ = 1;
+  train_info.batch_count_ = 30000;
+  SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
+  fields.train_complete = false;
+  fields.train_in_progress = true;
+  g_shared_fields.store(fields, std::memory_order_seq_cst);
+  {
+    SharedContext::Access access = g_ctx.Acquire();
+    access.ctx_.BeginTraining(train_info);
+  }
+
+  while(!g_stop_training.load(std::memory_order_seq_cst))
+  { 
+    SharedContext::Access access = g_ctx.Acquire();
+    SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
+    OpenNTCTrainProgress tprogress = access.ctx_.Train(128);
+    if (tprogress.phase_ == OpenNTCTrainPhase::TrainComplete)
+    {
+      OpenNTCEvalResults eval_results = access.ctx_.Eval();
+      fields.eval_psnr = eval_results.psnr;
+      fields.eval_mse = eval_results.mse;
+      fields.train_in_progress = false;
+      fields.train_complete = true;
+      g_shared_fields.store(fields);
+      break;
+    }
+    else
+    {
+      fields.train_steps = tprogress.batches_complete_;
+      fields.train_total_steps = tprogress.total_batches_;
+      g_shared_fields.store(fields);
+    }
+  }
+}
 
 template <typename T>
 T SrvDescriptorHead()
@@ -344,10 +381,10 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart());
 }
 
-static void RebuildTextureResources()
+static void RebuildTextureResources(SharedContext::Access& access)
 {
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
-  OpenNTCTextureData tex_data = g_ctx.GetTextureData();
+  OpenNTCTextureData tex_data = access.ctx_.GetTextureData();
 
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
   {
@@ -359,8 +396,8 @@ static void RebuildTextureResources()
     tex_desc.Alignment = 0;
     tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    tex_desc.Width = g_ctx.GetMipDim(0);
-    tex_desc.Height = g_ctx.GetMipDim(0);
+    tex_desc.Width = access.ctx_.GetMipDim(0);
+    tex_desc.Height = access.ctx_.GetMipDim(0);
     tex_desc.DepthOrArraySize = 1;
     tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     tex_desc.MipLevels = tex_data.mip_count_;
@@ -392,7 +429,7 @@ static void RebuildTextureResources()
   UINT64 scratch_size = 0llu;
   for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
   {
-    int mip_dim = g_ctx.GetMipDim(mip_i);
+    int mip_dim = access.ctx_.GetMipDim(mip_i);
     UINT64 mip_row = RoundUpTo(sizeof(uint8_t) * mip_dim * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
     scratch_size += mip_row * mip_dim;
   }
@@ -431,7 +468,7 @@ static void RebuildTextureResources()
     g_buffer_scratch->Map(0, &read_range, &mapped);
     for (int mip_i = 0; mip_i < tex_data.mip_count_; mip_i++)
     {
-      UINT64 mip_dim = g_ctx.GetMipDim(mip_i);
+      UINT64 mip_dim = access.ctx_.GetMipDim(mip_i);
       UINT64 channels_padded = (tex_data.channels_[tex_i] == 1) ? 1 : 4; // Pad 3 channels to 4
       UINT64 mip_row = sizeof(uint8_t) * mip_dim * channels_padded;
       UINT64 mip_row_padded = RoundUpTo(mip_row, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
@@ -1087,33 +1124,22 @@ void LoadContent()
   D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
   UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  OpenNTCResult load_res = g_ctx.LoadManifest("C:/Code/openntc/img/Bricks101_8K-JPG/manifest.json");
-  VERIFY(load_res == OpenNTCResult::Success);
-  
-  RebuildTextureResources();
+  {
+    SharedContext::Access access = g_ctx.Acquire();
+
+    OpenNTCResult load_res = access.ctx_.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
+    VERIFY(load_res == OpenNTCResult::Success);
+    
+    RebuildTextureResources(access);
+  }
 
   g_contentloaded = true;
 
   ResizeDepthBuffer(g_width, g_height);
 }
 
-void LoadCompressedData(bool from_file = false)
+void UploadCompressedData(OpenNTCCompressedData& cdata)
 {
-  if (g_compressed_data_loaded) return;
-
-  OpenNTCCompressedData cdata;
-  if (from_file)
-  {
-    OpenNTCResult res = OpenNTCContext::Load("bricks101_8k.ntc", g_fil_data);
-    VERIFY(res == OpenNTCResult::Success);
-    cdata = g_fil_data.Data();
-  }
-  else
-  {
-    cdata = g_ctx.GetCompressedData();
-    OpenNTCContext::Dump("bricks101_8k.ntc", cdata);
-  }
-
   {
     NTCInfo ntc_info = {};
     for (int i = 0; i < cdata.level_count_; i++)
@@ -1508,6 +1534,27 @@ void LoadCompressedData(bool from_file = false)
   }
 }
 
+void LoadCompressedDataFromContext(SharedContext::Access& access)
+{
+  if (g_compressed_data_loaded) return;
+
+  OpenNTCCompressedData cdata = access.ctx_.GetCompressedData();
+  OpenNTCContext::Dump("bricks101_2k.ntc", cdata);
+  UploadCompressedData(cdata);
+  g_compressed_data_loaded = true;
+}
+
+void LoadCompressedDataFromFile()
+{
+  if (g_compressed_data_loaded) return;
+
+  OpenNTCResult res = OpenNTCContext::Load("bricks101_2k.ntc", g_fil_data);
+  VERIFY(res == OpenNTCResult::Success);
+  OpenNTCCompressedData cdata = g_fil_data.Data();
+  UploadCompressedData(cdata);
+  g_compressed_data_loaded = true;
+}
+
 void Update()
 {
   static uint64_t framecounter = 0;
@@ -1562,42 +1609,50 @@ void Render()
   ImGui::End();
 
   ImGui::Begin("Train");
-  if (ImGui::Button("Train"))
+  bool train_button = ImGui::Button("Train");
   {
-    if (!g_train_in_progress)
+    std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
+    SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
+    if (oaccess.has_value())
     {
-      OpenNTCTrainInfo train_info = {};
-      train_info.grids_per_batch_ = 1;
-      train_info.batch_count_ = 30000;
-      g_ctx.BeginTraining(train_info);
-      g_train_in_progress = true;
+      SharedContext::Access& access = oaccess.value();
+      if (train_button)
+      {
+        if (!fields.train_in_progress)
+        {
+          fields.train_in_progress = true;
+          fields.train_complete = false;
+          fields.train_steps = 0;
+          fields.train_total_steps = 30000;
+          g_shared_fields.store(fields, std::memory_order_seq_cst);
+          g_stop_training.store(false, std::memory_order_seq_cst);
+          g_compressed_data_loaded = false;
+          g_train_job = std::async(std::launch::async, PerformTrainingJob);
+        }
+      }
+    }
+    if (fields.train_in_progress)
+    {
+      ImGui::ProgressBar((float)fields.train_steps / fields.train_total_steps);
+    }
+    if (fields.train_complete)
+    {
+      ImGui::LabelText("PSNR", "%f", fields.eval_psnr);
+      ImGui::LabelText("MSE", "%f", fields.eval_mse);
+      if (!g_compressed_data_loaded)
+      {
+        if (oaccess.has_value())
+        {
+          SharedContext::Access& access = oaccess.value();
+          LoadCompressedDataFromContext(access);
+        }
+      }
     }
   }
-  if (g_train_in_progress)
-  {
-    OpenNTCTrainProgress tprogress = g_ctx.Train(64);
-    if (tprogress.phase_ == OpenNTCTrainPhase::TrainComplete)
-    {
-      g_train_in_progress = false;
-      LoadCompressedData();
-      g_eval_results_received = true;
-      OpenNTCEvalResults eval_results = g_ctx.Eval();
-      g_eval_psnr = eval_results.psnr;
-      g_eval_mse = eval_results.mse;
-    }
-    else if (tprogress.phase_ == OpenNTCTrainPhase::TrainInProgress)
-    {
-      ImGui::ProgressBar((float)tprogress.batches_complete_ / tprogress.total_batches_);
-    }
-  }
-  if (g_eval_results_received)
-  {
-    ImGui::LabelText("PSNR", "%f", g_eval_psnr);
-    ImGui::LabelText("MSE", "%f", g_eval_mse);
-  }
+  
   if (ImGui::Button("Load"))
   {
-    LoadCompressedData(true);
+    LoadCompressedDataFromFile();
   }
   ImGui::End();
   ImGui::Begin("Load");
@@ -1618,13 +1673,18 @@ void Render()
         std::string file_path(file_path_size - 1, 0);
         WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, file_path.data(), file_path_size, nullptr, nullptr);
         CoTaskMemFree(wfile_path);
-        OpenNTCResult load_res = g_ctx.LoadManifest(file_path);
-        
-        // TODO: Log failure in GUI.
-
-        if (load_res == OpenNTCResult::Success)
+        auto oaccess = g_ctx.TryAcquire();
+        if (oaccess.has_value())
         {
-          RebuildTextureResources();
+          SharedContext::Access& access = oaccess.value();
+          OpenNTCResult load_res = access.ctx_.LoadManifest(file_path);
+          
+          // TODO: Log failure in GUI.
+
+          if (load_res == OpenNTCResult::Success)
+          {
+            RebuildTextureResources(access);
+          }
         }
       }
     }
@@ -2127,9 +2187,19 @@ HANDLE CreateEventHandle()
 
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
-  OpenNTCContextInitInfo init_info = {};
-  init_info.profile = OpenNTCProfile::Bpp_0_2;
-  g_ctx.Init(init_info);
+  {
+    SharedContext::Access access = g_ctx.Acquire();
+    SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
+    OpenNTCContextInitInfo init_info = {};
+    init_info.profile = OpenNTCProfile::Bpp_0_2;
+    access.ctx_.Init(init_info);
+    fields.train_in_progress = false;
+    fields.train_complete = false;
+    fields.train_steps = 0;
+    fields.train_total_steps = 0;
+
+    g_shared_fields.store(fields, std::memory_order_seq_cst);
+  }
 
   ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -2204,6 +2274,9 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
   ::CloseHandle(g_fence_event);
+  g_stop_training.store(true, std::memory_order_seq_cst);
+  if (g_train_job.valid())
+    g_train_job.wait();
 
   return 0;
 }
