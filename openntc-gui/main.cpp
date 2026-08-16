@@ -2128,7 +2128,6 @@ HANDLE CreateEventHandle()
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
   OpenNTCContextInitInfo init_info = {};
-  init_info.dim = g_dim;
   init_info.profile = OpenNTCProfile::Bpp_0_2;
   g_ctx.Init(init_info);
 

@@ -269,11 +269,6 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
 {
   assert(init_info.profile == OpenNTCProfile::Bpp_0_2);
 
-  if (init_info.dim < OpenNTCContext::kMinDimension || init_info.dim > OpenNTCContext::kMaxDimension || std::popcount((unsigned int)init_info.dim) != 1)
-  {
-    return OpenNTCResult::InvalidDimension;
-  }
-
   // Profile constants
 
   g0_bytes_per_channel_ = 2;
@@ -282,26 +277,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bytes_per_channel_);
   g0_channels_ = 8;
   g1_channels_ = 12;
-  mip_dim_[0] = init_info.dim;
-  mip_count_ = 0;
-  while (mip_dim_[mip_count_] > 4)
-  {
-    mip_dim_[mip_count_ + 1] = mip_dim_[mip_count_] / 2;
-    mip_count_++;
-  }
-  mip_count_++;
-
-  level_count_ = 0;
-  g0_grid_dim_[0] = mip_dim_[0] / 4;
-  g1_grid_dim_[0] = g0_grid_dim_[0] / 2;
-  while (g0_grid_dim_[level_count_] / 4 >= 4)
-  {
-    g0_grid_dim_[level_count_ + 1] = g0_grid_dim_[level_count_] / 4;
-    g1_grid_dim_[level_count_ + 1] = g1_grid_dim_[level_count_] / 4;
-    level_count_++;
-  }
-  level_count_++;
-
+  
   feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   feature_dim_padded_ = RoundUpToNearestK(feature_dim_, 16);
   out_dim_ = 9;
@@ -309,15 +285,6 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   max_batch_ = 8;
   max_batch_dim_ = max_batch_ * 256 * 256;
   hidden_dim_ = 64;
-
-  for (int i = 0; i < level_count_; i++)
-  {
-    g0_[i].Init(g0_grid_dim_[i], g0_grid_dim_[i], g0_channels_);
-    g1_[i].Init(g1_grid_dim_[i], g1_grid_dim_[i], g1_channels_);
-  }
-
-  g0_noise_.Init(g0_grid_dim_[0], g0_grid_dim_[0], g0_channels_);
-  g1_noise_.Init(g1_grid_dim_[0], g1_grid_dim_[0], g1_channels_);
 
   W0_.Init(hidden_dim_, feature_dim_);
   W1_.Init(hidden_dim_, hidden_dim_);
@@ -339,21 +306,9 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   dLdW0x_.InitLike(W0x_);
   dLdW0_.InitLike(W0_);
   dLdx_.InitLike(x_);
-  for (int level_i = 0; level_i < level_count_; level_i++)
-  {
-    dLdG0_[level_i].InitLike(g0_[level_i]);
-    dLdG1_[level_i].InitLike(g1_[level_i]);
-  }
 
   mse_.Init(out_dim_, max_batch_dim_);
 
-  for (int level_i = 0; level_i < level_count_; level_i++)
-  {
-    mG0_[level_i].InitLike(g0_[level_i]);
-    vG0_[level_i].InitLike(g0_[level_i]);
-    mG1_[level_i].InitLike(g1_[level_i]);
-    vG1_[level_i].InitLike(g1_[level_i]);
-  }
   mW0_.InitLike(W0_);
   vW0_.InitLike(W0_);
   mW1_.InitLike(W1_);
@@ -365,25 +320,14 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
 
   cublasCreate(&handle_);
   cublasSetMathMode(handle_, CUBLAS_TF32_TENSOR_OP_MATH);
-  cudaMalloc(&rstate_, sizeof(curandState) * g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_);
-  launch_initialize_rand(g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_, rstate_);
+  
 
-  for (int i = 0; i < level_count_; i++)
-  {
-    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bytes_per_channel_) / 32];
-    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bytes_per_channel_) / 32];
-  }
   W0_host_ = new uint32_t[(hidden_dim_ * feature_dim_padded_) / 4];
   W1_host_ = new uint32_t[W1_.NumElems() / 4];
   Wout_host_ = new uint32_t[(out_dim_padded_ * hidden_dim_) / 4];
   W0_scale_ = new float[hidden_dim_];
   W1_scale_ = new float[hidden_dim_];
   Wout_scale_ = new float[out_dim_padded_];
-
-  for (int i = 0; i < mip_count_; i++)
-  {
-    package_[i].Init(mip_dim_[i], mip_dim_[i], out_dim_);
-  }
 
   initialized_ = true;
   return OpenNTCResult::Success;
@@ -489,6 +433,18 @@ OpenNTCTrainProgress OpenNTCContext::TrainUntilComplete()
 
 OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
 {
+  if (!manifest_loaded_ ||
+      (train_phase_ != OpenNTCTrainPhase::TrainInProgress &&
+      train_phase_ != OpenNTCTrainPhase::TrainComplete))
+  {
+    OpenNTCTrainProgress tprogress = {};
+    tprogress.phase_ = OpenNTCTrainPhase::TrainError;
+    tprogress.result_ = OpenNTCResult::InvalidState;
+    tprogress.batches_complete_ = batch_i_;
+    tprogress.total_batches_ = batch_count_;
+    return tprogress;
+  }
+
   assert(batch_count > 0);
   int batches_remaining = std::max(0, batch_count_ - batch_i_);
   batch_count = std::min(batches_remaining, batch_count);
@@ -693,6 +649,9 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
 
   if (batch_i_ == batch_count_)
   {
+    tprogress.phase_ = OpenNTCTrainPhase::TrainComplete;
+    train_phase_ = OpenNTCTrainPhase::TrainComplete;
+
     uint32_t* g0pack = nullptr;
     uint32_t* g1pack = nullptr;
 
@@ -734,22 +693,21 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
     delete[] W1_unpack;
     delete[] Wout_unpack;
     delete[] W0_unpack_unpadded;
-
-    tprogress.phase_ = OpenNTCTrainPhase::TrainComplete;
-    train_phase_ = OpenNTCTrainPhase::TrainComplete;
   }
   return tprogress;
 }
 
 OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
 {
+  assert (manifest_loaded_ && train_phase_ == OpenNTCTrainPhase::TrainComplete);
+
   // Exact per-layer max |activation| over every texel of every mip, using the
   // same tiling as Eval. Requires trained (post-freeze) weights and grids.
   float* dmax = nullptr;
   cudaMalloc(&dmax, sizeof(float) * 2);
   cudaMemset(dmax, 0, sizeof(float) * 2);
 
-  for (int mip_i = 0; mip_i <= 8; mip_i++)
+  for (int mip_i = 0; mip_i <= mip_count_; mip_i++)
   {
     int grids_per_dim = (mip_dim_[mip_i] + 255) / 256;
     int num_grids = grids_per_dim * grids_per_dim;
@@ -821,9 +779,11 @@ OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
 
 OpenNTCEvalResults OpenNTCContext::Eval()
 {
+  assert(manifest_loaded_ && (train_phase_ == OpenNTCTrainPhase::TrainInProgress || train_phase_==OpenNTCTrainPhase::TrainComplete));
+
   double mse_numer = 0;
   double mse_denom = 0;
-  for (int mip_i = 0; mip_i <= 8; mip_i++)
+  for (int mip_i = 0; mip_i < mip_count_; mip_i++)
   {
     int grids_per_dim = (mip_dim_[mip_i] + 255) / 256;
     int num_grids = grids_per_dim * grids_per_dim;
@@ -901,6 +861,9 @@ OpenNTCEvalResults OpenNTCContext::Eval()
 
 OpenNTCCompressedData OpenNTCContext::GetCompressedData()
 {
+  assert(manifest_loaded_ &&
+    (train_phase_ == OpenNTCTrainPhase::TrainInProgress || train_phase_ == OpenNTCTrainPhase::TrainComplete));
+
   OpenNTCCompressedData data = {};
   for (int i = 0; i < level_count_; i++)
   {
@@ -1087,8 +1050,74 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   }
   manifest_.source_count_ = source_count;
   manifest_.dim_ = dim;
-  if (manifest_.dim_ != mip_dim_[0])
-    return OpenNTCResult::InvalidManifest;
+
+  if (manifest_.dim_ < OpenNTCContext::kMinDimension ||
+      manifest_.dim_ > OpenNTCContext::kMaxDimension ||
+      std::popcount((unsigned int)manifest_.dim_) != 1)
+  {
+    return OpenNTCResult::InvalidDimension;
+  }
+
+  mip_dim_[0] = manifest_.dim_;
+  mip_count_ = 0;
+  while (mip_dim_[mip_count_] > 4)
+  {
+    mip_dim_[mip_count_ + 1] = mip_dim_[mip_count_] / 2;
+    mip_count_++;
+  }
+  mip_count_++;
+
+  level_count_ = 0;
+  g0_grid_dim_[0] = mip_dim_[0] / 4;
+  g1_grid_dim_[0] = g0_grid_dim_[0] / 2;
+  while (g0_grid_dim_[level_count_] / 4 >= 4)
+  {
+    g0_grid_dim_[level_count_ + 1] = g0_grid_dim_[level_count_] / 4;
+    g1_grid_dim_[level_count_ + 1] = g1_grid_dim_[level_count_] / 4;
+    level_count_++;
+  }
+  level_count_++;
+
+  // TODO: No need to reallocate these if we are loading a manifest at the same resolution
+
+  for (int i = 0; i < level_count_; i++)
+  {
+    g0_[i].Init(g0_grid_dim_[i], g0_grid_dim_[i], g0_channels_);
+    g1_[i].Init(g1_grid_dim_[i], g1_grid_dim_[i], g1_channels_);
+  }
+
+  g0_noise_.Init(g0_grid_dim_[0], g0_grid_dim_[0], g0_channels_);
+  g1_noise_.Init(g1_grid_dim_[0], g1_grid_dim_[0], g1_channels_);
+
+  for (int level_i = 0; level_i < level_count_; level_i++)
+  {
+    dLdG0_[level_i].InitLike(g0_[level_i]);
+    dLdG1_[level_i].InitLike(g1_[level_i]);
+  }
+
+  for (int level_i = 0; level_i < level_count_; level_i++)
+  {
+    mG0_[level_i].InitLike(g0_[level_i]);
+    vG0_[level_i].InitLike(g0_[level_i]);
+    mG1_[level_i].InitLike(g1_[level_i]);
+    vG1_[level_i].InitLike(g1_[level_i]);
+  }
+
+  for (int i = 0; i < level_count_; i++)
+  {
+    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bytes_per_channel_) / 32];
+    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bytes_per_channel_) / 32];
+  }
+
+  for (int i = 0; i < mip_count_; i++)
+  {
+    package_[i].Init(mip_dim_[i], mip_dim_[i], out_dim_);
+  }
+
+  cudaMalloc(&rstate_, sizeof(curandState) * g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_);
+  launch_initialize_rand(g0_grid_dim_[0] * g0_grid_dim_[0] * g0_channels_, rstate_);
+
+  // Build mips
 
   for (int i = 0; i < manifest_.source_count_; i++)
   {
@@ -1165,6 +1194,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   }
 
   manifest_loaded_ = true;
+  train_phase_ = OpenNTCTrainPhase::ManifestLoaded;
   return OpenNTCResult::Success;
 }
 
@@ -1172,6 +1202,44 @@ void OpenNTCContext::UnloadManifest()
 {
   if (!manifest_loaded_)
     return;
+
+  // TODO: Implement fast path LoadNewManifest where these aren't destroyed if dim doesn't change
+
+  for (int i = 0; i < level_count_; i++)
+  {
+    g0_[i].Destroy();
+    g1_[i].Destroy();
+  }
+
+  g0_noise_.Destroy();
+  g1_noise_.Destroy();
+
+  for (int level_i = 0; level_i < level_count_; level_i++)
+  {
+    dLdG0_[level_i].Destroy();
+    dLdG1_[level_i].Destroy();
+  }
+  
+  for (int level_i = 0; level_i < level_count_; level_i++)
+  {
+    mG0_[level_i].Destroy();
+    vG0_[level_i].Destroy();
+    mG1_[level_i].Destroy();
+    vG1_[level_i].Destroy();
+  }
+
+  for (int i = 0; i < mip_count_; i++)
+  {
+    package_[i].Destroy();
+  }
+
+  cudaFree(rstate_);
+
+  for(int i = 0; i < level_count_; i++)
+  {
+    delete[] g0_host_[i];
+    delete[] g1_host_[i];
+  }
 
   for (int i = 0; i < manifest_.source_count_; i++)
   {
@@ -1214,15 +1282,6 @@ void OpenNTCContext::Destroy()
     UnloadManifest();
   }
 
-  for (int i = 0; i < level_count_; i++)
-  {
-    g0_[i].Destroy();
-    g1_[i].Destroy();
-  }
-
-  g0_noise_.Destroy();
-  g1_noise_.Destroy();
-
   W0_.Destroy();
   W1_.Destroy();
   Wout_.Destroy();
@@ -1242,21 +1301,9 @@ void OpenNTCContext::Destroy()
   dLdW0x_.Destroy();
   dLdW0_.Destroy();
   dLdx_.Destroy();
-  for (int level_i = 0; level_i < level_count_; level_i++)
-  {
-    dLdG0_[level_i].Destroy();
-    dLdG1_[level_i].Destroy();
-  }
 
   mse_.Destroy();
 
-  for (int level_i = 0; level_i < level_count_; level_i++)
-  {
-    mG0_[level_i].Destroy();
-    vG0_[level_i].Destroy();
-    mG1_[level_i].Destroy();
-    vG1_[level_i].Destroy();
-  }
   mW0_.Destroy();
   vW0_.Destroy();
   mW1_.Destroy();
@@ -1267,18 +1314,6 @@ void OpenNTCContext::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
 
-  for (int i = 0; i < mip_count_; i++)
-  {
-    package_[i].Destroy();
-  }
-
-  cudaFree(rstate_);
-
-  for(int i = 0; i < level_count_; i++)
-  {
-    delete[] g0_host_[i];
-    delete[] g1_host_[i];
-  }
   delete[] W0_host_;
   delete[] W1_host_;
   delete[] Wout_host_;
@@ -1289,8 +1324,10 @@ void OpenNTCContext::Destroy()
 
 int32_t OpenNTCContext::GetMipDim(int mip) const
 {
-  assert(initialized_);
-  return mip_dim_[mip];
+  assert(initialized_ && manifest_loaded_);
+  if (initialized_ && manifest_loaded_)
+    return mip_dim_[mip];
+  return 0;
 }
 
 struct OpenNTCBlob

@@ -12,7 +12,6 @@ enum class OpenNTCProfile
 struct OpenNTCContextInitInfo
 {
   OpenNTCProfile profile;
-  int dim;
 };
 
 enum class OpenNTCResult
@@ -24,7 +23,8 @@ enum class OpenNTCResult
   InvalidManifest,
   FileNotFound,
   InvalidFile,
-  FileWriteFailure
+  FileWriteFailure,
+  InvalidState,
 };
 
 class Tensor2d
