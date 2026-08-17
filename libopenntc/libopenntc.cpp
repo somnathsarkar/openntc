@@ -11,6 +11,8 @@
 #include <libopenntc/ntc_kernel.cuh>
 #include <libopenntc/json.hpp>
 
+namespace openntc
+{
 Tensor2d::Tensor2d() : initialized_(false), dev_(nullptr) {}
 
 Tensor2d::~Tensor2d()
@@ -18,18 +20,18 @@ Tensor2d::~Tensor2d()
   Destroy();
 }
 
-OpenNTCResult Tensor2d::Init(int x, int y)
+Result Tensor2d::Init(int x, int y)
 {
   shape_[0] = x;
   shape_[1] = y;
   cudaMalloc(&dev_, sizeof(float) * x * y);
   if (dev_ == nullptr)
-    return OpenNTCResult::AllocationFailure;
+    return Result::AllocationFailure;
   initialized_ = true;
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
-OpenNTCResult Tensor2d::InitLike(const Tensor2d& t0)
+Result Tensor2d::InitLike(const Tensor2d& t0)
 {
   return Init(t0.shape_[0], t0.shape_[1]);
 }
@@ -91,19 +93,19 @@ Tensor3d::~Tensor3d()
   Destroy();
 }
 
-OpenNTCResult Tensor3d::Init(int x, int y, int z)
+Result Tensor3d::Init(int x, int y, int z)
 {
   shape_[0] = x;
   shape_[1] = y;
   shape_[2] = z;
   cudaMalloc(&dev_, sizeof(float) * x * y * z);
   if (dev_ == nullptr)
-    return OpenNTCResult::AllocationFailure;
+    return Result::AllocationFailure;
   initialized_ = true;
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
-OpenNTCResult Tensor3d::InitLike(const Tensor3d& t0)
+Result Tensor3d::InitLike(const Tensor3d& t0)
 {
   return Init(t0.shape_[0], t0.shape_[1], t0.shape_[2]);
 }
@@ -172,19 +174,19 @@ U8Tensor3d::~U8Tensor3d()
   Destroy();
 }
 
-OpenNTCResult U8Tensor3d::Init(int x, int y, int z)
+Result U8Tensor3d::Init(int x, int y, int z)
 {
   shape_[0] = x;
   shape_[1] = y;
   shape_[2] = z;
   cudaMalloc(&dev_, sizeof(uint8_t) * x * y * z);
   if (dev_ == nullptr)
-    return OpenNTCResult::AllocationFailure;
+    return Result::AllocationFailure;
   initialized_ = true;
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
-OpenNTCResult U8Tensor3d::InitLike(const U8Tensor3d& t0)
+Result U8Tensor3d::InitLike(const U8Tensor3d& t0)
 {
   return Init(t0.shape_[0], t0.shape_[1], t0.shape_[2]);
 }
@@ -231,14 +233,14 @@ IntTensor1d::~IntTensor1d()
   Destroy();
 }
 
-OpenNTCResult IntTensor1d::Init(int x)
+Result IntTensor1d::Init(int x)
 {
   shape_[0] = x;
   cudaMalloc(&dev_, sizeof(int) * x);
   if (dev_ == nullptr)
-    return OpenNTCResult::AllocationFailure;
+    return Result::AllocationFailure;
   initialized_ = true;
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
 void IntTensor1d::Destroy()
@@ -256,8 +258,8 @@ int* IntTensor1d::DevicePtr()
   return dev_;
 }
 
-OpenNTCContext::OpenNTCContext() : initialized_(false), gen_(123), rstate_(nullptr), mip_count_(0), level_count_(0) {}
-OpenNTCContext::~OpenNTCContext() { Destroy(); }
+Context::Context() : initialized_(false), gen_(123), rstate_(nullptr), mip_count_(0), level_count_(0) {}
+Context::~Context() { Destroy(); }
 
 static int RoundUpToNearestK(int n, int k)
 {
@@ -265,9 +267,9 @@ static int RoundUpToNearestK(int n, int k)
   return ((n + k - 1) / k) * k;
 }
 
-OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
+Result Context::Init(const ContextInitInfo& init_info)
 {
-  assert(init_info.profile == OpenNTCProfile::Bpp_0_2);
+  assert(init_info.profile == Profile::Bpp_0_2);
 
   // Profile constants
 
@@ -333,7 +335,7 @@ OpenNTCResult OpenNTCContext::Init(const OpenNTCContextInitInfo& init_info)
   Wout_scale_ = new float[out_dim_padded_];
 
   initialized_ = true;
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
 // C = A * B, where A, B, C are row-major. C is n x m, A is n x k, B is k x m
@@ -392,9 +394,9 @@ static void QuantizeWeights(float* Wf, int rows, int cols, float prescale, uint3
   }
 }
 
-void OpenNTCContext::BeginTraining(const OpenNTCTrainInfo& train_info)
+void Context::BeginTraining(const TrainInfo& train_info)
 {
-  assert(train_phase_ == OpenNTCTrainPhase::ManifestLoaded || train_phase_ == OpenNTCTrainPhase::TrainComplete);
+  assert(train_phase_ == TrainPhase::ManifestLoaded || train_phase_ == TrainPhase::TrainComplete);
   batch_count_ = train_info.batch_count_;
   lock_i_ = (95 * batch_count_) / 100;
   batch_i_ = 0;
@@ -424,25 +426,25 @@ void OpenNTCContext::BeginTraining(const OpenNTCTrainInfo& train_info)
   mWout_.FillZero();
   vWout_.FillZero();
 
-  train_phase_ = OpenNTCTrainPhase::TrainInProgress;
+  train_phase_ = TrainPhase::TrainInProgress;
 }
 
-OpenNTCTrainProgress OpenNTCContext::TrainUntilComplete()
+TrainProgress Context::TrainUntilComplete()
 {
-  assert(train_phase_ == OpenNTCTrainPhase::TrainInProgress || train_phase_ == OpenNTCTrainPhase::TrainComplete);
+  assert(train_phase_ == TrainPhase::TrainInProgress || train_phase_ == TrainPhase::TrainComplete);
 
   return Train(batch_count_);
 }
 
-OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
+TrainProgress Context::Train(int32_t batch_count)
 {
   if (!manifest_loaded_ ||
-      (train_phase_ != OpenNTCTrainPhase::TrainInProgress &&
-      train_phase_ != OpenNTCTrainPhase::TrainComplete))
+      (train_phase_ != TrainPhase::TrainInProgress &&
+      train_phase_ != TrainPhase::TrainComplete))
   {
-    OpenNTCTrainProgress tprogress = {};
-    tprogress.phase_ = OpenNTCTrainPhase::TrainError;
-    tprogress.result_ = OpenNTCResult::InvalidState;
+    TrainProgress tprogress = {};
+    tprogress.phase_ = TrainPhase::TrainError;
+    tprogress.result_ = Result::InvalidState;
     tprogress.batches_complete_ = batch_i_;
     tprogress.total_batches_ = batch_count_;
     return tprogress;
@@ -454,9 +456,9 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
   int batch_target = batch_i_ + batch_count;
   if (batch_i_ == batch_target)
   {
-    OpenNTCTrainProgress tprogress = {};
-    tprogress.phase_ = OpenNTCTrainPhase::TrainComplete;
-    tprogress.result_ = OpenNTCResult::Success;
+    TrainProgress tprogress = {};
+    tprogress.phase_ = TrainPhase::TrainComplete;
+    tprogress.result_ = Result::Success;
     tprogress.batches_complete_ = batch_i_;
     tprogress.total_batches_ = batch_count_;
     return tprogress;
@@ -644,16 +646,16 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
     }
   }
 
-  OpenNTCTrainProgress tprogress = {};
-  tprogress.phase_ = OpenNTCTrainPhase::TrainInProgress;
-  tprogress.result_ = OpenNTCResult::Success;
+  TrainProgress tprogress = {};
+  tprogress.phase_ = TrainPhase::TrainInProgress;
+  tprogress.result_ = Result::Success;
   tprogress.batches_complete_ = batch_i_;
   tprogress.total_batches_ = batch_count_;
 
   if (batch_i_ == batch_count_)
   {
-    tprogress.phase_ = OpenNTCTrainPhase::TrainComplete;
-    train_phase_ = OpenNTCTrainPhase::TrainComplete;
+    tprogress.phase_ = TrainPhase::TrainComplete;
+    train_phase_ = TrainPhase::TrainComplete;
 
     uint32_t* g0pack = nullptr;
     uint32_t* g1pack = nullptr;
@@ -700,9 +702,9 @@ OpenNTCTrainProgress OpenNTCContext::Train(int32_t batch_count)
   return tprogress;
 }
 
-OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
+Calibration Context::Calibrate(float headroom)
 {
-  assert (manifest_loaded_ && train_phase_ == OpenNTCTrainPhase::TrainComplete);
+  assert (manifest_loaded_ && train_phase_ == TrainPhase::TrainComplete);
 
   // Exact per-layer max |activation| over every texel of every mip, using the
   // same tiling as Eval. Requires trained (post-freeze) weights and grids.
@@ -772,7 +774,7 @@ OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
   cudaMemcpy(hmax, dmax, sizeof(float) * 2, cudaMemcpyDeviceToHost);
   cudaFree(dmax);
 
-  OpenNTCCalibration cal = {};
+  Calibration cal = {};
   cal.max_abs_a1 = hmax[0];
   cal.max_abs_a2 = hmax[1];
   cal.s_a1 = headroom * hmax[0] / 127.0f;
@@ -780,9 +782,9 @@ OpenNTCCalibration OpenNTCContext::Calibrate(float headroom)
   return cal;
 }
 
-OpenNTCEvalResults OpenNTCContext::Eval()
+EvalResults Context::Eval()
 {
-  assert(manifest_loaded_ && (train_phase_ == OpenNTCTrainPhase::TrainInProgress || train_phase_==OpenNTCTrainPhase::TrainComplete));
+  assert(manifest_loaded_ && (train_phase_ == TrainPhase::TrainInProgress || train_phase_==TrainPhase::TrainComplete));
 
   double mse_numer = 0;
   double mse_denom = 0;
@@ -856,18 +858,18 @@ OpenNTCEvalResults OpenNTCContext::Eval()
     }
   }
 
-  OpenNTCEvalResults results = {};
+  EvalResults results = {};
   results.mse = mse_numer / mse_denom;
   results.psnr = -10.0 * std::log10(results.mse);
   return results;
 }
 
-OpenNTCCompressedData OpenNTCContext::GetCompressedData()
+CompressedData Context::GetCompressedData()
 {
   assert(manifest_loaded_ &&
-    (train_phase_ == OpenNTCTrainPhase::TrainInProgress || train_phase_ == OpenNTCTrainPhase::TrainComplete));
+    (train_phase_ == TrainPhase::TrainInProgress || train_phase_ == TrainPhase::TrainComplete));
 
-  OpenNTCCompressedData data = {};
+  CompressedData data = {};
   for (int i = 0; i < level_count_; i++)
   {
     data.g0_[i] = g0_host_[i];
@@ -912,30 +914,30 @@ OpenNTCCompressedData OpenNTCContext::GetCompressedData()
   return data;
 }
 
-static OpenNTCSemantic SemanticFromName(const std::string& s)
+static Semantic SemanticFromName(const std::string& s)
 {
-  static std::pair<std::string, OpenNTCSemantic> s_map_name_to_sem[] = {
-    std::make_pair("Albedo", OpenNTCSemantic::Albedo),
-    std::make_pair("Diffuse", OpenNTCSemantic::Albedo),
-    std::make_pair("Alpha", OpenNTCSemantic::Alpha),
-    std::make_pair("Mask", OpenNTCSemantic::Alpha),
-    std::make_pair("AlphaMask", OpenNTCSemantic::Alpha),
-    std::make_pair("Displ", OpenNTCSemantic::Displacement),
-    std::make_pair("Displacement", OpenNTCSemantic::Displacement),
-    std::make_pair("Emissive", OpenNTCSemantic::Emissive),
-    std::make_pair("Emission", OpenNTCSemantic::Emissive),
-    std::make_pair("Glossiness", OpenNTCSemantic::Gloss),
-    std::make_pair("Gloss", OpenNTCSemantic::Gloss),
-    std::make_pair("Metalness", OpenNTCSemantic::Metallic),
-    std::make_pair("Metallic", OpenNTCSemantic::Metallic),
-    std::make_pair("Normal", OpenNTCSemantic::Normal),
-    std::make_pair("Occlusion", OpenNTCSemantic::AO),
-    std::make_pair("AO", OpenNTCSemantic::AO),
-    std::make_pair("AmbientOcclusion", OpenNTCSemantic::AO),
-    std::make_pair("Roughness", OpenNTCSemantic::Roughness),
-    std::make_pair("SpecularColor", OpenNTCSemantic::Specular),
-    std::make_pair("Specular", OpenNTCSemantic::Specular),
-    std::make_pair("Transmission", OpenNTCSemantic::Transmission),
+  static std::pair<std::string, Semantic> s_map_name_to_sem[] = {
+    std::make_pair("Albedo", Semantic::Albedo),
+    std::make_pair("Diffuse", Semantic::Albedo),
+    std::make_pair("Alpha", Semantic::Alpha),
+    std::make_pair("Mask", Semantic::Alpha),
+    std::make_pair("AlphaMask", Semantic::Alpha),
+    std::make_pair("Displ", Semantic::Displacement),
+    std::make_pair("Displacement", Semantic::Displacement),
+    std::make_pair("Emissive", Semantic::Emissive),
+    std::make_pair("Emission", Semantic::Emissive),
+    std::make_pair("Glossiness", Semantic::Gloss),
+    std::make_pair("Gloss", Semantic::Gloss),
+    std::make_pair("Metalness", Semantic::Metallic),
+    std::make_pair("Metallic", Semantic::Metallic),
+    std::make_pair("Normal", Semantic::Normal),
+    std::make_pair("Occlusion", Semantic::AO),
+    std::make_pair("AO", Semantic::AO),
+    std::make_pair("AmbientOcclusion", Semantic::AO),
+    std::make_pair("Roughness", Semantic::Roughness),
+    std::make_pair("SpecularColor", Semantic::Specular),
+    std::make_pair("Specular", Semantic::Specular),
+    std::make_pair("Transmission", Semantic::Transmission),
   };
 
   for (int i = 0; i < _countof(s_map_name_to_sem); i++)
@@ -944,10 +946,10 @@ static OpenNTCSemantic SemanticFromName(const std::string& s)
       return s_map_name_to_sem[i].second;
   }
 
-  return OpenNTCSemantic::None;
+  return Semantic::None;
 }
 
-static int GetChannelCountForSemantic(const OpenNTCSemantic sem)
+static int GetChannelCountForSemantic(const Semantic sem)
 {
   static const int32_t s_map_sem_to_channel_count[] = {
     -1,               // None (any channel count)
@@ -968,7 +970,7 @@ static int GetChannelCountForSemantic(const OpenNTCSemantic sem)
   return s_map_sem_to_channel_count[static_cast<int32_t>(sem)];
 }
 
-static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string& channels)
+static bool IsValidSemanticChannels(const Semantic sem, const std::string& channels)
 {
   static const std::string rgba = "RGBA";
   if (channels.length() == 0 || channels.length() > 4)
@@ -982,7 +984,7 @@ static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string
     p++;
   }
 
-  if (sem != OpenNTCSemantic::None && GetChannelCountForSemantic(sem) != channels.length())
+  if (sem != Semantic::None && GetChannelCountForSemantic(sem) != channels.length())
     return false;
 
   return true;
@@ -990,42 +992,42 @@ static bool IsValidSemanticChannels(const OpenNTCSemantic sem, const std::string
 
 // TODO: Better error codes for manifest parsing
 
-OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
+Result Context::LoadManifest(const std::string& filepath)
 {
   UnloadManifest();
 
   std::ifstream fil(filepath);
   if (!fil)
-    return OpenNTCResult::FileNotFound;
+    return Result::FileNotFound;
   auto jfil = nlohmann::json::parse(fil, nullptr, false);
   if (jfil.is_discarded() || !jfil.contains("textures"))
-    return OpenNTCResult::InvalidManifest;
+    return Result::InvalidManifest;
   int source_count = 0;
   int32_t dim = -1;
   int32_t width = jfil.value("width", -1);
   int32_t height = jfil.value("height", -1);
   if (width == -1 && height == -1)
-    return OpenNTCResult::InvalidManifest;
+    return Result::InvalidManifest;
   if (width != -1 && height != -1 && width != height)
-    return OpenNTCResult::InvalidManifest;
+    return Result::InvalidManifest;
   dim = (width == -1) ? height : width;
-  if (dim < OpenNTCContext::kMinDimension || dim > OpenNTCContext::kMaxDimension)
-    return OpenNTCResult::InvalidManifest;
+  if (dim < Context::kMinDimension || dim > Context::kMaxDimension)
+    return Result::InvalidManifest;
   for (const auto& t : jfil["textures"])
   {
     if (!t.contains("semantics") || !t["semantics"].is_object())
-      return OpenNTCResult::InvalidManifest;
+      return Result::InvalidManifest;
     if (!t.contains("fileName") || !t["fileName"].is_string())
-      return OpenNTCResult::InvalidManifest;
+      return Result::InvalidManifest;
     for (const auto& [sem_name, sem_channels] : t["semantics"].items())
     {
       if (!sem_channels.is_string())
-        return OpenNTCResult::InvalidManifest;
-      OpenNTCSemantic sem = SemanticFromName(sem_name);
+        return Result::InvalidManifest;
+      Semantic sem = SemanticFromName(sem_name);
       std::string sem_str = sem_channels.get<std::string>();
       bool valid_sem_channels = IsValidSemanticChannels(sem, sem_str);
       if (!valid_sem_channels)
-        return OpenNTCResult::InvalidManifest;
+        return Result::InvalidManifest;
       manifest_.sources_[source_count].path_ = t.value("fileName", "");
       manifest_.sources_[source_count].name_ = t.value("name", "");
       manifest_.sources_[source_count].semantic_ = sem;
@@ -1034,17 +1036,17 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
       manifest_.sources_[source_count].num_channels_ = GetChannelCountForSemantic(sem);
       for (int i = 0; i < 4; i++)
       {
-        OpenNTCChannel ch = OpenNTCChannel::Invalid;
+        Channel ch = Channel::Invalid;
         if (i < manifest_.sources_[source_count].num_channels_)
         {
           if (sem_str[i] == 'R')
-            ch = OpenNTCChannel::R;
+            ch = Channel::R;
           else if (sem_str[i] == 'G')
-            ch = OpenNTCChannel::G;
+            ch = Channel::G;
           else if (sem_str[i] == 'B')
-            ch = OpenNTCChannel::B;
+            ch = Channel::B;
           else
-            ch = OpenNTCChannel::A;
+            ch = Channel::A;
         }
         manifest_.sources_[source_count].channel_mapping_[i] = ch;
       }
@@ -1054,11 +1056,11 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   manifest_.source_count_ = source_count;
   manifest_.dim_ = dim;
 
-  if (manifest_.dim_ < OpenNTCContext::kMinDimension ||
-      manifest_.dim_ > OpenNTCContext::kMaxDimension ||
+  if (manifest_.dim_ < Context::kMinDimension ||
+      manifest_.dim_ > Context::kMaxDimension ||
       std::popcount((unsigned int)manifest_.dim_) != 1)
   {
-    return OpenNTCResult::InvalidDimension;
+    return Result::InvalidDimension;
   }
 
   mip_dim_[0] = manifest_.dim_;
@@ -1145,13 +1147,13 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
     if (tex_data == nullptr)
     {
       UnloadManifest();
-      return OpenNTCResult::FileNotFound;
+      return Result::FileNotFound;
     }
     if (w != h || w != manifest_.dim_)
     {
       stbi_image_free(tex_data);
       UnloadManifest();
-      return OpenNTCResult::InvalidManifest;
+      return Result::InvalidManifest;
     }
     cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(uint8_t), cudaMemcpyHostToDevice);
     stbi_image_free(tex_data);
@@ -1183,7 +1185,7 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   if (p != out_dim_)
   {
     UnloadManifest();
-    return OpenNTCResult::InvalidManifest;
+    return Result::InvalidManifest;
   }
 
   for (int i = 0; i < mip_count_; i++)
@@ -1194,11 +1196,11 @@ OpenNTCResult OpenNTCContext::LoadManifest(const std::string& filepath)
   }
 
   manifest_loaded_ = true;
-  train_phase_ = OpenNTCTrainPhase::ManifestLoaded;
-  return OpenNTCResult::Success;
+  train_phase_ = TrainPhase::ManifestLoaded;
+  return Result::Success;
 }
 
-void OpenNTCContext::UnloadManifest()
+void Context::UnloadManifest()
 {
   if (!manifest_loaded_)
     return;
@@ -1255,9 +1257,9 @@ void OpenNTCContext::UnloadManifest()
   manifest_loaded_ = false;
 }
 
-OpenNTCTextureData OpenNTCContext::GetTextureData()
+TextureData Context::GetTextureData()
 {
-  OpenNTCTextureData tex_data = {};
+  TextureData tex_data = {};
   if (!manifest_loaded_)
     return tex_data;
 
@@ -1273,7 +1275,7 @@ OpenNTCTextureData OpenNTCContext::GetTextureData()
   return tex_data;
 }
 
-void OpenNTCContext::Destroy()
+void Context::Destroy()
 {
   if (manifest_loaded_)
   {
@@ -1322,7 +1324,7 @@ void OpenNTCContext::Destroy()
   delete[] Wout_scale_;
 }
 
-int32_t OpenNTCContext::GetMipDim(int mip) const
+int32_t Context::GetMipDim(int mip) const
 {
   assert(initialized_ && manifest_loaded_);
   if (initialized_ && manifest_loaded_)
@@ -1330,16 +1332,16 @@ int32_t OpenNTCContext::GetMipDim(int mip) const
   return 0;
 }
 
-struct OpenNTCBlob
+struct Blob
 {
   std::string name;
   uint64_t data_size;
   void* data;
 };
 
-OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompressedData& data)
+Result Context::Dump(const std::string& path, const CompressedData& data)
 {
-  std::vector<OpenNTCBlob> blobs;
+  std::vector<Blob> blobs;
   for (int i = 0; i < data.level_count_; i++)
     blobs.push_back({std::format("g0_{}", i), data.g0_size_[i], data.g0_[i]});
   for (int i = 0; i < data.level_count_; i++)
@@ -1386,7 +1388,7 @@ OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompres
   uint32_t header[4] = {0x43544E4F, 3, (uint32_t)js.size(), (uint32_t)off};
 
   std::ofstream f(path, std::ios::binary);
-  if (!f) return OpenNTCResult::FileNotFound;
+  if (!f) return Result::FileNotFound;
   f.write((const char*)header, sizeof(header));
   f.write(js.data(), js.length());
   off = 0;
@@ -1399,9 +1401,9 @@ OpenNTCResult OpenNTCContext::Dump(const std::string& path, const OpenNTCCompres
     off += blobs[i].data_size;
   }
 
-  OpenNTCResult res = OpenNTCResult::FileWriteFailure;
+  Result res = Result::FileWriteFailure;
   if (f.good())
-    res = OpenNTCResult::Success;
+    res = Result::Success;
   f.close();
 
   return res;
@@ -1451,7 +1453,7 @@ static const nlohmann::json* TryGetObj(const nlohmann::json& j, const char* key)
   return (it != j.end() && it->is_object()) ? &*it : nullptr;
 }
 
-struct OpenNTCBlobSlot
+struct BlobSlot
 {
   std::string name_;
   void** dst_;
@@ -1459,11 +1461,11 @@ struct OpenNTCBlobSlot
   bool found_;
 };
 
-OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_data)
+Result Context::Load(const std::string& path, FileData& o_data)
 {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f)
-    return OpenNTCResult::FileNotFound;
+    return Result::FileNotFound;
   size_t raw_size = f.tellg();
   o_data.raw_ = new uint8_t[raw_size];
   f.seekg(0);
@@ -1471,10 +1473,10 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
 
   // Validate header
   if (raw_size < 16)
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
   uint32_t* header = (uint32_t*)o_data.raw_;
   if (header[0] != 0x43544E4F || header[1] != 3)
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
 
   // Validate json
   uint64_t header_size = sizeof(uint32_t) * 4;
@@ -1483,23 +1485,23 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   uint64_t fil_size = header_size + json_size + blob_size;
   uint64_t blob_off = json_size + header_size;
   if (header_size + json_size > fil_size)
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
   nlohmann::json j = nlohmann::json::parse(o_data.raw_ + header_size, o_data.raw_ + header_size + json_size, nullptr, false);
   if (j.is_discarded())
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
 
   // Parse metadata from json
   const nlohmann::json* jg0 = TryGetObj(j, "g0");
   const nlohmann::json* jg1 = TryGetObj(j, "g1");
   const nlohmann::json* jcal = TryGetObj(j, "calibration");
   if (!jg0 || !jg1 || !jcal)
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
 
   bool success = true;
-  success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, OpenNTCContext::kMaxLevels);
+  success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, Context::kMaxLevels);
   success &= TryGet(*jg0, "bits", o_data.data_.g0_bytes_per_channel_);
   success &= TryGet(*jg0, "channels", o_data.data_.g0_channels_);
-  success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, OpenNTCContext::kMaxLevels);
+  success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, Context::kMaxLevels);
   success &= TryGet(*jg1, "bits", o_data.data_.g1_bytes_per_channel_);
   success &= TryGet(*jg1, "channels", o_data.data_.g1_channels_);
   success &= TryGet(j, "dim", o_data.data_.dim_);
@@ -1510,17 +1512,17 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   success &= TryGet(*jcal, "max_abs_a2", o_data.data_.caldata_.max_abs_a2);
   success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2);
   if (!success)
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
 
   if (o_data.data_.level_count_ < 1 ||
-      o_data.data_.level_count_ > OpenNTCContext::kMaxLevels ||
+      o_data.data_.level_count_ > Context::kMaxLevels ||
       o_data.data_.mip_count_ < 1 ||
-      o_data.data_.mip_count_ > OpenNTCContext::kMaxMips)
+      o_data.data_.mip_count_ > Context::kMaxMips)
   {
-    return OpenNTCResult::InvalidFile;
+    return Result::InvalidFile;
   }
 
-  std::vector<OpenNTCBlobSlot> slots;
+  std::vector<BlobSlot> slots;
   for (int i = 0; i < o_data.data_.level_count_; i++)
     slots.push_back({std::format("g0_{}", i), (void**)&o_data.data_.g0_[i], &o_data.data_.g0_size_[i], false});
   for (int i = 0; i < o_data.data_.level_count_; i++)
@@ -1536,7 +1538,7 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   {
     auto it = j.find("blobs");
     if (it == j.end() || !it->is_array())
-      return OpenNTCResult::InvalidFile;
+      return Result::InvalidFile;
     jblobs = &*it;
   }
 
@@ -1545,12 +1547,12 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
     std::string name;
     uint64_t off = 0, size = 0;
     if (!TryGet(jb, "name", name) || !TryGet(jb, "offset", off) || !TryGet(jb, "size", size))
-      return OpenNTCResult::InvalidFile;
+      return Result::InvalidFile;
     if (blob_off + off + size > fil_size)
-      return OpenNTCResult::InvalidFile;
+      return Result::InvalidFile;
     for (int slot_i = 0; slot_i < slots.size(); slot_i++)
     {
-      OpenNTCBlobSlot& s = slots[slot_i];
+      BlobSlot& s = slots[slot_i];
       if (name == s.name_)
       {
         *s.dst_ = o_data.raw_ + blob_off + off;
@@ -1563,7 +1565,7 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
   for (int slot_i = 0; slot_i < slots.size(); slot_i++)
   {
     if (slots[slot_i].found_ == false)
-      return OpenNTCResult::InvalidFile;
+      return Result::InvalidFile;
   }
 
   o_data.data_.g0_offset_[0] = 0;
@@ -1574,15 +1576,16 @@ OpenNTCResult OpenNTCContext::Load(const std::string& path, OpenNTCFileData& o_d
     o_data.data_.g1_offset_[level_i] = o_data.data_.g1_size_[level_i - 1] + o_data.data_.g1_offset_[level_i - 1];
   }
 
-  return OpenNTCResult::Success;
+  return Result::Success;
 }
 
-OpenNTCFileData::OpenNTCFileData() : raw_(nullptr) {}
-OpenNTCFileData::~OpenNTCFileData()
+FileData::FileData() : raw_(nullptr) {}
+FileData::~FileData()
 {
   delete[] raw_;
 }
-const OpenNTCCompressedData& OpenNTCFileData::Data()
+const CompressedData& FileData::Data()
 {
   return data_;
 }
+} // namespace openntc

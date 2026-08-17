@@ -18,12 +18,12 @@ class SharedContext
     struct Access
     {
       std::unique_lock<std::mutex> guard_;
-      OpenNTCContext& ctx_;
+      openntc::Context& ctx_;
     };
     Access Acquire();
     std::optional<Access> TryAcquire();
 
   private:
     std::mutex mutex_;
-    OpenNTCContext ctx_;
+    openntc::Context ctx_;
 };

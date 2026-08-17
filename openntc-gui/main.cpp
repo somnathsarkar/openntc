@@ -34,7 +34,7 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 #define VERIFY(hr) do { (hr); } while(0)
 #endif
 
-const char* const g_map_semantic_to_name[static_cast<int32_t>(OpenNTCSemantic::Count)] = {
+const char* const g_map_semantic_to_name[static_cast<int32_t>(openntc::Semantic::Count)] = {
   "Albedo",
   "Alpha",
   "Displacement",
@@ -79,16 +79,16 @@ ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
-ComPtr<ID3D12Resource> g_tex[kMaxSources];
+ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
-DXGI_FORMAT g_formats[kMaxSources];
+DXGI_FORMAT g_formats[openntc::kMaxSources];
 UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
 std::atomic<SharedFields> g_shared_fields;
-OpenNTCFileData g_fil_data;
+openntc::FileData g_fil_data;
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
 ComPtr<ID3D12Resource> g_buffer_g0;
@@ -149,13 +149,13 @@ D3D12_INDEX_BUFFER_VIEW g_ibv;
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_fov = 110.0f;
 
-constexpr int32_t g_nonimgui_srv_count = kMaxSources + 1 + (1 + 1 + 3 + 3);
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3);
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
 void PerformTrainingJob()
 {
-  OpenNTCTrainInfo train_info = {};
+  openntc::TrainInfo train_info = {};
   train_info.grids_per_batch_ = 1;
   train_info.batch_count_ = 30000;
   SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
@@ -171,10 +171,10 @@ void PerformTrainingJob()
   { 
     SharedContext::Access access = g_ctx.Acquire();
     SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
-    OpenNTCTrainProgress tprogress = access.ctx_.Train(128);
-    if (tprogress.phase_ == OpenNTCTrainPhase::TrainComplete)
+    openntc::TrainProgress tprogress = access.ctx_.Train(128);
+    if (tprogress.phase_ == openntc::TrainPhase::TrainComplete)
     {
-      OpenNTCEvalResults eval_results = access.ctx_.Eval();
+      openntc::EvalResults eval_results = access.ctx_.Eval();
       fields.eval_psnr = eval_results.psnr;
       fields.eval_mse = eval_results.mse;
       fields.train_in_progress = false;
@@ -214,7 +214,7 @@ T CbvDescriptorForNTCInfo()
 {
   UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   T head = SrvDescriptorHead<T>();
-  head.ptr += inc * kMaxSources;
+  head.ptr += inc * openntc::kMaxSources;
   return head;
 }
 
@@ -223,7 +223,7 @@ T SrvDescriptorForNTCInfo(int offset)
 {
   UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   T head = SrvDescriptorHead<T>();
-  head.ptr += inc * (kMaxSources + 1 + offset);
+  head.ptr += inc * (openntc::kMaxSources + 1 + offset);
   return head;
 }
 
@@ -384,7 +384,7 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
 static void RebuildTextureResources(SharedContext::Access& access)
 {
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
-  OpenNTCTextureData tex_data = access.ctx_.GetTextureData();
+  openntc::TextureData tex_data = access.ctx_.GetTextureData();
 
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
   {
@@ -1127,8 +1127,8 @@ void LoadContent()
   {
     SharedContext::Access access = g_ctx.Acquire();
 
-    OpenNTCResult load_res = access.ctx_.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
-    VERIFY(load_res == OpenNTCResult::Success);
+    openntc::Result load_res = access.ctx_.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
+    VERIFY(load_res == openntc::Result::Success);
     
     RebuildTextureResources(access);
   }
@@ -1138,7 +1138,7 @@ void LoadContent()
   ResizeDepthBuffer(g_width, g_height);
 }
 
-void UploadCompressedData(OpenNTCCompressedData& cdata)
+void UploadCompressedData(openntc::CompressedData& cdata)
 {
   {
     NTCInfo ntc_info = {};
@@ -1538,8 +1538,8 @@ void LoadCompressedDataFromContext(SharedContext::Access& access)
 {
   if (g_compressed_data_loaded) return;
 
-  OpenNTCCompressedData cdata = access.ctx_.GetCompressedData();
-  OpenNTCContext::Dump("bricks101_2k.ntc", cdata);
+  openntc::CompressedData cdata = access.ctx_.GetCompressedData();
+  openntc::Context::Dump("bricks101_2k.ntc", cdata);
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
 }
@@ -1548,9 +1548,9 @@ void LoadCompressedDataFromFile()
 {
   if (g_compressed_data_loaded) return;
 
-  OpenNTCResult res = OpenNTCContext::Load("bricks101_2k.ntc", g_fil_data);
-  VERIFY(res == OpenNTCResult::Success);
-  OpenNTCCompressedData cdata = g_fil_data.Data();
+  openntc::Result res = openntc::Context::Load("bricks101_2k.ntc", g_fil_data);
+  VERIFY(res == openntc::Result::Success);
+  openntc::CompressedData cdata = g_fil_data.Data();
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
 }
@@ -1603,7 +1603,7 @@ void Render()
   Shader shader = static_cast<Shader>(g_gui_shader);
   if (shader == Shader::Flat)
   {
-    ImGui::Combo("Channel", &g_gui_texture, g_map_semantic_to_name, kMaxSources);
+    ImGui::Combo("Channel", &g_gui_texture, g_map_semantic_to_name, openntc::kMaxSources);
   }
   ImGui::Checkbox("Spin", &g_gui_spin);
   ImGui::End();
@@ -1677,11 +1677,11 @@ void Render()
         if (oaccess.has_value())
         {
           SharedContext::Access& access = oaccess.value();
-          OpenNTCResult load_res = access.ctx_.LoadManifest(file_path);
+          openntc::Result load_res = access.ctx_.LoadManifest(file_path);
           
           // TODO: Log failure in GUI.
 
-          if (load_res == OpenNTCResult::Success)
+          if (load_res == openntc::Result::Success)
           {
             RebuildTextureResources(access);
           }
@@ -2190,8 +2190,8 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   {
     SharedContext::Access access = g_ctx.Acquire();
     SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
-    OpenNTCContextInitInfo init_info = {};
-    init_info.profile = OpenNTCProfile::Bpp_0_2;
+    openntc::ContextInitInfo init_info = {};
+    init_info.profile = openntc::Profile::Bpp_0_2;
     access.ctx_.Init(init_info);
     fields.train_in_progress = false;
     fields.train_complete = false;
