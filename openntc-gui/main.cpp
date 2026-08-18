@@ -246,7 +246,8 @@ const char* g_map_shader_to_name[] = {
   "PBR_NTC_COOP"
 };
 
-int32_t g_gui_shader = static_cast<int32_t>(Shader::GGX);
+int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
+int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_window_shading = true;
 int32_t g_gui_texture = 0;
 bool g_gui_spin = true;
@@ -1555,6 +1556,64 @@ void LoadCompressedDataFromFile()
   g_compressed_data_loaded = true;
 }
 
+static void SetPipelineStateForShader(Shader shader)
+{
+  if (shader == Shader::Flat)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
+  }
+  else if (shader == Shader::GGX)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_ggx.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_ggx.Get());
+  }
+  else if (shader == Shader::PBR_NTC)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
+  }
+  else if (shader == Shader::PBR_NTC_COOP)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
+  }
+}
+
+static void SetDescriptorsForShader(Shader shader)
+{
+  if (shader == Shader::Flat)
+  {
+    XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
+    mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(g_gui_texture);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
+  }
+  else if (shader == Shader::GGX)
+  {
+    ModelViewProjection mvp = {};
+    mvp.model_to_world = g_model_mat;
+    mvp.world_to_view = g_view_mat;
+    mvp.view_to_proj = g_proj_mat;
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
+  }
+  else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
+  {
+    ModelViewProjection mvp = {};
+    mvp.model_to_world = g_model_mat;
+    mvp.world_to_view = g_view_mat;
+    mvp.view_to_proj = g_proj_mat;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = CbvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>();
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
+  }
+}
+
 void Update()
 {
   static uint64_t framecounter = 0;
@@ -1593,15 +1652,107 @@ void Update()
   g_proj_mat = XMMatrixPerspectiveFovLH(XMConvertToRadians(g_fov), aspect_ratio, 0.1f, 100.0f);
 }
 
+void PerformLoadManifest()
+{
+  ComPtr<IFileOpenDialog> open_dialog;
+
+  VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, &open_dialog));
+
+  if (SUCCEEDED(open_dialog->Show(NULL)))
+  {
+    ComPtr<IShellItem> open_item;
+    if (SUCCEEDED(open_dialog->GetResult(&open_item)))
+    {
+      PWSTR wfile_path;
+      VERIFY(open_item->GetDisplayName(SIGDN_FILESYSPATH, &wfile_path));
+      int file_path_size = WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, nullptr, 0, nullptr, nullptr);
+      std::string file_path(file_path_size - 1, 0);
+      WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, file_path.data(), file_path_size, nullptr, nullptr);
+      CoTaskMemFree(wfile_path);
+      auto oaccess = g_ctx.TryAcquire();
+      if (oaccess.has_value())
+      {
+        SharedContext::Access& access = oaccess.value();
+        openntc::Result load_res = access.ctx_.LoadManifest(file_path);
+        
+        // TODO: Log failure in GUI.
+
+        if (load_res == openntc::Result::Success)
+        {
+          RebuildTextureResources(access);
+        }
+      }
+    }
+  }
+}
+
+void PerformLoadCompressed()
+{
+  // TODO: Add open file dialog
+  LoadCompressedDataFromFile();
+}
+
+void PerformSaveCompressed()
+{
+  // TODO: Currently we auto-save to a path fixed in code. Add save dialog.
+}
+
 void Render()
 {
   ImGui_ImplDX12_NewFrame();
   ImGui_ImplWin32_NewFrame();
   ImGui::NewFrame();
+
+  // Build Menu Bar
+  {
+    if (ImGui::BeginMainMenuBar())
+    {
+      if (ImGui::BeginMenu("File"))
+      {
+        if (ImGui::MenuItem("Load Manifest...", "Ctrl+O"))
+        {
+          PerformLoadManifest();
+        }
+        if (ImGui::MenuItem("Load Compressed...", "Ctrl+Shift+O"))
+        {
+          PerformLoadCompressed();
+        }
+        if (ImGui::MenuItem("Save Compressed...", "Ctrl+S"))
+        {
+          PerformSaveCompressed();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exit", "Alt+F4"))
+        {
+          PostQuitMessage(0);
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndMainMenuBar();
+    }
+  }
+
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  {
+    PerformLoadManifest();
+  }
+
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  {
+    PerformLoadCompressed();
+  }
+
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
+  {
+    PerformSaveCompressed();
+  }
+
   g_gui_window_shading = ImGui::Begin("Shading");
-  ImGui::Combo("Shader", &g_gui_shader, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
-  Shader shader = static_cast<Shader>(g_gui_shader);
-  if (shader == Shader::Flat)
+  ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  Shader shader_left = static_cast<Shader>(g_gui_shader_left);
+  Shader shader_right = static_cast<Shader>(g_gui_shader_right);
+  if (shader_left == Shader::Flat)
   {
     ImGui::Combo("Channel", &g_gui_texture, g_map_semantic_to_name, openntc::kMaxSources);
   }
@@ -1649,46 +1800,6 @@ void Render()
       }
     }
   }
-  
-  if (ImGui::Button("Load"))
-  {
-    LoadCompressedDataFromFile();
-  }
-  ImGui::End();
-  ImGui::Begin("Load");
-  if (ImGui::Button("Load Manifest"))
-  {
-    ComPtr<IFileOpenDialog> open_dialog;
-
-    VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, &open_dialog));
-
-    if (SUCCEEDED(open_dialog->Show(NULL)))
-    {
-      ComPtr<IShellItem> open_item;
-      if (SUCCEEDED(open_dialog->GetResult(&open_item)))
-      {
-        PWSTR wfile_path;
-        VERIFY(open_item->GetDisplayName(SIGDN_FILESYSPATH, &wfile_path));
-        int file_path_size = WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, nullptr, 0, nullptr, nullptr);
-        std::string file_path(file_path_size - 1, 0);
-        WideCharToMultiByte(CP_UTF8, 0, wfile_path, -1, file_path.data(), file_path_size, nullptr, nullptr);
-        CoTaskMemFree(wfile_path);
-        auto oaccess = g_ctx.TryAcquire();
-        if (oaccess.has_value())
-        {
-          SharedContext::Access& access = oaccess.value();
-          openntc::Result load_res = access.ctx_.LoadManifest(file_path);
-          
-          // TODO: Log failure in GUI.
-
-          if (load_res == openntc::Result::Success)
-          {
-            RebuildTextureResources(access);
-          }
-        }
-      }
-    }
-  }
   ImGui::End();
 
   auto command_allocator = g_commandallocators[g_frame_i];
@@ -1700,13 +1811,21 @@ void Render()
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  D3D12_VIEWPORT viewport = {};
-  viewport.TopLeftX = 0.0f;
-  viewport.TopLeftY = 0.0f;
-  viewport.Width = static_cast<float>(g_width) / 2.0f;
-  viewport.Height = static_cast<float>(g_height);
-  viewport.MinDepth = 0.0f;
-  viewport.MaxDepth = 1.0f;
+  D3D12_VIEWPORT viewport_left = {};
+  viewport_left.TopLeftX = 0.0f;
+  viewport_left.TopLeftY = 0.0f;
+  viewport_left.Width = static_cast<float>(g_width) / 2.0f;
+  viewport_left.Height = static_cast<float>(g_height);
+  viewport_left.MinDepth = 0.0f;
+  viewport_left.MaxDepth = 1.0f;
+
+  D3D12_VIEWPORT viewport_right = {};
+  viewport_right.TopLeftX = static_cast<float>(g_width) / 2.0f;
+  viewport_right.TopLeftY = 0.0f;
+  viewport_right.Width = static_cast<float>(g_width) / 2.0f;
+  viewport_right.Height = static_cast<float>(g_height);
+  viewport_right.MinDepth = 0.0f;
+  viewport_right.MaxDepth = 1.0f;
 
   D3D12_RECT scissor = {};
   scissor.top = 0;
@@ -1721,68 +1840,30 @@ void Render()
     g_commandlist->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
   }
 
-  if (shader == Shader::Flat)
-  {
-    g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
-  }
-  else if (shader == Shader::GGX)
-  {
-    g_commandlist->SetPipelineState(g_pipelinestate_ggx.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_ggx.Get());
-  }
-  else if (shader == Shader::PBR_NTC)
-  {
-    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
-  }
-  else if (shader == Shader::PBR_NTC_COOP)
-  {
-    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
-  }
   ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
-
   g_commandlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_commandlist->IASetVertexBuffers(0, 1, &g_vbv);
   g_commandlist->IASetIndexBuffer(&g_ibv);
 
-  g_commandlist->RSSetViewports(1, &viewport);
-  g_commandlist->RSSetScissorRects(1, &scissor);
-  g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+  {
+    g_commandlist->RSSetViewports(1, &viewport_left);
+    g_commandlist->RSSetScissorRects(1, &scissor);
+    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
 
-  if (shader == Shader::Flat)
-  {
-    XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
-    mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(g_gui_texture);
-    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
+    SetPipelineStateForShader(shader_left);
+    SetDescriptorsForShader(shader_left);
+    g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
   }
-  else if (shader == Shader::GGX)
   {
-    ModelViewProjection mvp = {};
-    mvp.model_to_world = g_model_mat;
-    mvp.world_to_view = g_view_mat;
-    mvp.view_to_proj = g_proj_mat;
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
-    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
+    g_commandlist->RSSetViewports(1, &viewport_right);
+    g_commandlist->RSSetScissorRects(1, &scissor);
+    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+
+    SetPipelineStateForShader(shader_right);
+    SetDescriptorsForShader(shader_right);
+    g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
   }
-  else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
-  {
-    ModelViewProjection mvp = {};
-    mvp.model_to_world = g_model_mat;
-    mvp.world_to_view = g_view_mat;
-    mvp.view_to_proj = g_proj_mat;
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = CbvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>();
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
-    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
-  }
-  g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
 
   ImGui::Render();
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_commandlist.Get());
