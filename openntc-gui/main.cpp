@@ -147,7 +147,7 @@ D3D12_VERTEX_BUFFER_VIEW g_vbv;
 D3D12_INDEX_BUFFER_VIEW g_ibv;
 
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
-float g_fov = 110.0f;
+float g_fov_y = 110.0f;
 
 constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3);
 constexpr int32_t g_imgui_srv_count = 64;
@@ -1638,17 +1638,27 @@ void Update()
     elapsed_seconds = 0.0;
   }
 
+  float aspect_ratio = g_width / (2.0f * static_cast<float>(g_height));
+  float fov_y = XMConvertToRadians(g_fov_y);
+  float fov_x = 2.0f * std::atanf(std::tanf(fov_y / 2.0f) * aspect_ratio);
+  float fov = std::min(fov_y, fov_x);
+
   float angle = g_gui_spin ? static_cast<float>(std::fmod(total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
   const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
   g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
 
-  const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -2.0f, 1.0f);
+  // Bounding sphere radius for cube with corner extent at +-1
+  float bounding_sphere_radius = std::sqrtf(3.0f);
+  // Some breathing room for the distance quantity
+  float distance_spacing_factor = 1.1f;
+  float eye_distance = distance_spacing_factor * bounding_sphere_radius / std::sinf(fov / 2.0f);
+
+  const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
   g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
 
-  float aspect_ratio = g_width / (2.0f * static_cast<float>(g_height));
-  g_proj_mat = XMMatrixPerspectiveFovLH(XMConvertToRadians(g_fov), aspect_ratio, 0.1f, 100.0f);
+  g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
 }
 
 void PerformLoadManifest()
@@ -1758,6 +1768,7 @@ void Render()
   ImGui::SeparatorText("Shading");
   ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
