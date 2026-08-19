@@ -248,7 +248,6 @@ const char* g_map_shader_to_name[] = {
 
 int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
-int32_t g_gui_window_shading = true;
 int32_t g_gui_texture = 0;
 bool g_gui_spin = true;
 
@@ -1747,7 +1746,16 @@ void Render()
     PerformSaveCompressed();
   }
 
-  g_gui_window_shading = ImGui::Begin("Shading");
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float sidebar_w = 350.0f;
+  const float footer_h = ImGui::GetFrameHeight() * 1.6f;
+  const ImGuiWindowFlags pinned_flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar;
+                                      
+  ImGui::SetNextWindowPos({vp->WorkPos.x + vp->WorkSize.x - sidebar_w, vp->WorkPos.y});
+  ImGui::SetNextWindowSize({sidebar_w, vp->WorkSize.y - footer_h});
+  ImGui::Begin("Sidebar", nullptr, pinned_flags);
+  ImGui::SeparatorText("Shading");
   ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
@@ -1757,9 +1765,8 @@ void Render()
     ImGui::Combo("Channel", &g_gui_texture, g_map_semantic_to_name, openntc::kMaxSources);
   }
   ImGui::Checkbox("Spin", &g_gui_spin);
-  ImGui::End();
 
-  ImGui::Begin("Train");
+  ImGui::SeparatorText("Train");
   bool train_button = ImGui::Button("Train");
   {
     std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
@@ -1802,6 +1809,17 @@ void Render()
   }
   ImGui::End();
 
+  ImGui::SetNextWindowPos({vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - footer_h});
+  ImGui::SetNextWindowSize({vp->WorkSize.x, footer_h});
+  ImGui::Begin("Footer", nullptr, pinned_flags);
+  ImGui::Text("openntc-gui v0.1 pre-release");
+  ImGui::End();
+
+  float cx = vp->WorkPos.x;
+  float cy = vp->WorkPos.y;
+  float cw = vp->WorkSize.x - sidebar_w;
+  float ch = vp->WorkSize.y - footer_h;
+
   auto command_allocator = g_commandallocators[g_frame_i];
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
@@ -1812,18 +1830,18 @@ void Render()
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   D3D12_VIEWPORT viewport_left = {};
-  viewport_left.TopLeftX = 0.0f;
-  viewport_left.TopLeftY = 0.0f;
-  viewport_left.Width = static_cast<float>(g_width) / 2.0f;
-  viewport_left.Height = static_cast<float>(g_height);
+  viewport_left.TopLeftX = cx;
+  viewport_left.TopLeftY = cy;
+  viewport_left.Width = cw / 2.0f;
+  viewport_left.Height = ch;
   viewport_left.MinDepth = 0.0f;
   viewport_left.MaxDepth = 1.0f;
 
   D3D12_VIEWPORT viewport_right = {};
-  viewport_right.TopLeftX = static_cast<float>(g_width) / 2.0f;
-  viewport_right.TopLeftY = 0.0f;
-  viewport_right.Width = static_cast<float>(g_width) / 2.0f;
-  viewport_right.Height = static_cast<float>(g_height);
+  viewport_right.TopLeftX = cx + cw / 2.0f;
+  viewport_right.TopLeftY = cy;
+  viewport_right.Width = cw / 2.0f;
+  viewport_right.Height = ch;
   viewport_right.MinDepth = 0.0f;
   viewport_right.MaxDepth = 1.0f;
 
