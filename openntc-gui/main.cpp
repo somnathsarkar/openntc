@@ -147,6 +147,9 @@ D3D12_VERTEX_BUFFER_VIEW g_vbv;
 D3D12_INDEX_BUFFER_VIEW g_ibv;
 
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
+float g_pitch = 0.0f;
+float g_yaw = 0.0f;
+float y_roll = 0.0f;
 float g_fov_y = 110.0f;
 
 constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3);
@@ -246,9 +249,25 @@ const char* g_map_shader_to_name[] = {
   "PBR_NTC_COOP"
 };
 
+enum class CameraMode: int32_t
+{
+  Static,
+  Orbit,
+  Controlled,
+
+  Count,
+};
+
+const char* g_map_camera_mode_to_name[] = {
+  "Static",
+  "Orbit",
+  "Controlled"
+};
+
 int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_texture = 0;
+int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
 bool g_gui_spin = true;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
@@ -1643,22 +1662,32 @@ void Update()
   float fov_x = 2.0f * std::atanf(std::tanf(fov_y / 2.0f) * aspect_ratio);
   float fov = std::min(fov_y, fov_x);
 
-  float angle = g_gui_spin ? static_cast<float>(std::fmod(total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
-  const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-  g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
+  CameraMode cmode = static_cast<CameraMode>(g_gui_camera_mode);
 
   // Bounding sphere radius for cube with corner extent at +-1
   float bounding_sphere_radius = std::sqrtf(3.0f);
   // Some breathing room for the distance quantity
   float distance_spacing_factor = 1.1f;
   float eye_distance = distance_spacing_factor * bounding_sphere_radius / std::sinf(fov / 2.0f);
-
-  const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-  g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
 
-  g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
+  if (cmode == CameraMode::Orbit)
+  {
+    float angle = g_gui_spin ? static_cast<float>(std::fmod(total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
+    const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
+    const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
+    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
+    g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
+  }
+  else if (cmode == CameraMode::Controlled)
+  {
+    const XMVECTOR eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
+    g_model_mat = XMMatrixIdentity();
+    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
+    g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
+  }
 }
 
 void PerformLoadManifest()
@@ -1766,6 +1795,7 @@ void Render()
   ImGui::SetNextWindowSize({sidebar_w, vp->WorkSize.y - footer_h});
   ImGui::Begin("Sidebar", nullptr, pinned_flags);
   ImGui::SeparatorText("Shading");
+  ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
   ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
@@ -1830,6 +1860,34 @@ void Render()
   float cy = vp->WorkPos.y;
   float cw = vp->WorkSize.x - sidebar_w;
   float ch = vp->WorkSize.y - footer_h;
+
+  {
+    // Remove default ImGUI padding for hidden drag control
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGuiWindowFlags drag_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus;
+    ImGui::SetNextWindowPos({cx, cy});
+    ImGui::SetNextWindowSize({cw, ch});
+    ImGui::Begin("Viewport Input", nullptr, drag_flags);
+    ImGui::InvisibleButton("Viewport Drag", {cw, ch}, ImGuiButtonFlags_MouseButtonLeft);
+    if (ImGui::IsItemActive())
+    {
+      if (static_cast<CameraMode>(g_gui_camera_mode) == CameraMode::Orbit)
+        g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
+
+      const float sensitivity = 0.008f;
+      ImGuiIO& io = ImGui::GetIO();
+      g_yaw   += io.MouseDelta.x * sensitivity;
+      g_pitch += io.MouseDelta.y * sensitivity;
+
+      const float pitch_limit = XMConvertToRadians(89.0f);
+      g_pitch = std::clamp(g_pitch, -pitch_limit, pitch_limit);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+  }
 
   auto command_allocator = g_commandallocators[g_frame_i];
   auto buffer = g_buffers[g_frame_i];
