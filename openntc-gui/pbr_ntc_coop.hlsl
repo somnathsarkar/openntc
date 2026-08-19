@@ -339,7 +339,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float4 view_normal = mul(tbn_view, surface_normal);
   float3 normal = view_normal.rgb;
   float perceptual_roughness = ntc_roughness;
-  float3 albedo = ntc_albedo;
+  float3 albedo = pow(ntc_albedo, 2.2f);
 
   float3 view_dir = -normalize(p_in.pos_view.xyz / p_in.pos_view.w);
   float3 light_dir = -normalize(directional_light);
@@ -362,7 +362,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float3 radiance = (Fd + Fr) * light_color * NoL;
 
-  p_out.color = float4(radiance, 1.0);
+  p_out.color = float4(pow(radiance, 1.0f / 2.2f), 1.0);
 
   return p_out;
 }

@@ -113,7 +113,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float4 view_normal = mul(tbn_view, surface_normal);
   float3 normal = view_normal.rgb;
   float perceptual_roughness = tex_roughness.Sample(sampler_bilinear_clamp, p_in.uv).r;
-  float3 albedo = tex_albedo.Sample(sampler_bilinear_clamp, p_in.uv).rgb;
+  float3 albedo = pow(tex_albedo.Sample(sampler_bilinear_clamp, p_in.uv).rgb, 2.2);
 
   float3 view_dir = -normalize(p_in.pos_view.xyz / p_in.pos_view.w);
   float3 light_dir = -normalize(directional_light);
@@ -136,7 +136,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float3 radiance = (Fd + Fr) * light_color * NoL;
 
-  p_out.color = float4(radiance, 1.0);
+  p_out.color = float4(pow(radiance, 1.0f / 2.2f), 1.0);
 
   return p_out;
 }
