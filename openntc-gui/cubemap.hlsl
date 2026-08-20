@@ -31,6 +31,14 @@ VertexShaderOutput vs_main(uint vid : SV_VertexID)
   return v_out;
 }
 
+struct LightingParams
+{
+  float3 exposure;
+  float3 diffuse_sh[9];
+};
+
+ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
+
 TextureCube<float4> tex_cubemap : register(t1, space0);
 SamplerState sampler_trilinear : register(s0);
 
@@ -55,6 +63,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 world_dir = normalize(world_pos.xyz / world_pos.w);
 
   float3 radiance = tex_cubemap.Sample(sampler_trilinear, world_dir).rgb;
+  radiance *= LightingParamsCBV.exposure;
   p_out.color = float4(pow(radiance, 1.0f / 2.2f), 1.0f);
 
   return p_out;

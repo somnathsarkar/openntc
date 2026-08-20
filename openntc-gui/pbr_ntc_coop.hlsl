@@ -32,6 +32,7 @@ struct VertexShaderOutput
   float4 pos_view : POSITION0;
   float4 normal_view : NORMAL0;
   float4 tangent_view : TANGENT0;
+  float4 pos_world : POSITION1;
 };
 
 VertexShaderOutput vs_main(VertexShaderInput v_in)
@@ -53,6 +54,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   v_out.pos_view = view_pos;
   v_out.normal_view = view_normal;
   v_out.tangent_view = view_tangent;
+  v_out.pos_world = world_pos;
 
   return v_out;
 }
@@ -73,7 +75,14 @@ struct NTC
   float rcp_s_a2;
 };
 
+struct LightingParams
+{
+  float3 exposure;
+  float3 diffuse_sh[9];
+};
+
 ConstantBuffer<NTC> NTCCBV : register(b1, space0);
+ConstantBuffer<LightingParams> LightingParamsCBV : register(b2, space0);
 
 Buffer<uint> g0 : register(t0, space0);
 Buffer<uint> g1 : register(t1, space0);
@@ -83,6 +92,9 @@ ByteAddressBuffer Wout : register(t4, space0);
 ByteAddressBuffer W0_scale : register(t5, space0);
 ByteAddressBuffer W1_scale : register(t6, space0);
 ByteAddressBuffer Wout_scale : register(t7, space0);
+TextureCube<float4> tex_specular_ibl : register(t8, space0);
+Texture2D<float4> tex_dfg : register(t9, space0);
+SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput
 {
@@ -91,6 +103,7 @@ struct PixelShaderInput
   float4 pos_view : POSITION0;
   float4 normal_view : NORMAL0;
   float4 tangent_view : TANGENT0;
+  float4 pos_world : POSITION1;
 };
 
 struct PixelShaderOutput
@@ -272,6 +285,19 @@ vector<float, 64> hardgelu_coop(vector<float, 64> x)
   return select(x < -1.5f, 0.0, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
 }
 
+float3 IrradianceSh(float3 n)
+{
+  return LightingParamsCBV.diffuse_sh[0] +
+          LightingParamsCBV.diffuse_sh[1] * n.y +
+          LightingParamsCBV.diffuse_sh[2] * n.z +
+          LightingParamsCBV.diffuse_sh[3] * n.x +
+          LightingParamsCBV.diffuse_sh[4] * (n.y * n.x) +
+          LightingParamsCBV.diffuse_sh[5] * (n.y * n.z) +
+          LightingParamsCBV.diffuse_sh[6] * (3.0 * n.z * n.z - 1.0) +
+          LightingParamsCBV.diffuse_sh[7] * (n.z * n.x) +
+          LightingParamsCBV.diffuse_sh[8] * (n.x * n.x - n.y * n.y);
+}
+
 PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
   using namespace dx::linalg;
@@ -283,6 +309,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 directional_light = float3(0.0, 0.0, 1.0);
   float3 light_color = float3(1.0, 1.0, 1.0);
   float3 f0 = float3(0.04, 0.04, 0.04);
+  float3 f90 = float3(1.0, 1.0, 1.0);
 
   // Samples
 
@@ -344,6 +371,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 view_dir = -normalize(p_in.pos_view.xyz / p_in.pos_view.w);
   float3 light_dir = -normalize(directional_light);
   float3 half_dir = normalize((view_dir + light_dir) / 2.0);
+  float3 reflect_dir = reflect(-view_dir, normal);
 
   float NoV = abs(dot(normal, view_dir));
   float NoL = clamp(dot(normal, light_dir), 0.0, 1.0);
@@ -361,6 +389,18 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 Fd = albedo * Fd_Lambert();
 
   float3 radiance = (Fd + Fr) * light_color * NoL;
+
+  float3 reflect_world = mul(float4(reflect_dir, 0.0), ModelViewProjectionCB.world_to_view).xyz;
+  float3 normal_world = mul(float4(normal, 0.0), ModelViewProjectionCB.world_to_view).xyz;
+  float lod_ibl = perceptual_roughness * 4.0;
+  float3 specular_ibl = tex_specular_ibl.SampleLevel(sampler_trilinear, reflect_world, lod_ibl).rgb;
+  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, perceptual_roughness)).rg;
+  float3 specular_color = f0 * specular_dfg.x + f90 * specular_dfg.y;
+  float3 diffuse_ibl = max(IrradianceSh(normal_world), 0.0);
+
+  radiance += diffuse_ibl * albedo * ntc_ao + specular_color * specular_ibl;
+  // Exposure correction
+  radiance *= LightingParamsCBV.exposure;
 
   p_out.color = float4(pow(radiance, 1.0f / 2.2f), 1.0);
 

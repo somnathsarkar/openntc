@@ -85,6 +85,8 @@ ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
 ComPtr<ID3D12Resource> g_tex_specular_ibl;
+ComPtr<ID3D12Resource> g_tex_specular_dfg;
+XMFLOAT3A g_diffuse_sh[9] = {};
 DXGI_FORMAT g_formats[openntc::kMaxSources];
 UINT g_descriptorsize;
 UINT g_frame_i;
@@ -103,6 +105,7 @@ ComPtr<ID3D12Resource> g_buffer_Wout;
 ComPtr<ID3D12Resource> g_buffer_W0_scale;
 ComPtr<ID3D12Resource> g_buffer_W1_scale;
 ComPtr<ID3D12Resource> g_buffer_Wout_scale;
+ComPtr<ID3D12Resource> g_buffer_lighting_params;
 
 ComPtr<ID3D12Fence> g_fence;
 uint64_t g_fenceval = 0;
@@ -142,6 +145,12 @@ struct CubemapTransforms
   XMMATRIX view_to_world;
 };
 
+struct LightingParams
+{
+  XMFLOAT3A exposure;
+  XMFLOAT3A diffuse_sh[9];
+};
+
 static const int g_index_count = 36;
 WORD g_cube_indices[g_index_count] =
 {
@@ -162,7 +171,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3);
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -241,11 +250,20 @@ T SrvDescriptorForNTCInfo(int offset)
 }
 
 template <typename T>
-T SrvDescriptorForSpecularIBL()
+T SrvDescriptorForIBL(int offset)
 {
   UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   T head = SrvDescriptorHead<T>();
-  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3));
+  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + offset);
+  return head;
+}
+
+template <typename T>
+T CbvDescriptorForLightingParams()
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 2);
   return head;
 }
 
@@ -287,6 +305,7 @@ int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_texture = 0;
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
+XMFLOAT3A g_gui_exposure = XMFLOAT3A(0.5, 0.5, 0.5);
 bool g_gui_spin = true;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
@@ -566,50 +585,147 @@ static void RebuildTextureResources(SharedContext::Access& access)
   }
 }
 
+static void LoadDiffuseSH(const char* path)
+{
+  FILE* f = nullptr;
+  fopen_s(&f, path, "r");
+  VERIFY(f != nullptr);
+  if (f == nullptr) return;
+  int count = 0;
+  char line[256];
+  while (count < 9 && fgets(line, sizeof(line), f))
+  {
+    float x, y, z;
+    if (sscanf_s(line, " ( %f , %f , %f", &x, &y, &z) == 3)
+    {
+      g_diffuse_sh[count] = XMFLOAT3A(x, y, z);
+      count++;
+    }
+  }
+  fclose(f);
+  VERIFY(count == 9);
+}
+
 static void LoadIBL()
 {
-  ScratchImage img;
-  LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
-
-  D3D12_RESOURCE_DESC tex_desc = {};
-  tex_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-  tex_desc.Alignment = 0;
-  tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-  tex_desc.Width = 256;
-  tex_desc.Height = 256;
-  tex_desc.DepthOrArraySize = 6;
-  tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-  tex_desc.MipLevels = 5;
-  tex_desc.SampleDesc.Count = 1;
-  tex_desc.SampleDesc.Quality = 0;
-
-  D3D12_HEAP_PROPERTIES heap_props;
-  heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
-  heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-  heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-  heap_props.CreationNodeMask = 1;
-  heap_props.VisibleNodeMask = 1;
-
-  VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex_specular_ibl)));
-
-  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-  srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-  srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-  srv_desc.TextureCube.MipLevels = 5;
-  srv_desc.TextureCube.MostDetailedMip = 0;
-  srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
-  srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
-
-  g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, SrvDescriptorForSpecularIBL<D3D12_CPU_DESCRIPTOR_HANDLE>());
-
-  for (int face_i = 0; face_i < 6; face_i++)
+  LoadDiffuseSH("C:/Code/openntc/img/ibl/baked/sh.txt");
+  float lum = 0.2126f * g_diffuse_sh[0].x + 0.7152f * g_diffuse_sh[0].y + 0.0722f * g_diffuse_sh[0].z;
+  g_gui_exposure = XMFLOAT3A(0.5f / lum, 0.5f / lum, 0.5f / lum);
   {
-    for (int mip_i = 0; mip_i < 5; mip_i++)
+    ScratchImage img;
+    LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
+
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    tex_desc.Alignment = 0;
+    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    tex_desc.Width = 256;
+    tex_desc.Height = 256;
+    tex_desc.DepthOrArraySize = 6;
+    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    tex_desc.MipLevels = 5;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex_specular_ibl)));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    srv_desc.TextureCube.MipLevels = 5;
+    srv_desc.TextureCube.MostDetailedMip = 0;
+    srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, SrvDescriptorForIBL<D3D12_CPU_DESCRIPTOR_HANDLE>(0));
+
+    for (int face_i = 0; face_i < 6; face_i++)
     {
-      const Image* subimg = img.GetImage(mip_i, face_i, 0);
-      VERIFY(g_tex_specular_ibl->WriteToSubresource(face_i * 5 + mip_i, nullptr, subimg->pixels, (UINT)subimg->rowPitch, (UINT)subimg->slicePitch));
+      for (int mip_i = 0; mip_i < 5; mip_i++)
+      {
+        const Image* subimg = img.GetImage(mip_i, face_i, 0);
+        VERIFY(g_tex_specular_ibl->WriteToSubresource(face_i * 5 + mip_i, nullptr, subimg->pixels, (UINT)subimg->rowPitch, (UINT)subimg->slicePitch));
+      }
     }
+  }
+
+  {
+    ScratchImage img;
+    LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/dfg.dds", DDS_FLAGS_NONE, nullptr, img);
+
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    tex_desc.Alignment = 0;
+    tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    tex_desc.Width = 256;
+    tex_desc.Height = 256;
+    tex_desc.DepthOrArraySize = 1;
+    tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    tex_desc.MipLevels = 1;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex_specular_dfg)));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    srv_desc.Texture2D.PlaneSlice = 0;
+    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+    g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, SrvDescriptorForIBL<D3D12_CPU_DESCRIPTOR_HANDLE>(1));
+
+    const Image* pimg = img.GetImage(0, 0, 0);
+    VERIFY(g_tex_specular_dfg->WriteToSubresource(0, nullptr, pimg->pixels, pimg->rowPitch, pimg->slicePitch));
+  }
+
+  {
+    D3D12_RESOURCE_DESC buf_desc = {};
+    buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+    buf_desc.Alignment = 0;
+    buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buf_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    buf_desc.Width = (sizeof(LightingParams) + 255) & (~255);
+    buf_desc.Height = 1;
+    buf_desc.DepthOrArraySize = 1;
+    buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    buf_desc.MipLevels = 1;
+    buf_desc.SampleDesc.Count = 1;
+    buf_desc.SampleDesc.Quality = 0;
+
+    D3D12_HEAP_PROPERTIES heap_props;
+    heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.CreationNodeMask = 1;
+    heap_props.VisibleNodeMask = 1;
+
+    VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &buf_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_buffer_lighting_params)));
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
+    cbv_desc.BufferLocation = g_buffer_lighting_params->GetGPUVirtualAddress();
+    cbv_desc.SizeInBytes = (sizeof(LightingParams) + 255) & (~255);
+
+    g_device->CreateConstantBufferView(&cbv_desc, CbvDescriptorForLightingParams<D3D12_CPU_DESCRIPTOR_HANDLE>());
   }
 }
 
@@ -777,9 +893,9 @@ void LoadContent()
     sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = 1.0f;
+    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
     sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
     sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
     sampler_desc.ShaderRegister = 0;
@@ -881,7 +997,23 @@ void LoadContent()
     drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
     drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 
-    D3D12_ROOT_PARAMETER1 root_parameters[2];
+    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
+    drange_srv.RegisterSpace = 0;
+    drange_srv.BaseShaderRegister = 6;
+    drange_srv.NumDescriptors = 2;
+    drange_srv.OffsetInDescriptorsFromTableStart = 0;
+    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.BaseShaderRegister = 1;
+    drange_cbv_light.NumDescriptors = 1;
+    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[4];
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
     root_parameters[0].Constants.RegisterSpace = 0;
@@ -891,27 +1023,36 @@ void LoadContent()
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-    sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = 1.0f;
-    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc.ShaderRegister = 0;
-    sampler_desc.RegisterSpace = 0;
-    sampler_desc.MaxAnisotropy = 16;
-    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
+    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler_desc[0].MinLOD = 0.0f;
+    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
+    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc[0].ShaderRegister = 0;
+    sampler_desc[0].RegisterSpace = 0;
+    sampler_desc[0].MaxAnisotropy = 16;
+    sampler_desc[0].MipLODBias = 0.0f;
+    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
     root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 2;
+    root_signature_desc.Desc_1_1.NumParameters = 4;
     root_signature_desc.Desc_1_1.pParameters = root_parameters;
     root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
+    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
     root_signature_desc.Desc_1_1.Flags = root_signature_flags;
 
     ComPtr<ID3DBlob> root_signature_blob;
@@ -1008,27 +1149,65 @@ void LoadContent()
     drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 
-    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
+    drange_tex.RegisterSpace = 0;
+    drange_tex.BaseShaderRegister = 8;
+    drange_tex.NumDescriptors = 2;
+    drange_tex.OffsetInDescriptorsFromTableStart = 8;
+    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.BaseShaderRegister = 2;
+    drange_cbv_light.NumDescriptors = 1;
+    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
+
+    D3D12_ROOT_PARAMETER1 root_parameters[4];
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
     root_parameters[0].Constants.RegisterSpace = 0;
     root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
     root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
+    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler_desc[0].MinLOD = 0.0f;
+    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
+    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc[0].ShaderRegister = 0;
+    sampler_desc[0].RegisterSpace = 0;
+    sampler_desc[0].MaxAnisotropy = 16;
+    sampler_desc[0].MipLODBias = 0.0f;
+    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
     root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.NumParameters = 4;
     root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
-    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
     root_signature_desc.Desc_1_1.Flags = root_signature_flags;
 
     ComPtr<ID3DBlob> root_signature_blob;
@@ -1125,27 +1304,65 @@ void LoadContent()
     drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 
-    D3D12_ROOT_PARAMETER1 root_parameters[3];
+    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
+    drange_tex.RegisterSpace = 0;
+    drange_tex.BaseShaderRegister = 8;
+    drange_tex.NumDescriptors = 2;
+    drange_tex.OffsetInDescriptorsFromTableStart = 8;
+    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.BaseShaderRegister = 2;
+    drange_cbv_light.NumDescriptors = 1;
+    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
+
+    D3D12_ROOT_PARAMETER1 root_parameters[4];
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
     root_parameters[0].Constants.RegisterSpace = 0;
     root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
     root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
+    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler_desc[0].MinLOD = 0.0f;
+    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
+    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc[0].ShaderRegister = 0;
+    sampler_desc[0].RegisterSpace = 0;
+    sampler_desc[0].MaxAnisotropy = 16;
+    sampler_desc[0].MipLODBias = 0.0f;
+    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
     root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 3;
+    root_signature_desc.Desc_1_1.NumParameters = 4;
     root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 0;
-    root_signature_desc.Desc_1_1.pStaticSamplers = nullptr;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
     root_signature_desc.Desc_1_1.Flags = root_signature_flags;
 
     ComPtr<ID3DBlob> root_signature_blob;
@@ -1231,7 +1448,15 @@ void LoadContent()
     drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
     drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 
-    D3D12_ROOT_PARAMETER1 root_parameters[2];
+    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
+    drange_cbv_light.RegisterSpace = 0;
+    drange_cbv_light.BaseShaderRegister = 1;
+    drange_cbv_light.NumDescriptors = 1;
+    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
+    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[3];
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].Constants.Num32BitValues = sizeof(CubemapTransforms) / 4;
     root_parameters[0].Constants.RegisterSpace = 0;
@@ -1241,6 +1466,10 @@ void LoadContent()
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
     sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1248,7 +1477,7 @@ void LoadContent()
     sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = 1.0f;
+    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
     sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
     sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
     sampler_desc.ShaderRegister = 0;
@@ -1258,7 +1487,7 @@ void LoadContent()
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
     root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 2;
+    root_signature_desc.Desc_1_1.NumParameters = 3;
     root_signature_desc.Desc_1_1.pParameters = root_parameters;
     root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
     root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
@@ -1805,9 +2034,14 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.model_to_world = g_model_mat;
     mvp.world_to_view = g_view_mat;
     mvp.view_to_proj = g_proj_mat;
+
     D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>();
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, cbv_lighing_handle);
   }
   else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
   {
@@ -1815,11 +2049,14 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.model_to_world = g_model_mat;
     mvp.world_to_view = g_view_mat;
     mvp.view_to_proj = g_proj_mat;
+
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = CbvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>();
     D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>();
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
     g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, cbv_lighing_handle);
   }
 }
 
@@ -1990,6 +2227,7 @@ void Render()
   ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
+  ImGui::SliderFloat3("Exposure", &g_gui_exposure.x, 0.01f, 0.6f);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
@@ -2125,6 +2363,18 @@ void Render()
   g_commandlist->IASetIndexBuffer(&g_ibv);
 
   {
+    LightingParams lp = {};
+    lp.exposure = g_gui_exposure;
+    for (int i = 0; i < 9; i++)
+      lp.diffuse_sh[i] = g_diffuse_sh[i];
+    void* mapped = 0;
+    D3D12_RANGE map_range = {0, 0};
+    g_buffer_lighting_params->Map(0, &map_range, &mapped);
+    memcpy(mapped, &lp, sizeof(lp));
+    g_buffer_lighting_params->Unmap(0, nullptr);
+  }
+
+  {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
@@ -2135,7 +2385,8 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForSpecularIBL<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0));
+    g_commandlist->SetGraphicsRootDescriptorTable(2, CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>());
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_left);
@@ -2153,7 +2404,8 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForSpecularIBL<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0));
+    g_commandlist->SetGraphicsRootDescriptorTable(2, CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>());
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_right);
