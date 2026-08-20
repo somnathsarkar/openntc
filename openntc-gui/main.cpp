@@ -11,6 +11,7 @@ using namespace Microsoft::WRL;
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 using namespace DirectX;
+#include <DirectXTex/DirectXTex.h>
 
 #include <algorithm>
 #include <chrono>
@@ -75,12 +76,15 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
+ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
+ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
+ComPtr<ID3D12Resource> g_tex_specular_ibl;
 DXGI_FORMAT g_formats[openntc::kMaxSources];
 UINT g_descriptorsize;
 UINT g_frame_i;
@@ -132,6 +136,12 @@ struct NTCInfo
   float rcp_s_a2;
 };
 
+struct CubemapTransforms
+{
+  XMMATRIX proj_to_view;
+  XMMATRIX view_to_world;
+};
+
 static const int g_index_count = 36;
 WORD g_cube_indices[g_index_count] =
 {
@@ -150,7 +160,7 @@ XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_pitch = 0.0f;
 float g_yaw = 0.0f;
 float y_roll = 0.0f;
-float g_fov_y = 110.0f;
+float g_fov_y = 65.0f;
 
 constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3);
 constexpr int32_t g_imgui_srv_count = 64;
@@ -227,6 +237,15 @@ T SrvDescriptorForNTCInfo(int offset)
   UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   T head = SrvDescriptorHead<T>();
   head.ptr += inc * (openntc::kMaxSources + 1 + offset);
+  return head;
+}
+
+template <typename T>
+T SrvDescriptorForSpecularIBL()
+{
+  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  T head = SrvDescriptorHead<T>();
+  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3));
   return head;
 }
 
@@ -544,6 +563,53 @@ static void RebuildTextureResources(SharedContext::Access& access)
     ID3D12CommandList* lists[] = { g_commandlist.Get() };
     g_queue->ExecuteCommandLists(1, lists);
     Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+  }
+}
+
+static void LoadIBL()
+{
+  ScratchImage img;
+  LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
+
+  D3D12_RESOURCE_DESC tex_desc = {};
+  tex_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  tex_desc.Alignment = 0;
+  tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+  tex_desc.Width = 256;
+  tex_desc.Height = 256;
+  tex_desc.DepthOrArraySize = 6;
+  tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+  tex_desc.MipLevels = 5;
+  tex_desc.SampleDesc.Count = 1;
+  tex_desc.SampleDesc.Quality = 0;
+
+  D3D12_HEAP_PROPERTIES heap_props;
+  heap_props.Type = D3D12_HEAP_TYPE_GPU_UPLOAD;
+  heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  heap_props.CreationNodeMask = 1;
+  heap_props.VisibleNodeMask = 1;
+
+  VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_tex_specular_ibl)));
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+  srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+  srv_desc.TextureCube.MipLevels = 5;
+  srv_desc.TextureCube.MostDetailedMip = 0;
+  srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+  srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+  g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, SrvDescriptorForSpecularIBL<D3D12_CPU_DESCRIPTOR_HANDLE>());
+
+  for (int face_i = 0; face_i < 6; face_i++)
+  {
+    for (int mip_i = 0; mip_i < 5; mip_i++)
+    {
+      const Image* subimg = img.GetImage(mip_i, face_i, 0);
+      VERIFY(g_tex_specular_ibl->WriteToSubresource(face_i * 5 + mip_i, nullptr, subimg->pixels, (UINT)subimg->rowPitch, (UINT)subimg->slicePitch));
+    }
   }
 }
 
@@ -1132,6 +1198,129 @@ void LoadContent()
     VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc_coop)));
   }
 
+  // Cubemap
+
+  {
+    ComPtr<ID3DBlob> vertex_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/cubemap_vs.cso", &vertex_shader_blob));
+
+    ComPtr<ID3DBlob> pixel_shader_blob;
+    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/cubemap_ps.cso", &pixel_shader_blob));
+
+    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
+      { "SV_Position", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    };
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
+    {
+      feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+    D3D12_DESCRIPTOR_RANGE1 drange = {};
+    drange.RegisterSpace = 0;
+    drange.BaseShaderRegister = 1;
+    drange.NumDescriptors = 1;
+    drange.OffsetInDescriptorsFromTableStart = 0;
+    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    D3D12_ROOT_PARAMETER1 root_parameters[2];
+    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    root_parameters[0].Constants.Num32BitValues = sizeof(CubemapTransforms) / 4;
+    root_parameters[0].Constants.RegisterSpace = 0;
+    root_parameters[0].Constants.ShaderRegister = 0;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
+    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler_desc.MinLOD = 0.0f;
+    sampler_desc.MaxLOD = 1.0f;
+    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+    sampler_desc.ShaderRegister = 0;
+    sampler_desc.RegisterSpace = 0;
+    sampler_desc.MaxAnisotropy = 16;
+    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1.NumParameters = 2;
+    root_signature_desc.Desc_1_1.pParameters = root_parameters;
+    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
+    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
+    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_cubemap)));
+
+    D3D12_DEPTH_STENCIL_DESC depth_stencil = {};
+    depth_stencil.DepthEnable = FALSE;
+
+    struct PipelineStream
+    {
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
+      ID3D12RootSignature* root_signature;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
+      D3D12_INPUT_LAYOUT_DESC input_layout;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
+      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
+      D3D12_SHADER_BYTECODE vs;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
+      D3D12_SHADER_BYTECODE ps;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
+      DXGI_FORMAT dsv;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ds_type;
+      D3D12_DEPTH_STENCIL_DESC ds;
+      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
+      D3D12_RT_FORMAT_ARRAY rtv;
+    } pipeline_stream;
+
+    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+    pipeline_stream.root_signature = g_rootsignature_cubemap.Get();
+    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
+    pipeline_stream.input_layout.NumElements = _countof(input_layout);
+    pipeline_stream.input_layout.pInputElementDescs = input_layout;
+    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
+    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
+    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
+    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
+    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
+    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
+    pipeline_stream.ds_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL;
+    pipeline_stream.ds = depth_stencil;
+    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+    pipeline_stream.rtv.NumRenderTargets = 1;
+    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
+
+    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
+    pdesc.SizeInBytes = sizeof(PipelineStream);
+    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
+    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_cubemap)));
+  }
+
   // Texture
 
   D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
@@ -1151,6 +1340,8 @@ void LoadContent()
     
     RebuildTextureResources(access);
   }
+
+  LoadIBL();
 
   g_contentloaded = true;
 
@@ -1938,6 +2129,15 @@ void Render()
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
 
+    CubemapTransforms cubemap_transforms = {};
+    cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
+    cubemap_transforms.view_to_world = XMMatrixInverse(nullptr, g_view_mat);
+    g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForSpecularIBL<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->DrawInstanced(6, 1, 0, 0);
+
     SetPipelineStateForShader(shader_left);
     SetDescriptorsForShader(shader_left);
     g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
@@ -1946,6 +2146,15 @@ void Render()
     g_commandlist->RSSetViewports(1, &viewport_right);
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+
+    CubemapTransforms cubemap_transforms = {};
+    cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
+    cubemap_transforms.view_to_world = XMMatrixInverse(nullptr, g_view_mat);
+    g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForSpecularIBL<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_right);
     SetDescriptorsForShader(shader_right);

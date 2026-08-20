@@ -62,7 +62,7 @@ add_custom_command(TARGET openntc-gui POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:openntc-gui>/D3D12
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AGILITY_DIR}/bin/x64/D3D12Core.dll        $<TARGET_FILE_DIR:openntc-gui>/D3D12
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AGILITY_DIR}/bin/x64/d3d12SDKLayers.dll  $<TARGET_FILE_DIR:openntc-gui>/D3D12)
-target_link_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/DirectXTex/Bin/Desktop_2022/x64/Debug)
+target_link_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/DirectXTex/Bin/Desktop_2022_Win10/x64/Debug)
 target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib DirectXTex.lib)
 target_include_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/)
 target_include_directories(openntc-gui PRIVATE ${CMAKE_SOURCE_DIR})
