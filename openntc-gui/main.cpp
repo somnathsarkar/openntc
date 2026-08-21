@@ -56,6 +56,7 @@ std::atomic<bool> g_stop_training;
 const uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
 uint32_t g_height = 720;
+double g_total_seconds = 0;
 
 HWND g_hwnd;
 RECT g_window_rect;
@@ -2064,7 +2065,6 @@ void Update()
 {
   static uint64_t framecounter = 0;
   static double elapsed_seconds = 0.0;
-  static double total_seconds = 0.0;
   static std::chrono::high_resolution_clock clock;
   static auto t0 = clock.now();
 
@@ -2074,7 +2074,7 @@ void Update()
   t0 = t1;
 
   elapsed_seconds += dT.count();
-  total_seconds += dT.count();
+  g_total_seconds += dT.count();
   if (elapsed_seconds > 1.0)
   {
     char buffer[500];
@@ -2083,38 +2083,6 @@ void Update()
     OutputDebugStringA(buffer);
     framecounter = 0;
     elapsed_seconds = 0.0;
-  }
-
-  float aspect_ratio = g_width / (2.0f * static_cast<float>(g_height));
-  float fov_y = XMConvertToRadians(g_fov_y);
-  float fov_x = 2.0f * std::atanf(std::tanf(fov_y / 2.0f) * aspect_ratio);
-  float fov = std::min(fov_y, fov_x);
-
-  CameraMode cmode = static_cast<CameraMode>(g_gui_camera_mode);
-
-  // Bounding sphere radius for cube with corner extent at +-1
-  float bounding_sphere_radius = std::sqrtf(3.0f);
-  // Some breathing room for the distance quantity
-  float distance_spacing_factor = 1.1f;
-  float eye_distance = distance_spacing_factor * bounding_sphere_radius / std::sinf(fov / 2.0f);
-  const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-  const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
-  if (cmode == CameraMode::Orbit)
-  {
-    float angle = g_gui_spin ? static_cast<float>(std::fmod(total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
-    const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
-    const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
-    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
-    g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
-  }
-  else if (cmode == CameraMode::Controlled)
-  {
-    const XMVECTOR eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
-    g_model_mat = XMMatrixIdentity();
-    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
-    g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
   }
 }
 
@@ -2289,6 +2257,38 @@ void Render()
   float cy = vp->WorkPos.y;
   float cw = vp->WorkSize.x - sidebar_w;
   float ch = vp->WorkSize.y - footer_h;
+
+  float aspect_ratio = cw / (2.0f * static_cast<float>(ch));
+  float fov_y = XMConvertToRadians(g_fov_y);
+  float fov_x = 2.0f * std::atanf(std::tanf(fov_y / 2.0f) * aspect_ratio);
+  float fov = std::min(fov_y, fov_x);
+
+  CameraMode cmode = static_cast<CameraMode>(g_gui_camera_mode);
+
+  // Bounding sphere radius for cube with corner extent at +-1
+  float bounding_sphere_radius = std::sqrtf(3.0f);
+  // Some breathing room for the distance quantity
+  float distance_spacing_factor = 1.1f;
+  float eye_distance = distance_spacing_factor * bounding_sphere_radius / std::sinf(fov / 2.0f);
+  const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+  const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+  if (cmode == CameraMode::Orbit)
+  {
+    float angle = g_gui_spin ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
+    const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
+    const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
+    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
+    g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
+  }
+  else if (cmode == CameraMode::Controlled)
+  {
+    const XMVECTOR eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
+    g_model_mat = XMMatrixIdentity();
+    g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
+    g_proj_mat = XMMatrixPerspectiveFovLH(fov_y, aspect_ratio, 0.1f, 100.0f);
+  }
 
   {
     // Remove default ImGUI padding for hidden drag control
