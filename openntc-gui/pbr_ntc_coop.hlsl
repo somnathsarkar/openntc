@@ -161,20 +161,30 @@ void GetFeaturesPacked(float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
-  float d = max(dot(dUvdX, dUvdX), dot(dUvdY, dUvdY));
-  float lodab = 0.5 * log2(d);
+  float gUvdX = dot(dUvdX, dUvdX);
+  float gUvdY = dot(dUvdY, dUvdY);
+  float2 texels_along_major_axis = (gUvdX > gUvdY) ? dUvdX : dUvdY;
+  float minor_axis = sqrt(min(gUvdX, gUvdY));
+  float major_axis = sqrt(max(gUvdX, gUvdY));
+  float max_aniso = 8.0f;
+  minor_axis = max(minor_axis, major_axis / max_aniso);
+
+  float lodab = log2(minor_axis);
   float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
   // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
-  float ign = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
-  int lod = int(lodab_clamped) + (ign < frac(lodab_clamped) ? 1 : 0);
+  float ign0 = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
+  int lod = int(lodab_clamped) + (ign0 < frac(lodab_clamped) ? 1 : 0);
   int feature_level = FeatureLevelForLod(lod);
   int fli = (feature_level / 4);
   int flj = (feature_level % 4);
   int g0_dim = NTCCBV.g0_grid_dim[fli][flj];
   int g1_dim = NTCCBV.g1_grid_dim[fli][flj];
 
+  float ign1 = frac(52.9829189 * frac(0.06711056 * (pos_screen.x + 61.0) + 0.00583715 * (pos_screen.y + 37.0)));
+  float2 uv_jittered = uv + (texels_along_major_axis / NTCCBV.dim) * (ign1 - 0.5);
+
   // G0: 8ch x 2b = 16b per cell, half-word aligned; exact integer decode.
-  int2 g0_xy = int2(floor(uv * g0_dim - 0.5));
+  int2 g0_xy = int2(floor(uv_jittered * g0_dim - 0.5));
   int g0_x[2];
   g0_x[0] = max(g0_xy.x, 0);
   g0_x[1] = min(g0_xy.x + 1, g0_dim - 1);
@@ -202,14 +212,14 @@ void GetFeaturesPacked(float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_
   }
 
   // G1: 12ch x 4b = 48b per cell
-  int2 g1_xy = int2(floor(uv * g1_dim - 0.5));
+  int2 g1_xy = int2(floor(uv_jittered * g1_dim - 0.5));
   int g1_x[2];
   g1_x[0] = max(g1_xy.x, 0);
   g1_x[1] = min(g1_xy.x + 1, g1_dim - 1);
   int g1_y[2];
   g1_y[0] = max(g1_xy.y, 0);
   g1_y[1] = min(g1_xy.y + 1, g1_dim - 1);
-  float2 fr = frac(uv * g1_dim - 0.5);
+  float2 fr = frac(uv_jittered * g1_dim - 0.5);
   float mult[4] = {(1 - fr.x) * (1 - fr.y), fr.x * (1 - fr.y), (1 - fr.x) * fr.y, fr.x * fr.y};
 
   float g1_blend[G1_CHANNELS];
@@ -248,7 +258,7 @@ void GetFeaturesPacked(float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_
   }
 
   // 12 triangular waves
-  float2 cpos = uv * float(NTCCBV.dim >> lod);
+  float2 cpos = uv_jittered * float(NTCCBV.dim >> lod);
   float pe[12];
   int periods[3] = {8, 4, 2};
   [unroll]
