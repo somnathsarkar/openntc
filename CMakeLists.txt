@@ -68,3 +68,42 @@ target_link_libraries(openntc-gui PRIVATE D3D12.lib DXGI.lib D3DCompiler.lib Dir
 target_include_directories(openntc-gui PRIVATE C:/Dev/DirectXTex/)
 target_include_directories(openntc-gui PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(openntc-gui PRIVATE imgui libopenntc)
+
+# Preview DXC is required for cooperative vector support
+set(DXC C:/Dev/dxc/bin/x64/dxc.exe)
+set(DXC_PREVIEW C:/Dev/dxc_preview/bin/x64/dxc.exe)
+set(SHADER_DIR ${CMAKE_SOURCE_DIR}/openntc-gui)
+
+set(SHADER_OUTPUTS "")
+function(add_hlsl COMPILER SRC_BASE PROFILE_VS PROFILE_PS)
+  foreach(stage vs ps)
+    if(stage STREQUAL "vs")
+      set(profile ${PROFILE_VS})
+    else()
+      set(profile ${PROFILE_PS})
+    endif()
+    set(out ${SHADER_DIR}/${SRC_BASE}_${stage}.cso)
+    add_custom_command(
+      OUTPUT ${out}
+      COMMAND ${COMPILER} -T ${profile} -E ${stage}_main ${ARGN}
+              "$<$<CONFIG:Debug,RelWithDebInfo>:-Zi;-Qembed_debug>"
+              -Fo ${out} ${SHADER_DIR}/${SRC_BASE}.hlsl
+      DEPENDS ${SHADER_DIR}/${SRC_BASE}.hlsl
+      COMMENT "dxc (${profile}) ${SRC_BASE}.hlsl -> ${out}"
+      COMMAND_EXPAND_LISTS
+      VERBATIM)
+    list(APPEND SHADER_OUTPUTS ${out})
+  endforeach()
+  set(SHADER_OUTPUTS ${SHADER_OUTPUTS} PARENT_SCOPE)
+endfunction()
+
+add_hlsl(${DXC} flat vs_6_6 ps_6_6)
+add_hlsl(${DXC} ggx vs_6_6 ps_6_6)
+add_hlsl(${DXC} cubemap vs_6_6 ps_6_6)
+add_hlsl(${DXC} pbr_ntc vs_6_6 ps_6_6)
+if(OPENNTC_COOP)
+  add_hlsl(${DXC_PREVIEW} pbr_ntc_coop vs_6_10 ps_6_10 -I C:/Dev/dxc_preview/inc/hlsl)
+endif()
+
+add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
+add_dependencies(openntc-gui shaders)
