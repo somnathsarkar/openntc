@@ -49,7 +49,8 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC C:/Dev/imgui C:/Dev/imgui/backends)
 
 add_executable(openntc-gui WIN32 openntc-gui/main.cpp
-  openntc-gui/thread.cpp)
+  openntc-gui/thread.cpp
+  openntc-gui/model.cpp)
 option(OPENNTC_COOP "Coop Vector Support" ON)
 if(OPENNTC_COOP)
   set(AGILITY_DIR C:/Dev/microsoft.direct3d.d3d12.1.721.3-preview/build/native)

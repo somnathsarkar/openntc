@@ -77,7 +77,10 @@ struct NTC
 
 struct LightingParams
 {
-  float3 exposure;
+  float exposure;
+  float displacement_scale;
+  float normal_scale;
+  float pad0;
   float3 diffuse_sh[9];
 };
 

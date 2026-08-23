@@ -25,6 +25,7 @@ using namespace DirectX;
 #include <imgui_impl_dx12.h>
 
 #include <openntc-gui/thread.h>
+#include <openntc-gui/model.h>
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 721;}
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
@@ -148,23 +149,17 @@ struct CubemapTransforms
 
 struct LightingParams
 {
-  XMFLOAT3A exposure;
+  float exposure;
+  float displacement_scale;
+  float normal_scale;
+  float pad0;
   XMFLOAT3A diffuse_sh[9];
-};
-
-static const int g_index_count = 36;
-WORD g_cube_indices[g_index_count] =
-{
-     0,  1,  2,  0,  2,  3, // front
-     4,  5,  6,  4,  6,  7, // back
-     8,  9, 10,  8, 10, 11, // left
-    12, 13, 14, 12, 14, 15, // right
-    16, 17, 18, 16, 18, 19, // top
-    20, 21, 22, 20, 22, 23  // bottom
 };
 
 D3D12_VERTEX_BUFFER_VIEW g_vbv;
 D3D12_INDEX_BUFFER_VIEW g_ibv;
+
+Model g_cube;
 
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_pitch = 0.0f;
@@ -306,7 +301,9 @@ int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
 int32_t g_gui_texture = 0;
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
-XMFLOAT3A g_gui_exposure = XMFLOAT3A(0.5, 0.5, 0.5);
+float g_gui_displacement_scale = 0.01f;
+float g_gui_normal_scale = 1.0f;
+float g_gui_exposure = 1.0f;
 bool g_gui_spin = true;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
@@ -345,14 +342,6 @@ void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceval, HANDLE fenc
     ::WaitForSingleObject(fenceevent, static_cast<DWORD>(duration_ms.count()));
   }
 }
-
-struct VertexDescriptor
-{
-  DirectX::XMFLOAT3 pos;
-  DirectX::XMFLOAT3 normal;
-  DirectX::XMFLOAT3 tangent;
-  DirectX::XMFLOAT2 uv;
-};
 
 void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES initial_state, D3D12_RESOURCE_STATES final_state)
 {
@@ -574,7 +563,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
     rbar.Transition.pResource = g_tex[tex_i].Get();
     rbar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     rbar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    rbar.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    rbar.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     rbar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     g_commandlist->ResourceBarrier(1, &rbar);
 
@@ -610,8 +599,6 @@ static void LoadDiffuseSH(const char* path)
 static void LoadIBL()
 {
   LoadDiffuseSH("C:/Code/openntc/img/ibl/baked/sh.txt");
-  float lum = 0.2126f * g_diffuse_sh[0].x + 0.7152f * g_diffuse_sh[0].y + 0.0722f * g_diffuse_sh[0].z;
-  g_gui_exposure = XMFLOAT3A(0.5f / lum, 0.5f / lum, 0.5f / lum);
   {
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
@@ -732,39 +719,7 @@ static void LoadIBL()
 
 void LoadContent()
 {
-  static const uint32_t vertex_count = 24;
-  VertexDescriptor cube[vertex_count] = {
-    // front (z = -1), N = -z, T = +x
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 0
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 1
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 2
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 3
-    // back (z = +1), N = +z, T = -x
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 4
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 5
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 6
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 7
-    // left (x = -1), N = -x, T = -z
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }, // 8
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }, // 9
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }, // 10
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3(-1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }, // 11
-    // right (x = +1), N = +x, T = +z
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(0.0f, 1.0f) }, // 12
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(0.0f, 0.0f) }, // 13
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(1.0f, 0.0f) }, // 14
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT3( 0.0f,  0.0f,  1.0f), XMFLOAT2(1.0f, 1.0f) }, // 15
-    // top (y = +1), N = +y, T = +x
-    { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 16
-    { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 17
-    { XMFLOAT3( 1.0f,  1.0f,  1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 18
-    { XMFLOAT3( 1.0f,  1.0f, -1.0f), XMFLOAT3( 0.0f,  1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }, // 19
-    // bottom (y = -1), N = -y, T = +x
-    { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 1.0f) }, // 20
-    { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(0.0f, 0.0f) }, // 21
-    { XMFLOAT3( 1.0f, -1.0f, -1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 0.0f) }, // 22
-    { XMFLOAT3( 1.0f, -1.0f,  1.0f), XMFLOAT3( 0.0f, -1.0f,  0.0f), XMFLOAT3( 1.0f,  0.0f,  0.0f), XMFLOAT2(1.0f, 1.0f) }  // 23
-  };
+  InitModelCube(200, g_cube);
 
   {
     D3D12_FEATURE_DATA_D3D12_OPTIONS16 options16 = {};
@@ -781,7 +736,7 @@ void LoadContent()
     D3D12_RESOURCE_DESC rdesc = {};
     rdesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     rdesc.Alignment = 0;
-    rdesc.Width = sizeof(VertexDescriptor) * vertex_count;
+    rdesc.Width = sizeof(VertexDescriptor) * g_cube.GetVertexCount();
     rdesc.Height = 1;
     rdesc.DepthOrArraySize = 1;
     rdesc.MipLevels = 1;
@@ -796,7 +751,7 @@ void LoadContent()
   void* mapped = nullptr;
   D3D12_RANGE read_range = {0, 0};
   VERIFY(g_vertex_buffer->Map(0, &read_range, &mapped));
-  memcpy(mapped, cube, sizeof(VertexDescriptor) * vertex_count);
+  memcpy(mapped, g_cube.GetVertices(), sizeof(VertexDescriptor) * g_cube.GetVertexCount());
   g_vertex_buffer->Unmap(0, nullptr);
 
   {
@@ -810,7 +765,7 @@ void LoadContent()
     D3D12_RESOURCE_DESC rdesc = {};
     rdesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     rdesc.Alignment = 0;
-    rdesc.Width = sizeof(WORD) * g_index_count;
+    rdesc.Width = sizeof(uint32_t) * g_cube.GetIndexCount();
     rdesc.Height = 1;
     rdesc.DepthOrArraySize = 1;
     rdesc.MipLevels = 1;
@@ -824,17 +779,17 @@ void LoadContent()
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
     VERIFY(g_index_buffer->Map(0, &read_range, &mapped));
-    memcpy(mapped, g_cube_indices, sizeof(WORD) * g_index_count);
+    memcpy(mapped, g_cube.GetIndices(), sizeof(uint32_t) * g_cube.GetIndexCount());
     g_index_buffer->Unmap(0, nullptr);
   }
 
   g_vbv.BufferLocation = g_vertex_buffer->GetGPUVirtualAddress();
-  g_vbv.SizeInBytes = sizeof(VertexDescriptor) * vertex_count;
+  g_vbv.SizeInBytes = sizeof(VertexDescriptor) * g_cube.GetVertexCount();
   g_vbv.StrideInBytes = sizeof(VertexDescriptor);
 
   g_ibv.BufferLocation = g_index_buffer->GetGPUVirtualAddress();
-  g_ibv.SizeInBytes = sizeof(WORD) * g_index_count;
-  g_ibv.Format = DXGI_FORMAT_R16_UINT;
+  g_ibv.SizeInBytes = sizeof(uint32_t) * g_cube.GetIndexCount();
+  g_ibv.Format = DXGI_FORMAT_R32_UINT;
 
   D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc = {};
   dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -1023,7 +978,7 @@ void LoadContent()
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
@@ -1031,7 +986,7 @@ void LoadContent()
     root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
     sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1046,7 +1001,7 @@ void LoadContent()
     sampler_desc[0].RegisterSpace = 0;
     sampler_desc[0].MaxAnisotropy = 16;
     sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
     root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -2195,7 +2150,9 @@ void Render()
   ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
-  ImGui::SliderFloat3("Exposure", &g_gui_exposure.x, 0.01f, 0.6f);
+  ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
+  ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
+  ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
@@ -2365,6 +2322,8 @@ void Render()
   {
     LightingParams lp = {};
     lp.exposure = g_gui_exposure;
+    lp.displacement_scale = g_gui_displacement_scale;
+    lp.normal_scale = g_gui_normal_scale;
     for (int i = 0; i < 9; i++)
       lp.diffuse_sh[i] = g_diffuse_sh[i];
     void* mapped = 0;
@@ -2391,7 +2350,7 @@ void Render()
 
     SetPipelineStateForShader(shader_left);
     SetDescriptorsForShader(shader_left);
-    g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
+    g_commandlist->DrawIndexedInstanced(g_cube.GetIndexCount(), 1, 0, 0, 0);
   }
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
@@ -2410,7 +2369,7 @@ void Render()
 
     SetPipelineStateForShader(shader_right);
     SetDescriptorsForShader(shader_right);
-    g_commandlist->DrawIndexedInstanced(_countof(g_cube_indices), 1, 0, 0, 0);
+    g_commandlist->DrawIndexedInstanced(g_cube.GetIndexCount(), 1, 0, 0, 0);
   }
 
   ImGui::Render();

@@ -27,11 +27,34 @@ struct VertexShaderOutput
   float4 pos_world : POSITION1;
 };
 
+struct LightingParams
+{
+  float exposure;
+  float displacement_scale;
+  float normal_scale;
+  float pad0;
+  float3 diffuse_sh[9];
+};
+
+ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
+
+Texture2D<float4> tex_ao : register(t1, space0);
+Texture2D<float4> tex_albedo : register(t2, space0);
+Texture2D<float4> tex_displacement : register(t3, space0);
+Texture2D<float4> tex_normal : register(t4, space0);
+Texture2D<float4> tex_roughness : register(t5, space0);
+TextureCube<float4> tex_specular_ibl : register(t6, space0);
+Texture2D<float4> tex_dfg : register(t7, space0);
+SamplerState sampler_trilinear : register(s0);
+
 VertexShaderOutput vs_main(VertexShaderInput v_in)
 {
   VertexShaderOutput v_out;
 
-  float4 world_pos = mul(ModelViewProjectionCB.model_to_world, float4(v_in.pos, 1.0f));
+  float displacement = (tex_displacement.SampleLevel(sampler_trilinear, v_in.uv, 0.0).r - 0.5) * LightingParamsCBV.displacement_scale;
+  float4 model_pos = float4(v_in.pos + v_in.normal * displacement, 1.0f);
+
+  float4 world_pos = mul(ModelViewProjectionCB.model_to_world, model_pos);
   float4 view_pos = mul(ModelViewProjectionCB.world_to_view, world_pos);
   float4 proj_pos = mul(ModelViewProjectionCB.view_to_proj, view_pos);
 
@@ -50,23 +73,6 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
   return v_out;
 }
-
-struct LightingParams
-{
-  float3 exposure;
-  float3 diffuse_sh[9];
-};
-
-ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
-
-Texture2D<float4> tex_ao : register(t1, space0);
-Texture2D<float4> tex_albedo : register(t2, space0);
-Texture2D<float4> tex_displacement : register(t3, space0);
-Texture2D<float4> tex_normal : register(t4, space0);
-Texture2D<float4> tex_roughness : register(t5, space0);
-TextureCube<float4> tex_specular_ibl : register(t6, space0);
-Texture2D<float4> tex_dfg : register(t7, space0);
-SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput
 {
@@ -121,6 +127,16 @@ float3 IrradianceSh(float3 n)
           LightingParamsCBV.diffuse_sh[8] * (n.x * n.x - n.y * n.y);
 }
 
+// ACES tonemapping code based on Stephen Hill's (@self_shadow) snippet in BakingLab
+
+static const float3x3 ACESInput = { 0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777 };
+static const float3x3 ACESOutput = { 1.60475, -0.53108, -0.07367, -0.10208,  1.10813, -0.00605, -0.00327, -0.07276, 1.07602 };
+
+float3 RRTAndODTFit(float3 v)
+{
+  return (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
+}
+
 PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
   PixelShaderOutput p_out;
@@ -128,7 +144,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   // Constants
 
   float3 directional_light = float3(0.0, 0.0, 1.0);
-  float3 light_color = float3(1.0, 1.0, 1.0);
+  float3 light_color = float3(0.0, 0.0, 0.0);
   float3 f0 = float3(0.04, 0.04, 0.04);
   float3 f90 = float3(1.0, 1.0, 1.0);
 
@@ -138,7 +154,8 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   matrix tbn_view = transpose(matrix(p_in.tangent_view, bitangent_view, p_in.normal_view, float4(0.0, 0.0, 0.0, 1.0)));
   float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, p_in.uv).rgb * 2.0 - 1.0, 0.0);
   float4 view_normal = mul(tbn_view, surface_normal);
-  float3 normal = view_normal.rgb;
+  float3 normal_scaled = normalize(float3(view_normal.xy * LightingParamsCBV.normal_scale, view_normal.z));
+  float3 normal = normal_scaled;
   float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, p_in.uv).r;
   float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, p_in.uv).rgb, 2.2);
   float ao = tex_ao.Sample(sampler_trilinear, p_in.uv).r;
@@ -174,8 +191,11 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 diffuse_ibl = max(IrradianceSh(normal_world), 0.0);
 
   radiance += diffuse_ibl * albedo * ao + specular_color * specular_ibl;
-  // Exposure correction
+  
+  // Tonemapping
+
   radiance *= LightingParamsCBV.exposure;
+  radiance = saturate(mul(ACESOutput, RRTAndODTFit(mul(ACESInput, radiance))));
 
   p_out.color = float4(pow(radiance, 1.0f / 2.2f), 1.0);
 
