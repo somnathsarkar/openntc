@@ -1,3 +1,5 @@
+#include "common.hlsli"
+
 struct Transforms
 {
   matrix proj_to_view;
@@ -31,15 +33,6 @@ VertexShaderOutput vs_main(uint vid : SV_VertexID)
   return v_out;
 }
 
-struct LightingParams
-{
-  float exposure;
-  float displacement_scale;
-  float normal_scale;
-  float pad0;
-  float3 diffuse_sh[9];
-};
-
 ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
 
 TextureCube<float4> tex_cubemap : register(t1, space0);
@@ -55,16 +48,6 @@ struct PixelShaderOutput
 {
   float4 color : SV_TARGET;
 };
-
-// ACES tonemapping code based on Stephen Hill's (@self_shadow) snippet in BakingLab
-
-static const float3x3 ACESInput = { 0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777 };
-static const float3x3 ACESOutput = { 1.60475, -0.53108, -0.07367, -0.10208,  1.10813, -0.00605, -0.00327, -0.07276, 1.07602 };
-
-float3 RRTAndODTFit(float3 v)
-{
-  return (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
-}
 
 PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
