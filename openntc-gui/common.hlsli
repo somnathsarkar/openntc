@@ -105,6 +105,9 @@ uint Spread2(uint b)
 
 #ifdef COOP_SUPPORT
 void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_feat)
+#else
+void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out uint o_feat[64 / 4])
+#endif
 {
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
@@ -260,6 +263,7 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   o_feat[15] = 0u;
 }
 
+#ifdef COOP_SUPPORT
 vector<float, 64> hardgelu_coop(vector<float, 64> x)
 {
   return select(x < -1.5f, 0.0, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
@@ -314,5 +318,109 @@ void PerformNTCInference(
   vector<int32_t, 12> Woutx_acc = MultiplyAdd<int32_t>(Wout_coop, W1x_coop, zero12);
   vector<float, 12> Wout_scale_coop = Wout_scale.Load< vector<float, 12> >(0);
   o_Woutx = vector<float, 12>(Woutx_acc) * Wout_scale_coop;
+}
+
+#else
+
+float4 hardgelu4(float4 x)
+{
+  return select(x < -1.5f, 0.0.xxxx, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
+}
+
+int8_t4_packed PackS8(int32_t4 unpacked)
+{
+  return pack_clamp_s8(unpacked);
+}
+
+void PerformNTCInference(
+  ByteAddressBuffer W0,
+  ByteAddressBuffer W1,
+  ByteAddressBuffer Wout,
+  ByteAddressBuffer W0_scale,
+  ByteAddressBuffer W1_scale,
+  ByteAddressBuffer Wout_scale,
+  NTC NTCCBV,
+  uint feat[64 / 4],
+  out float o_Woutx[12])
+{
+  uint W0x[64 / 4];
+  uint W1x[64 / 4];
+
+  [loop]
+  for (int i = 0; i < 64; i += 4)
+  {
+    int4 acc = int4(0, 0, 0, 0);
+    [unroll]
+    for (int j = 0; j < 64 / 4; j += 4)
+    {
+      uint4 W0vx = W0.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 W0vy = W0.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 W0vz = W0.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 W0vw = W0.Load<uint4>((i + 3) * (64) + (j * 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(W0vx[c], feat[j + c], acc.x);
+        acc.y = dot4add_i8packed(W0vy[c], feat[j + c], acc.y);
+        acc.z = dot4add_i8packed(W0vz[c], feat[j + c], acc.z);
+        acc.w = dot4add_i8packed(W0vw[c], feat[j + c], acc.w);
+      }
+    }
+    float4 facc = float4(acc) * W0_scale.Load<float4>(i * 4);
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a1;
+    int4 unpacked = int4(round(facc));
+    W0x[i / 4] = PackS8(unpacked);
+  }
+  [loop]
+  for (int i = 0; i < 64; i += 4)
+  {
+    int4 acc = int4(0, 0, 0, 0);
+    [unroll]
+    for (int j = 0; j < 64 / 4; j += 4)
+    {
+      uint4 W1vx = W1.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 W1vy = W1.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 W1vz = W1.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 W1vw = W1.Load<uint4>((i + 3) * (64) + (j * 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(W1vx[c], W0x[j + c], acc.x);
+        acc.y = dot4add_i8packed(W1vy[c], W0x[j + c], acc.y);
+        acc.z = dot4add_i8packed(W1vz[c], W0x[j + c], acc.z);
+        acc.w = dot4add_i8packed(W1vw[c], W0x[j + c], acc.w);
+      }
+    }
+    float4 facc = float4(acc) * W1_scale.Load<float4>(i * 4);
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a2;
+    int4 unpacked = int4(round(facc));
+    W1x[i / 4] = PackS8(unpacked);
+  }
+  [loop]
+  for (int i = 0; i < 9; i += 4)
+  {
+    int4 acc = int4(0, 0, 0, 0);
+    [unroll]
+    for (int j = 0; j < 64 / 4; j += 4)
+    {
+      uint4 Woutvx = Wout.Load<uint4>((i + 0) * (64) + (j * 4));
+      uint4 Woutvy = Wout.Load<uint4>((i + 1) * (64) + (j * 4));
+      uint4 Woutvz = Wout.Load<uint4>((i + 2) * (64) + (j * 4));
+      uint4 Woutvw = Wout.Load<uint4>((i + 3) * (64) + (j * 4));
+      [unroll]
+      for (int c = 0; c < 4; c++)
+      {
+        acc.x = dot4add_i8packed(Woutvx[c], W1x[j + c], acc.x);
+        acc.y = dot4add_i8packed(Woutvy[c], W1x[j + c], acc.y);
+        acc.z = dot4add_i8packed(Woutvz[c], W1x[j + c], acc.z);
+        acc.w = dot4add_i8packed(Woutvw[c], W1x[j + c], acc.w);
+      }
+    }
+    float4 facc = float4(acc) * Wout_scale.Load<float4>(i * 4);
+    o_Woutx[i + 0] = facc.x;
+    o_Woutx[i + 1] = facc.y;
+    o_Woutx[i + 2] = facc.z;
+    o_Woutx[i + 3] = facc.w;
+  }
 }
 #endif
