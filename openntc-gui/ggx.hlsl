@@ -1,4 +1,4 @@
-#define PI 3.14159265359
+#include "common.hlsli"
 
 struct ModelViewProjection
 {
@@ -25,15 +25,6 @@ struct VertexShaderOutput
   float4 normal_view : NORMAL0;
   float4 tangent_view : TANGENT0;
   float4 pos_world : POSITION1;
-};
-
-struct LightingParams
-{
-  float exposure;
-  float displacement_scale;
-  float normal_scale;
-  float pad0;
-  float3 diffuse_sh[9];
 };
 
 ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
@@ -89,54 +80,6 @@ struct PixelShaderOutput
   float4 color : SV_TARGET;
 };
 
-float D_GGX(float NoH, float a)
-{
-  float a2 = a * a;
-  float f = (NoH * a2 - NoH) * NoH + 1.0;
-  return a2 / (PI * f * f);
-}
-
-float3 F_Schlick(float u, float3 f0)
-{
-  return f0 + (float3(1.0, 1.0, 1.0) - f0) * pow(1.0 - u, 5.0);
-}
-
-float V_SmithGGXCorrelated(float NoV, float NoL, float a)
-{
-  float a2 = a * a;
-  float GGXL = NoV * sqrt((-NoL * a2 + NoL) * NoL + a2);
-  float GGXV = NoL * sqrt((-NoV * a2 + NoV) * NoV + a2);
-  return 0.5 / (GGXV + GGXL);
-}
-
-float Fd_Lambert()
-{
-  return 1.0 / PI;
-}
-
-float3 IrradianceSh(float3 n)
-{
-  return LightingParamsCBV.diffuse_sh[0] +
-          LightingParamsCBV.diffuse_sh[1] * n.y +
-          LightingParamsCBV.diffuse_sh[2] * n.z +
-          LightingParamsCBV.diffuse_sh[3] * n.x +
-          LightingParamsCBV.diffuse_sh[4] * (n.y * n.x) +
-          LightingParamsCBV.diffuse_sh[5] * (n.y * n.z) +
-          LightingParamsCBV.diffuse_sh[6] * (3.0 * n.z * n.z - 1.0) +
-          LightingParamsCBV.diffuse_sh[7] * (n.z * n.x) +
-          LightingParamsCBV.diffuse_sh[8] * (n.x * n.x - n.y * n.y);
-}
-
-// ACES tonemapping code based on Stephen Hill's (@self_shadow) snippet in BakingLab
-
-static const float3x3 ACESInput = { 0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777 };
-static const float3x3 ACESOutput = { 1.60475, -0.53108, -0.07367, -0.10208,  1.10813, -0.00605, -0.00327, -0.07276, 1.07602 };
-
-float3 RRTAndODTFit(float3 v)
-{
-  return (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
-}
-
 PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
   PixelShaderOutput p_out;
@@ -188,7 +131,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 specular_ibl = tex_specular_ibl.SampleLevel(sampler_trilinear, reflect_world, lod_ibl).rgb;
   float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, perceptual_roughness)).rg;
   float3 specular_color = f0 * specular_dfg.x + f90 * specular_dfg.y;
-  float3 diffuse_ibl = max(IrradianceSh(normal_world), 0.0);
+  float3 diffuse_ibl = max(IrradianceSh(LightingParamsCBV, normal_world), 0.0);
 
   radiance += diffuse_ibl * albedo * ao + specular_color * specular_ibl;
   
