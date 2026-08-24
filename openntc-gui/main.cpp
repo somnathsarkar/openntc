@@ -1133,15 +1133,15 @@ void LoadContent()
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
     root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
     sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1288,15 +1288,15 @@ void LoadContent()
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
     root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
     root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
     sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;

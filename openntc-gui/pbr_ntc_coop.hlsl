@@ -10,6 +10,21 @@ struct ModelViewProjection
 
 ConstantBuffer<ModelViewProjection> ModelViewProjectionCB : register(b0, space0);
 
+ConstantBuffer<NTC> NTCCBV : register(b1, space0);
+ConstantBuffer<LightingParams> LightingParamsCBV : register(b2, space0);
+
+Buffer<uint> g0 : register(t0, space0);
+Buffer<uint> g1 : register(t1, space0);
+ByteAddressBuffer W0 : register(t2, space0);
+ByteAddressBuffer W1 : register(t3, space0);
+ByteAddressBuffer Wout : register(t4, space0);
+ByteAddressBuffer W0_scale : register(t5, space0);
+ByteAddressBuffer W1_scale : register(t6, space0);
+ByteAddressBuffer Wout_scale : register(t7, space0);
+TextureCube<float4> tex_specular_ibl : register(t8, space0);
+Texture2D<float4> tex_dfg : register(t9, space0);
+SamplerState sampler_trilinear : register(s0);
+
 struct VertexShaderInput
 {
   float3 pos : SV_Position;
@@ -32,7 +47,14 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 {
   VertexShaderOutput v_out;
 
-  float4 world_pos = mul(ModelViewProjectionCB.model_to_world, float4(v_in.pos, 1.0f));
+  vector<uint, 64 / 4> feat;
+  vector<float, 12> Woutx;
+  GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv, v_in.pos.xy, feat);
+  PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);
+  float displacement = (Woutx[4] - 0.5) * LightingParamsCBV.displacement_scale;
+  float4 model_pos = float4(v_in.pos + v_in.normal * displacement, 1.0f);
+
+  float4 world_pos = mul(ModelViewProjectionCB.model_to_world, model_pos);
   float4 view_pos = mul(ModelViewProjectionCB.world_to_view, world_pos);
   float4 proj_pos = mul(ModelViewProjectionCB.view_to_proj, view_pos);
 
@@ -51,21 +73,6 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
   return v_out;
 }
-
-ConstantBuffer<NTC> NTCCBV : register(b1, space0);
-ConstantBuffer<LightingParams> LightingParamsCBV : register(b2, space0);
-
-Buffer<uint> g0 : register(t0, space0);
-Buffer<uint> g1 : register(t1, space0);
-ByteAddressBuffer W0 : register(t2, space0);
-ByteAddressBuffer W1 : register(t3, space0);
-ByteAddressBuffer Wout : register(t4, space0);
-ByteAddressBuffer W0_scale : register(t5, space0);
-ByteAddressBuffer W1_scale : register(t6, space0);
-ByteAddressBuffer Wout_scale : register(t7, space0);
-TextureCube<float4> tex_specular_ibl : register(t8, space0);
-Texture2D<float4> tex_dfg : register(t9, space0);
-SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput
 {

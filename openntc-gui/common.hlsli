@@ -109,6 +109,7 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
 void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out uint o_feat[64 / 4])
 #endif
 {
+#if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
   float2 dUvdX = ddx(uv) * NTCCBV.dim;
   float2 dUvdY = ddy(uv) * NTCCBV.dim;
   float gUvdX = dot(dUvdX, dUvdX);
@@ -124,7 +125,17 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
   float ign0 = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
   int lod = int(lodab_clamped) + (ign0 < frac(lodab_clamped) ? 1 : 0);
+#else
+  // No stochastic filtering in vertex shader
+
+  float2 texels_along_major_axis = 0.0.xx;
+  float texels_per_vertex_step = NTCCBV.dim / 200.0f;
+  float lodab = max(0.0f, log2(texels_per_vertex_step));
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  int lod = int(round(lodab_clamped));
+#endif
   int feature_level = FeatureLevelForLod(lod);
+
   int fli = (feature_level / 4);
   int flj = (feature_level % 4);
   int g0_dim = NTCCBV.g0_grid_dim[fli][flj];
