@@ -55,7 +55,7 @@ SharedContext g_ctx;
 std::future<void> g_train_job;
 std::atomic<bool> g_stop_training;
 
-const uint8_t g_numframes = 2;
+constexpr uint8_t g_numframes = 2;
 uint32_t g_width = 1280;
 uint32_t g_height = 720;
 double g_total_seconds = 0;
@@ -70,7 +70,6 @@ ComPtr<ID3D12Resource> g_buffers[g_numframes];
 ComPtr<ID3D12Resource> g_depthbuffer;
 ComPtr<ID3D12GraphicsCommandList10> g_commandlist;
 ComPtr<ID3D12CommandAllocator> g_commandallocators[g_numframes];
-ComPtr<ID3D12DescriptorHeap> g_descriptorheap;
 ComPtr<ID3D12PipelineState> g_pipelinestate_flat;
 ComPtr<ID3D12RootSignature> g_rootsignature_flat;
 ComPtr<ID3D12PipelineState> g_pipelinestate_ggx;
@@ -97,6 +96,9 @@ bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
 std::atomic<SharedFields> g_shared_fields;
 openntc::FileData g_fil_data;
+
+DescriptorAllocator g_dalloc_rtv;
+DescriptorHandle g_dhandle_rtv[g_numframes];
 
 DescriptorAllocator g_dalloc_srv;
 DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
@@ -2222,8 +2224,7 @@ void Render()
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
   g_commandlist->Reset(command_allocator.Get(), nullptr);
-  D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_descriptorheap->GetCPUDescriptorHandleForHeapStart();
-  rtv_handle.ptr += g_frame_i * g_descriptorsize;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -2372,7 +2373,7 @@ void Resize(uint32_t width, uint32_t height)
     VERIFY(g_swapchain->GetDesc(&swapchain_desc));
     VERIFY(g_swapchain->ResizeBuffers(g_numframes, g_width, g_height, swapchain_desc.BufferDesc.Format, swapchain_desc.Flags));
     g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
-    UpdateRenderTargetViews(g_device, g_swapchain, g_descriptorheap);
+    UpdateRenderTargetViews(g_device, g_swapchain, g_dalloc_rtv.GetHeapUnsafe());
   }
 
   ResizeDepthBuffer(width, height);
@@ -2669,18 +2670,6 @@ ComPtr<IDXGISwapChain4> CreateSwapChain(HWND hwnd, ComPtr<ID3D12CommandQueue> co
   return dxgi_swapchain4;
 }
 
-ComPtr<ID3D12DescriptorHeap> CreateDescriptorHeap(ComPtr<ID3D12Device2> device, D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t num_descriptors)
-{
-  ComPtr<ID3D12DescriptorHeap> descriptor_heap;
-
-  D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-  desc.NumDescriptors = num_descriptors;
-  desc.Type = type;
-
-  VERIFY(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&descriptor_heap)));
-  return descriptor_heap;
-}
-
 ComPtr<ID3D12CommandAllocator> CreateCommandAllocator(ComPtr<ID3D12Device> device, D3D12_COMMAND_LIST_TYPE type)
 {
   ComPtr<ID3D12CommandAllocator> command_allocator;
@@ -2768,12 +2757,17 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     g_imgui_available_srv_slots.push_back(slot);
   }
 
+  {
+    g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes);
+    for (int frame_i = 0; frame_i < g_numframes; frame_i++)
+      g_dhandle_rtv[frame_i] = g_dalloc_rtv.Allocate();
+  }
+
   g_queue = CreateCommandQueue(g_device, D3D12_COMMAND_LIST_TYPE_DIRECT);
   g_swapchain = CreateSwapChain(g_hwnd, g_queue, g_width, g_height, g_numframes);
   g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
-  g_descriptorheap = CreateDescriptorHeap(g_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, g_numframes);
   g_descriptorsize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-  UpdateRenderTargetViews(g_device, g_swapchain, g_descriptorheap);
+  UpdateRenderTargetViews(g_device, g_swapchain, g_dalloc_rtv.GetHeapUnsafe());
 
   for (int i = 0; i < g_numframes; i++)
   {
