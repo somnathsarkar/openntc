@@ -51,6 +51,12 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(openntc::Semantic:
   "Transmission",
 };
 
+const char* const g_map_model_to_name[g_kModelCount] = {
+  "Cube",
+  "Sphere",
+  "Plane",
+};
+
 SharedContext g_ctx;
 std::future<void> g_train_job;
 std::atomic<bool> g_stop_training;
@@ -80,8 +86,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
-ComPtr<ID3D12Resource> g_vertex_buffer;
-ComPtr<ID3D12Resource> g_index_buffer;
+ComPtr<ID3D12Resource> g_vertex_buffer[g_kModelCount];
+ComPtr<ID3D12Resource> g_index_buffer[g_kModelCount];
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
 ComPtr<ID3D12Resource> g_tex_specular_ibl;
@@ -167,10 +173,10 @@ struct LightingParams
   XMFLOAT3A diffuse_sh[9];
 };
 
-D3D12_VERTEX_BUFFER_VIEW g_vbv;
-D3D12_INDEX_BUFFER_VIEW g_ibv;
+D3D12_VERTEX_BUFFER_VIEW g_vbv[g_kModelCount];
+D3D12_INDEX_BUFFER_VIEW g_ibv[g_kModelCount];
 
-Model g_cube;
+uint32_t g_map_model_to_index_count[g_kModelCount];
 
 XMMATRIX g_model_mat, g_view_mat, g_proj_mat;
 float g_pitch = 0.0f;
@@ -262,6 +268,7 @@ float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_spin = true;
+int32_t g_gui_model = 0;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
 {
@@ -576,7 +583,6 @@ static void LoadIBL()
 
 void LoadContent()
 {
-  InitModelCube(200, g_cube);
 
   {
     D3D12_FEATURE_DATA_D3D12_OPTIONS16 options16 = {};
@@ -584,18 +590,20 @@ void LoadContent()
     assert(options16.GPUUploadHeapSupported);
   }
 
+  for (int i = 0; i < 2; i++)
   {
-    g_vertex_buffer = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(VertexDescriptor) * g_cube.GetVertexCount(), sizeof(VertexDescriptor) * g_cube.GetVertexCount(), g_cube.GetVertices());
-    g_index_buffer = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(uint32_t) * g_cube.GetIndexCount(), sizeof(uint32_t) * g_cube.GetIndexCount(), g_cube.GetIndices());
+    Model model;
+    InitModel(static_cast<ModelType>(i), 200, model);
+    g_map_model_to_index_count[i] = model.GetIndexCount();
+    g_vertex_buffer[i] = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(VertexDescriptor) * model.GetVertexCount(), sizeof(VertexDescriptor) * model.GetVertexCount(), model.GetVertices());
+    g_index_buffer[i] = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(uint32_t) * model.GetIndexCount(), sizeof(uint32_t) * model.GetIndexCount(), model.GetIndices());
+    g_vbv[i].BufferLocation = g_vertex_buffer[i]->GetGPUVirtualAddress();
+    g_vbv[i].SizeInBytes = sizeof(VertexDescriptor) * model.GetVertexCount();
+    g_vbv[i].StrideInBytes = sizeof(VertexDescriptor);
+    g_ibv[i].BufferLocation = g_index_buffer[i]->GetGPUVirtualAddress();
+    g_ibv[i].SizeInBytes = sizeof(uint32_t) * model.GetIndexCount();
+    g_ibv[i].Format = DXGI_FORMAT_R32_UINT;
   }
-
-  g_vbv.BufferLocation = g_vertex_buffer->GetGPUVirtualAddress();
-  g_vbv.SizeInBytes = sizeof(VertexDescriptor) * g_cube.GetVertexCount();
-  g_vbv.StrideInBytes = sizeof(VertexDescriptor);
-
-  g_ibv.BufferLocation = g_index_buffer->GetGPUVirtualAddress();
-  g_ibv.SizeInBytes = sizeof(uint32_t) * g_cube.GetIndexCount();
-  g_ibv.Format = DXGI_FORMAT_R32_UINT;
 
   // Flat
 
@@ -1721,6 +1729,7 @@ void Render()
   ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
+  ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
@@ -1883,8 +1892,8 @@ void Render()
   ID3D12DescriptorHeap* heaps[1] = {g_dalloc_srv.GetHeapUnsafe()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
   g_commandlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-  g_commandlist->IASetVertexBuffers(0, 1, &g_vbv);
-  g_commandlist->IASetIndexBuffer(&g_ibv);
+  g_commandlist->IASetVertexBuffers(0, 1, &g_vbv[g_gui_model]);
+  g_commandlist->IASetIndexBuffer(&g_ibv[g_gui_model]);
 
   {
     LightingParams lp = {};
@@ -1917,7 +1926,7 @@ void Render()
 
     SetPipelineStateForShader(shader_left);
     SetDescriptorsForShader(shader_left);
-    g_commandlist->DrawIndexedInstanced(g_cube.GetIndexCount(), 1, 0, 0, 0);
+    g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
   }
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
@@ -1936,7 +1945,7 @@ void Render()
 
     SetPipelineStateForShader(shader_right);
     SetDescriptorsForShader(shader_right);
-    g_commandlist->DrawIndexedInstanced(g_cube.GetIndexCount(), 1, 0, 0, 0);
+    g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
   }
 
   ImGui::Render();

@@ -50,7 +50,7 @@ static const CubeFace kCubeFaces[6] = {
   { {-1.0f, -1.0f, -1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f,  0.0f,  2.0f}, { 0.0f, -1.0f,  0.0f}, { 1.0f, 0.0f,  0.0f} }, // bottom (y = -1)
 };
 
-void InitModelCube(uint32_t detail, Model& o_model)
+void Model::InitCube(uint32_t detail, Model& o_model)
 {
   assert(detail >= 1);
   const uint32_t n = detail;
@@ -103,5 +103,74 @@ void InitModelCube(uint32_t detail, Model& o_model)
         o_model.indices_[idx_i++] = d;
       }
     }
+  }
+}
+
+// Simple UV sphere
+
+void Model::InitSphere(uint32_t detail, Model& o_model)
+{
+  assert(detail >= 2);
+  const uint32_t lat = detail;
+  const uint32_t lon = 2 * detail;
+
+  delete[] o_model.vertices_;
+  delete[] o_model.indices_;
+  o_model.vertex_count_ = (lon + 1) * (lat + 1);
+  o_model.vertices_ = new VertexDescriptor[o_model.vertex_count_];
+  o_model.indices_ = new uint32_t[lon * lat * 6];
+
+  uint32_t vert_i = 0;
+  for (uint32_t j = 0; j <= lat; j++)
+  {
+    float tv = static_cast<float>(j) / static_cast<float>(lat);
+    float phi = XM_PI * tv;
+    float y = cosf(phi);
+    float s = sinf(phi);
+    for (uint32_t i = 0; i <= lon; i++)
+    {
+      float tu = static_cast<float>(i) / static_cast<float>(lon);
+      float theta = -2.0f * XM_PI * tu;
+      VertexDescriptor& v = o_model.vertices_[vert_i++];
+      v.pos = XMFLOAT3(s * sinf(theta), y, s * cosf(theta));
+      v.normal = v.pos;
+      v.tangent = XMFLOAT3(-cosf(theta), 0.0f, sinf(theta));
+      v.uv = XMFLOAT2(tu, tv);
+    }
+  }
+
+  uint32_t idx_i = 0;
+  for (uint32_t j = 0; j < lat; j++)
+  {
+    for (uint32_t i = 0; i < lon; i++)
+    {
+      uint32_t a = j * (lon + 1) + i;
+      uint32_t b = a + 1;
+      uint32_t c = a + (lon + 1);
+      uint32_t d = c + 1;
+      if (j > 0)
+      {
+        o_model.indices_[idx_i++] = c;
+        o_model.indices_[idx_i++] = a;
+        o_model.indices_[idx_i++] = b;
+      }
+      if (j < lat - 1)
+      {
+        o_model.indices_[idx_i++] = c;
+        o_model.indices_[idx_i++] = b;
+        o_model.indices_[idx_i++] = d;
+      }
+    }
+  }
+  o_model.index_count_ = idx_i;
+}
+
+void InitModel(ModelType type, uint32_t detail, Model& o_model)
+{
+  switch (type)
+  {
+    case ModelType::kCube:   Model::InitCube(detail, o_model); break;
+    case ModelType::kSphere: Model::InitSphere(detail, o_model); break;
+    default: assert(false); break;
   }
 }
