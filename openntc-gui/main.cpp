@@ -82,7 +82,6 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
-ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
 ComPtr<ID3D12Resource> g_tex_specular_ibl;
@@ -99,6 +98,9 @@ openntc::FileData g_fil_data;
 
 DescriptorAllocator g_dalloc_rtv;
 DescriptorHandle g_dhandle_rtv[g_numframes];
+
+DescriptorAllocator g_dalloc_dsv;
+DescriptorHandle g_dhandle_dsv;
 
 DescriptorAllocator g_dalloc_srv;
 DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
@@ -379,7 +381,7 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
   dsv_desc.Texture2D.MipSlice = 0;
 
-  g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart());
+  g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_dhandle_dsv.cpu);
 }
 
 static void RebuildTextureResources(SharedContext::Access& access)
@@ -744,13 +746,6 @@ void LoadContent()
   g_ibv.BufferLocation = g_index_buffer->GetGPUVirtualAddress();
   g_ibv.SizeInBytes = sizeof(uint32_t) * g_cube.GetIndexCount();
   g_ibv.Format = DXGI_FORMAT_R32_UINT;
-
-  D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc = {};
-  dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-  dsv_heap_desc.NumDescriptors = 1;
-  dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-  dsv_heap_desc.NodeMask = 0;
-  VERIFY(g_device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_dsv)));
 
   // Flat
 
@@ -2225,7 +2220,7 @@ void Render()
   command_allocator->Reset();
   g_commandlist->Reset(command_allocator.Get(), nullptr);
   D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu;
-  D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_descriptorheap_dsv->GetCPUDescriptorHandleForHeapStart();
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_dhandle_dsv.cpu;
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   D3D12_VIEWPORT viewport_left = {};
@@ -2761,6 +2756,11 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes);
     for (int frame_i = 0; frame_i < g_numframes; frame_i++)
       g_dhandle_rtv[frame_i] = g_dalloc_rtv.Allocate();
+  }
+
+  {
+    g_dalloc_dsv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, false, 1);
+    g_dhandle_dsv = g_dalloc_dsv.Allocate();
   }
 
   g_queue = CreateCommandQueue(g_device, D3D12_COMMAND_LIST_TYPE_DIRECT);
