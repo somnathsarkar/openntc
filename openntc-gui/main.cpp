@@ -26,6 +26,7 @@ using namespace DirectX;
 
 #include <openntc-gui/thread.h>
 #include <openntc-gui/model.h>
+#include <openntc-gui/rhi.h>
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 721;}
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
@@ -83,7 +84,6 @@ ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
 ComPtr<ID3D12Resource> g_vertex_buffer;
 ComPtr<ID3D12Resource> g_index_buffer;
 ComPtr<ID3D12DescriptorHeap> g_descriptorheap_dsv;
-ComPtr<ID3D12DescriptorHeap> g_descriptorheap_srv;
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
 ComPtr<ID3D12Resource> g_buffer_scratch;
 ComPtr<ID3D12Resource> g_tex_specular_ibl;
@@ -97,6 +97,13 @@ bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
 std::atomic<SharedFields> g_shared_fields;
 openntc::FileData g_fil_data;
+
+DescriptorAllocator g_dalloc_srv;
+DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
+DescriptorHandle g_dhandle_ntc_info;
+DescriptorHandle g_dhandle_ntc_data[1 + 1 + 3 + 3];
+DescriptorHandle g_dhandle_lparams;
+DescriptorHandle g_dhandle_ibl[2];
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
 ComPtr<ID3D12Resource> g_buffer_g0;
@@ -209,60 +216,6 @@ void PerformTrainingJob()
   }
 }
 
-template <typename T>
-T SrvDescriptorHead()
-{
-  if constexpr (std::is_same_v<T, D3D12_CPU_DESCRIPTOR_HANDLE>)
-    return g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
-  else
-    return g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart();
-}
-
-template <typename T>
-T SrvDescriptorForTex(int32_t tex_i)
-{
-  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  T head = SrvDescriptorHead<T>();
-  head.ptr += inc * tex_i;
-  return head;
-}
-
-template <typename T>
-T CbvDescriptorForNTCInfo()
-{
-  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  T head = SrvDescriptorHead<T>();
-  head.ptr += inc * openntc::kMaxSources;
-  return head;
-}
-
-template <typename T>
-T SrvDescriptorForNTCInfo(int offset)
-{
-  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  T head = SrvDescriptorHead<T>();
-  head.ptr += inc * (openntc::kMaxSources + 1 + offset);
-  return head;
-}
-
-template <typename T>
-T SrvDescriptorForIBL(int offset)
-{
-  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  T head = SrvDescriptorHead<T>();
-  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + offset);
-  return head;
-}
-
-template <typename T>
-T CbvDescriptorForLightingParams()
-{
-  UINT inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  T head = SrvDescriptorHead<T>();
-  head.ptr += inc * (openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 2);
-  return head;
-}
-
 std::vector<UINT> g_imgui_available_srv_slots;
 
 enum class Shader: int32_t
@@ -315,15 +268,14 @@ void ImguiDescriptorSrvAlloc(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCR
 {
   UINT slot = g_imgui_available_srv_slots.back();
   g_imgui_available_srv_slots.pop_back();
-  UINT size_inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  cpu_handle->ptr = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart().ptr + size_inc * slot;
-  gpu_handle->ptr = g_descriptorheap_srv->GetGPUDescriptorHandleForHeapStart().ptr + size_inc * slot;
+  DescriptorHandle dhandle = g_dalloc_srv.At(slot);
+  *cpu_handle = dhandle.cpu;
+  *gpu_handle = dhandle.gpu;
 }
 
 void ImguiDescriptorSrvFree(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
 {
-  UINT size_inc = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  UINT slot = (cpu_handle.ptr - g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart().ptr) / size_inc;
+  UINT slot = g_dalloc_srv.SlotForHandle(cpu_handle);
   g_imgui_available_srv_slots.push_back(slot);
 }
 
@@ -469,7 +421,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, SrvDescriptorForTex<D3D12_CPU_DESCRIPTOR_HANDLE>(tex_i));
+    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu);
     g_compressed_data_loaded = false;
   }
 
@@ -633,7 +585,7 @@ static void LoadIBL()
     srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, SrvDescriptorForIBL<D3D12_CPU_DESCRIPTOR_HANDLE>(0));
+    g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, g_dhandle_ibl[0].cpu);
 
     for (int face_i = 0; face_i < 6; face_i++)
     {
@@ -680,7 +632,7 @@ static void LoadIBL()
     srv_desc.Texture2D.PlaneSlice = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, SrvDescriptorForIBL<D3D12_CPU_DESCRIPTOR_HANDLE>(1));
+    g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, g_dhandle_ibl[1].cpu);
 
     const Image* pimg = img.GetImage(0, 0, 0);
     VERIFY(g_tex_specular_dfg->WriteToSubresource(0, nullptr, pimg->pixels, pimg->rowPitch, pimg->slicePitch));
@@ -713,7 +665,7 @@ static void LoadIBL()
     cbv_desc.BufferLocation = g_buffer_lighting_params->GetGPUVirtualAddress();
     cbv_desc.SizeInBytes = (sizeof(LightingParams) + 255) & (~255);
 
-    g_device->CreateConstantBufferView(&cbv_desc, CbvDescriptorForLightingParams<D3D12_CPU_DESCRIPTOR_HANDLE>());
+    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_lparams.cpu);
   }
 }
 
@@ -1508,15 +1460,6 @@ void LoadContent()
 
   // Texture
 
-  D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-  srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  srv_heap_desc.NumDescriptors = g_srv_count;
-  srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  srv_heap_desc.NodeMask = 0;
-  VERIFY(g_device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&g_descriptorheap_srv)));
-  D3D12_CPU_DESCRIPTOR_HANDLE srv_handle_head = g_descriptorheap_srv->GetCPUDescriptorHandleForHeapStart();
-  UINT srv_descriptor_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
   {
     SharedContext::Access access = g_ctx.Acquire();
 
@@ -1580,7 +1523,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     cbv_desc.BufferLocation = g_buffer_ntc_info->GetGPUVirtualAddress();
     cbv_desc.SizeInBytes = (sizeof(NTCInfo) + 255) & (~255);
 
-    g_device->CreateConstantBufferView(&cbv_desc, CbvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>());
+    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_ntc_info.cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1629,7 +1572,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(0));
+    g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, g_dhandle_ntc_data[0].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1671,7 +1614,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(1));
+    g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, g_dhandle_ntc_data[1].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1713,7 +1656,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(2));
+    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu);
 
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1755,7 +1698,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
 
-    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(3));
+    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, g_dhandle_ntc_data[3].cpu);
 
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1796,7 +1739,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(4));
+    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, g_dhandle_ntc_data[4].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1837,7 +1780,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(5));
+    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, g_dhandle_ntc_data[5].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1878,7 +1821,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(6));
+    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, g_dhandle_ntc_data[6].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1919,7 +1862,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, SrvDescriptorForNTCInfo<D3D12_CPU_DESCRIPTOR_HANDLE>(7));
+    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, g_dhandle_ntc_data[7].cpu);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1980,7 +1923,7 @@ static void SetDescriptorsForShader(Shader shader)
   {
     XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
     mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(g_gui_texture);
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[g_gui_texture].gpu;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   }
@@ -1991,9 +1934,9 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.world_to_view = g_view_mat;
     mvp.view_to_proj = g_proj_mat;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = SrvDescriptorForTex<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>();
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ibl[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
     g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
@@ -2006,9 +1949,9 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.world_to_view = g_view_mat;
     mvp.view_to_proj = g_proj_mat;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = CbvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>();
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = SrvDescriptorForNTCInfo<D3D12_GPU_DESCRIPTOR_HANDLE>(0);
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>();
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = g_dhandle_ntc_info.gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ntc_data[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
     g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
@@ -2313,7 +2256,7 @@ void Render()
     g_commandlist->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
   }
 
-  ID3D12DescriptorHeap* heaps[1] = {g_descriptorheap_srv.Get()};
+  ID3D12DescriptorHeap* heaps[1] = {g_dalloc_srv.GetHeapUnsafe()};
   g_commandlist->SetDescriptorHeaps(_countof(heaps), heaps);
   g_commandlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_commandlist->IASetVertexBuffers(0, 1, &g_vbv);
@@ -2344,8 +2287,8 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0));
-    g_commandlist->SetGraphicsRootDescriptorTable(2, CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_left);
@@ -2363,8 +2306,8 @@ void Render()
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, SrvDescriptorForIBL<D3D12_GPU_DESCRIPTOR_HANDLE>(0));
-    g_commandlist->SetGraphicsRootDescriptorTable(2, CbvDescriptorForLightingParams<D3D12_GPU_DESCRIPTOR_HANDLE>());
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_right);
@@ -2802,6 +2745,29 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   ComPtr<IDXGIAdapter4> dxgi_adapter4 = GetAdapter();
   g_device = CreateDevice(dxgi_adapter4);
+
+  // Descriptor Initialization
+
+  {
+    g_dalloc_srv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true, g_srv_count);
+    
+    for (int tex_i = 0; tex_i < openntc::kMaxSources; tex_i++)
+      g_dhandle_tex[tex_i] = g_dalloc_srv.Allocate();
+    g_dhandle_ntc_info = g_dalloc_srv.Allocate();
+    for (int i = 0; i < 1 + 1 + 3 + 3; i++)
+      g_dhandle_ntc_data[i] = g_dalloc_srv.Allocate();
+    for (int i = 0; i < 2; i++)
+      g_dhandle_ibl[i] = g_dalloc_srv.Allocate();
+    g_dhandle_lparams = g_dalloc_srv.Allocate();
+  }
+
+  for (int i = 0; i < g_imgui_srv_count; i++)
+  {
+    UINT slot = g_nonimgui_srv_count + i;
+    (void) g_dalloc_srv.Allocate();
+    g_imgui_available_srv_slots.push_back(slot);
+  }
+
   g_queue = CreateCommandQueue(g_device, D3D12_COMMAND_LIST_TYPE_DIRECT);
   g_swapchain = CreateSwapChain(g_hwnd, g_queue, g_width, g_height, g_numframes);
   g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
@@ -2822,12 +2788,6 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   LoadContent();
 
-  for (int i = 0; i < g_imgui_srv_count; i++)
-  {
-    UINT slot = g_nonimgui_srv_count + i;
-    g_imgui_available_srv_slots.push_back(slot);
-  }
-
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
@@ -2839,7 +2799,7 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   imgui_info.NumFramesInFlight = g_numframes;
   imgui_info.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   imgui_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-  imgui_info.SrvDescriptorHeap = g_descriptorheap_srv.Get();
+  imgui_info.SrvDescriptorHeap = g_dalloc_srv.GetHeapUnsafe();
   imgui_info.SrvDescriptorAllocFn = ImguiDescriptorSrvAlloc;
   imgui_info.SrvDescriptorFreeFn = ImguiDescriptorSrvFree;
   ImGui_ImplDX12_Init(&imgui_info);
