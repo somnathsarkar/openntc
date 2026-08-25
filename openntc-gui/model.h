@@ -34,6 +34,7 @@ class Model
     friend void InitModel(ModelType type, uint32_t detail, Model& o_model);
     static void InitCube(uint32_t detail, Model& o_model);
     static void InitSphere(uint32_t detail, Model& o_model);
+    static void InitPlane(uint32_t detail, Model& o_model);
 
     uint32_t vertex_count_;
     uint32_t index_count_;

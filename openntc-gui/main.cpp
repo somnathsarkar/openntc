@@ -590,7 +590,7 @@ void LoadContent()
     assert(options16.GPUUploadHeapSupported);
   }
 
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < g_kModelCount; i++)
   {
     Model model;
     InitModel(static_cast<ModelType>(i), 200, model);
