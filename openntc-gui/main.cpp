@@ -630,57 +630,11 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 1;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_ROOT_PARAMETER1 root_parameters[2];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(XMMATRIX) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc.ShaderRegister = 0;
-    sampler_desc.RegisterSpace = 0;
-    sampler_desc.MaxAnisotropy = 16;
-    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 2;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_flat)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(XMMATRIX) / 4, D3D12_SHADER_VISIBILITY_VERTEX)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_flat = rsb.Build(g_device.Get());
 
     struct PipelineStream
     {
@@ -754,77 +708,13 @@ void LoadContent()
                                                       D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                                                       D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
 
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 5;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 6;
-    drange_srv.NumDescriptors = 2;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 1;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_ggx)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(5, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL);
+    g_rootsignature_ggx = rsb.Build(g_device.Get());
 
     struct PipelineStream
     {
@@ -893,94 +783,15 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
-    drange_cbv.RegisterSpace = 0;
-    drange_cbv.BaseShaderRegister = 1;
-    drange_cbv.NumDescriptors = 1;
-    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
-    drange_tex.RegisterSpace = 0;
-    drange_tex.BaseShaderRegister = 8;
-    drange_tex.NumDescriptors = 2;
-    drange_tex.OffsetInDescriptorsFromTableStart = 8;
-    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 2;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc)));
-
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
+    
     struct PipelineStream
     {
       D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
@@ -1048,93 +859,14 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
-    drange_cbv.RegisterSpace = 0;
-    drange_cbv.BaseShaderRegister = 1;
-    drange_cbv.NumDescriptors = 1;
-    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
-    drange_tex.RegisterSpace = 0;
-    drange_tex.BaseShaderRegister = 8;
-    drange_tex.NumDescriptors = 2;
-    drange_tex.OffsetInDescriptorsFromTableStart = 8;
-    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 2;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc_coop)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
     struct PipelineStream
     {
@@ -1200,69 +932,12 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 1;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 1;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_ROOT_PARAMETER1 root_parameters[3];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(CubemapTransforms) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc.ShaderRegister = 0;
-    sampler_desc.RegisterSpace = 0;
-    sampler_desc.MaxAnisotropy = 16;
-    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 3;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_cubemap)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(CubemapTransforms) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_cubemap = rsb.Build(g_device.Get());
 
     D3D12_DEPTH_STENCIL_DESC depth_stencil = {};
     depth_stencil.DepthEnable = FALSE;
@@ -1585,12 +1260,14 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.view_to_proj = g_proj_mat;
 
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = g_dhandle_ntc_info.gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ntc_data[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ntc = g_dhandle_ntc_data[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ibl = g_dhandle_ibl[0].gpu;
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
-    g_commandlist->SetGraphicsRootDescriptorTable(3, cbv_lighing_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle_ntc);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, srv_handle_ibl);
+    g_commandlist->SetGraphicsRootDescriptorTable(4, cbv_lighing_handle);
   }
 }
 

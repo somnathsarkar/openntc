@@ -4,6 +4,7 @@
 #include <dxgi1_6.h>
 
 #include <cstdint>
+#include <vector>
 
 struct DescriptorHandle
 {
@@ -35,3 +36,22 @@ class DescriptorAllocator
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateBuffer(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t size);
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t buffer_size, uint64_t data_size, const void* data);
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t dim, uint32_t depth, uint32_t levels, DXGI_FORMAT format);
+
+class RootSignatureBuilder
+{
+  public:
+    RootSignatureBuilder& RootConstants(uint32_t num_32bit_values, D3D12_SHADER_VISIBILITY vis);
+    RootSignatureBuilder& Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_SHADER_VISIBILITY vis);
+    RootSignatureBuilder& StaticSampler(D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address_mode, D3D12_SHADER_VISIBILITY vis);
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> Build(ID3D12Device2* device);
+
+  private:
+    std::vector<D3D12_DESCRIPTOR_RANGE1> ranges_;
+    std::vector<D3D12_ROOT_PARAMETER1> params_;
+    std::vector<D3D12_STATIC_SAMPLER_DESC> samplers_;
+    std::vector<uint32_t> param_range_index_;
+    bool built_ = false;
+    uint32_t cbv_register_i_ = 0;
+    uint32_t srv_register_i_ = 0;
+    uint32_t smp_register_i_ = 0;
+};
