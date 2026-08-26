@@ -55,3 +55,25 @@ class RootSignatureBuilder
     uint32_t srv_register_i_ = 0;
     uint32_t smp_register_i_ = 0;
 };
+
+class GraphicsPipelineBuilder
+{
+  public:
+    GraphicsPipelineBuilder& RootSignature(ID3D12RootSignature* root_signature);
+    GraphicsPipelineBuilder& VS(const wchar_t* cso_path);
+    GraphicsPipelineBuilder& PS(const wchar_t* cso_path);
+    GraphicsPipelineBuilder& Input(const D3D12_INPUT_ELEMENT_DESC* elements, uint32_t count);
+    GraphicsPipelineBuilder& DepthEnable(bool enable);
+    GraphicsPipelineBuilder& CullMode(D3D12_CULL_MODE mode);
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(ID3D12Device2* device);
+
+  private:
+    Microsoft::WRL::ComPtr<ID3DBlob> vs_blob_;
+    Microsoft::WRL::ComPtr<ID3DBlob> ps_blob_;
+    ID3D12RootSignature* root_signature_ = nullptr;
+    const D3D12_INPUT_ELEMENT_DESC* input_elements_ = nullptr;
+    uint32_t input_count_ = 0;
+    bool depth_enable_ = true;
+    D3D12_CULL_MODE cull_mode_ = D3D12_CULL_MODE_BACK;
+    bool built_ = false;
+};

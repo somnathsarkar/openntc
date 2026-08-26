@@ -1,6 +1,7 @@
 #include <openntc-gui/rhi.h>
 
 #include <cassert>
+#include <d3dcompiler.h>
 
 using namespace Microsoft::WRL;
 
@@ -240,4 +241,81 @@ ComPtr<ID3D12RootSignature> RootSignatureBuilder::Build(ID3D12Device2* device)
   built_ = true;
 
   return root_signature;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::RootSignature(ID3D12RootSignature* root_signature)
+{
+  root_signature_ = root_signature;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::VS(const wchar_t* cso_path)
+{
+  VERIFY(D3DReadFileToBlob(cso_path, &vs_blob_));
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::PS(const wchar_t* cso_path)
+{
+  VERIFY(D3DReadFileToBlob(cso_path, &ps_blob_));
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::Input(const D3D12_INPUT_ELEMENT_DESC* elements, uint32_t count)
+{
+  input_elements_ = elements;
+  input_count_ = count;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::DepthEnable(bool enable)
+{
+  depth_enable_ = enable;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::CullMode(D3D12_CULL_MODE mode)
+{
+  cull_mode_ = mode;
+  return *this;
+}
+
+ComPtr<ID3D12PipelineState> GraphicsPipelineBuilder::Build(ID3D12Device2* device)
+{
+  assert(built_ == false);
+  assert(root_signature_ != nullptr && vs_blob_ && ps_blob_);
+  if (built_)
+    return nullptr;
+
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+  desc.pRootSignature = root_signature_;
+  desc.VS = { vs_blob_->GetBufferPointer(), vs_blob_->GetBufferSize() };
+  desc.PS = { ps_blob_->GetBufferPointer(), ps_blob_->GetBufferSize() };
+  desc.InputLayout = { input_elements_, input_count_ };
+
+  desc.BlendState.AlphaToCoverageEnable = FALSE;
+  desc.BlendState.IndependentBlendEnable = FALSE;
+  desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+  desc.SampleMask = UINT_MAX;
+
+  desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+  desc.RasterizerState.CullMode = cull_mode_;
+  desc.RasterizerState.FrontCounterClockwise = FALSE;
+  desc.RasterizerState.DepthClipEnable = TRUE;
+
+  desc.DepthStencilState.DepthEnable = depth_enable_ ? TRUE : FALSE;
+  desc.DepthStencilState.DepthWriteMask = depth_enable_ ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+  desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+  desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+  desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+  desc.NumRenderTargets = 1;
+  desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+
+  ComPtr<ID3D12PipelineState> pso;
+  VERIFY(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)));
+  built_ = true;
+
+  return pso;
 }
