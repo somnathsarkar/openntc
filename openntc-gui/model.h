@@ -8,7 +8,8 @@ enum class ModelType : int32_t
   kCube = 0,
   kSphere = 1,
   kPlane = 2,
-  kCount = 3,
+  kKnob = 3,
+  kCount = 4,
 };
 
 constexpr int32_t g_kModelCount = static_cast<int32_t>(ModelType::kCount);
@@ -35,6 +36,7 @@ class Model
     static void InitCube(uint32_t detail, Model& o_model);
     static void InitSphere(uint32_t detail, Model& o_model);
     static void InitPlane(uint32_t detail, Model& o_model);
+    static void InitKnob(Model& o_model);
 
     uint32_t vertex_count_;
     uint32_t index_count_;

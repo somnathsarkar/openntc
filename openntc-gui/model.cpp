@@ -1,6 +1,7 @@
 #include <openntc-gui/model.h>
 
 #include <cassert>
+#include <cstdio>
 
 using namespace DirectX;
 
@@ -183,6 +184,30 @@ void Model::InitPlane(uint32_t detail, Model& o_model)
   BuildPatchGrid(plane_face, n, o_model.vertices_, o_model.indices_, 0, vert_i, idx_i);
 }
 
+
+// Material Test Ball ("Mitsuba knob") from https://benedikt-bitterli.me/resources/
+//  Available under public domain. Preprocessed to match our vertex descriptor format.
+void Model::InitKnob(Model& o_model)
+{
+  FILE* f = nullptr;
+  fopen_s(&f, "C:/Code/openntc/img/models/knob.bin", "rb");
+  assert(f != nullptr);
+  if (f == nullptr) return;
+
+  delete[] o_model.vertices_;
+  delete[] o_model.indices_;
+  uint32_t counts[2] = {};
+  fread(counts, sizeof(uint32_t), 2, f);
+  o_model.vertex_count_ = counts[0];
+  o_model.index_count_ = counts[1];
+  o_model.vertices_ = new VertexDescriptor[o_model.vertex_count_];
+  o_model.indices_ = new uint32_t[o_model.index_count_];
+  size_t vread = fread(o_model.vertices_, sizeof(VertexDescriptor), o_model.vertex_count_, f);
+  size_t iread = fread(o_model.indices_, sizeof(uint32_t), o_model.index_count_, f);
+  fclose(f);
+  assert(vread == o_model.vertex_count_ && iread == o_model.index_count_);
+}
+
 void InitModel(ModelType type, uint32_t detail, Model& o_model)
 {
   switch (type)
@@ -190,6 +215,7 @@ void InitModel(ModelType type, uint32_t detail, Model& o_model)
     case ModelType::kCube:   Model::InitCube(detail, o_model); break;
     case ModelType::kSphere: Model::InitSphere(detail, o_model); break;
     case ModelType::kPlane:  Model::InitPlane(detail, o_model); break;
+    case ModelType::kKnob:   Model::InitKnob(o_model); break;
     default: assert(false); break;
   }
 }

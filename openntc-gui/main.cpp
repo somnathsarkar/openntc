@@ -55,6 +55,7 @@ const char* const g_map_model_to_name[g_kModelCount] = {
   "Cube",
   "Sphere",
   "Plane",
+  "Knob",
 };
 
 SharedContext g_ctx;
