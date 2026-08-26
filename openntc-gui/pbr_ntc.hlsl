@@ -104,7 +104,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   uint feat[64 / 4];
   float Woutx[12];
-  GetFeaturesPacked(g0, g1, NTCCBV, p_in.uv, p_in.pos.xy, feat);
+  GetFeaturesPacked(g0, g1, NTCCBV, UnjitterUv(p_in.uv, LightingParamsCBV.jitter_px), p_in.pos.xy, feat);
   PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);  
 
   float ntc_ao = Woutx[0];

@@ -95,13 +95,14 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float4 bitangent_view = float4(cross(p_in.normal_view.xyz, p_in.tangent_view.xyz), 0.0);
   matrix tbn_view = transpose(matrix(p_in.tangent_view, bitangent_view, p_in.normal_view, float4(0.0, 0.0, 0.0, 1.0)));
-  float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, p_in.uv).rgb * 2.0 - 1.0, 0.0);
+  float2 uv = UnjitterUv(p_in.uv, LightingParamsCBV.jitter_px);
+  float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, uv).rgb * 2.0 - 1.0, 0.0);
   float4 view_normal = mul(tbn_view, surface_normal);
   float3 normal_scaled = normalize(float3(view_normal.xy * LightingParamsCBV.normal_scale, view_normal.z));
   float3 normal = normal_scaled;
-  float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, p_in.uv).r;
-  float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, p_in.uv).rgb, 2.2);
-  float ao = tex_ao.Sample(sampler_trilinear, p_in.uv).r;
+  float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, uv).r;
+  float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, uv).rgb, 2.2);
+  float ao = tex_ao.Sample(sampler_trilinear, uv).r;
 
   float3 view_dir = -normalize(p_in.pos_view.xyz / p_in.pos_view.w);
   float3 light_dir = -normalize(directional_light);

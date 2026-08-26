@@ -8,8 +8,19 @@ struct LightingParams
   float displacement_scale;
   float normal_scale;
   float pad0;
+  float2 jitter_px;
+  float2 pad1;
   float3 diffuse_sh[9];
 };
+
+
+// Unjitter UVs from TAA to prevent texture blurring
+//  Details: https://www.elopezr.com/temporal-aa-and-the-quest-for-the-holy-trail/
+
+float2 UnjitterUv(float2 uv, float2 jitter_px)
+{
+  return uv + ddx(uv) * jitter_px.x + ddy(uv) * jitter_px.y;
+}
 
 struct NTC
 {

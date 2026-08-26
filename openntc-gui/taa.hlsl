@@ -2,7 +2,7 @@
 
 struct TaaInfo
 {
-  float4x4 proj_to_world_jittered;
+  float4x4 proj_to_world_unjittered;
   float4x4 prev_world_to_proj_unjittered;
   float3 eye;
   float pad0;
@@ -68,7 +68,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   {
     float depth = tex_depth.Load(int3(texel, 0));
     float2 ndc = float2(uv_local.x * 2.0 - 1.0, 1.0 - 2.0 * uv_local.y);
-    float4 world = mul(TaaInfoCB.proj_to_world_jittered, float4(ndc, depth, 1.0));
+    float4 world = mul(TaaInfoCB.proj_to_world_unjittered, float4(ndc, depth, 1.0));
     world /= world.w;
 
     // Handle reprojection of cubemap separately

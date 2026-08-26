@@ -186,7 +186,7 @@ struct CubemapTransforms
 
 struct TaaConstants
 {
-  XMMATRIX proj_to_world_jittered;
+  XMMATRIX proj_to_world_unjittered;
   XMMATRIX prev_world_to_proj_unjittered;
   XMFLOAT3 eye;
   float pad0;
@@ -200,6 +200,8 @@ struct LightingParams
   float displacement_scale;
   float normal_scale;
   float pad0;
+  XMFLOAT2 jitter_px;
+  XMFLOAT2 pad1;
   XMFLOAT3A diffuse_sh[9];
 };
 
@@ -1389,6 +1391,7 @@ void Render()
 
   const XMMATRIX view_proj_nojitter = XMMatrixMultiply(g_view_mat, g_proj_mat);
 
+  XMFLOAT2 taa_jitter_px = XMFLOAT2(0.0f, 0.0f);
   if (g_gui_taa)
   {
     static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
@@ -1398,6 +1401,7 @@ void Render()
     float jitter_x = (kHalton2[jitter_frame] - 0.5f) * 2.0f / (cw * 0.5f);
     float jitter_y = (kHalton3[jitter_frame] - 0.5f) * 2.0f / ch;
     g_proj_mat.r[2] = XMVectorAdd(g_proj_mat.r[2], XMVectorSet(jitter_x, jitter_y, 0.0f, 0.0f));
+    taa_jitter_px = XMFLOAT2(kHalton2[jitter_frame] - 0.5f, -(kHalton3[jitter_frame] - 0.5f));
   }
 
   {
@@ -1483,6 +1487,7 @@ void Render()
     lp.exposure = g_gui_exposure;
     lp.displacement_scale = g_gui_displacement_scale;
     lp.normal_scale = g_gui_normal_scale;
+    lp.jitter_px = taa_jitter_px;
     for (int i = 0; i < 9; i++)
       lp.diffuse_sh[i] = g_diffuse_sh[i];
     void* mapped = 0;
@@ -1552,7 +1557,7 @@ void Render()
     TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     TaaConstants tc = {};
-    tc.proj_to_world_jittered = XMMatrixInverse(nullptr, XMMatrixMultiply(g_view_mat, g_proj_mat));
+    tc.proj_to_world_unjittered = XMMatrixInverse(nullptr, view_proj_nojitter);
     tc.prev_world_to_proj_unjittered = g_prev_world_to_proj;
     XMStoreFloat3(&tc.eye, eye_pos);
     tc.pane_origin = XMFLOAT2(cx, cy);
