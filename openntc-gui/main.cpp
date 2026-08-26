@@ -269,6 +269,7 @@ float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_spin = true;
+bool g_gui_taa = false;
 int32_t g_gui_model = 0;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
@@ -1731,6 +1732,7 @@ void Render()
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
   ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
+  ImGui::Checkbox("TAA", &g_gui_taa);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
@@ -1823,6 +1825,17 @@ void Render()
     g_model_mat = XMMatrixIdentity();
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov_y, aspect_ratio, 0.1f, 100.0f);
+  }
+
+  if (g_gui_taa)
+  {
+    static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
+    static const float kHalton3[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+    static uint32_t jitter_frame = 0;
+    jitter_frame = (jitter_frame + 1) % 8;
+    float jitter_x = (kHalton2[jitter_frame] - 0.5f) * 2.0f / (cw * 0.5f);
+    float jitter_y = (kHalton3[jitter_frame] - 0.5f) * 2.0f / ch;
+    g_proj_mat.r[2] = XMVectorAdd(g_proj_mat.r[2], XMVectorSet(jitter_x, jitter_y, 0.0f, 0.0f));
   }
 
   {
