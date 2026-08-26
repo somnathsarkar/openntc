@@ -111,17 +111,22 @@ ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TY
   return buffer;
 }
 
-ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t dim, uint32_t depth, uint32_t levels, DXGI_FORMAT format)
+ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags, const float* opt_clear_color)
 {
   ComPtr<ID3D12Resource> tex;
+
+  D3D12_CLEAR_VALUE clear_value = {};
+  clear_value.Format = format;
+  if (opt_clear_color != nullptr)
+    memcpy(clear_value.Color, opt_clear_color, sizeof(clear_value.Color));
 
   D3D12_RESOURCE_DESC tex_desc = {};
   tex_desc.Format = format;
   tex_desc.Alignment = 0;
   tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  tex_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-  tex_desc.Width = dim;
-  tex_desc.Height = dim;
+  tex_desc.Flags = flags;
+  tex_desc.Width = width;
+  tex_desc.Height = height;
   tex_desc.DepthOrArraySize = depth;
   tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
   tex_desc.MipLevels = levels;
@@ -135,8 +140,9 @@ ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE he
   heap_props.CreationNodeMask = 1;
   heap_props.VisibleNodeMask = 1;
 
-  VERIFY(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&tex)));
-  
+  VERIFY(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON,
+                                         opt_clear_color != nullptr ? &clear_value : nullptr, IID_PPV_ARGS(&tex)));
+
   return tex;
 }
 
@@ -154,7 +160,7 @@ RootSignatureBuilder& RootSignatureBuilder::RootConstants(uint32_t num_32bit_val
   return *this;
 }
 
-RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_SHADER_VISIBILITY vis)
+RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_DESCRIPTOR_RANGE_FLAGS flags, D3D12_SHADER_VISIBILITY vis)
 {
   assert(range_type == D3D12_DESCRIPTOR_RANGE_TYPE_CBV || range_type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV);
 
@@ -165,7 +171,7 @@ RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D1
                                             srv_register_i_;
   drange.NumDescriptors = num_descriptors;
   drange.OffsetInDescriptorsFromTableStart = 0;
-  drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+  drange.Flags = flags;
   drange.RangeType = range_type;
   ranges_.push_back(drange);
 
@@ -274,6 +280,18 @@ GraphicsPipelineBuilder& GraphicsPipelineBuilder::DepthEnable(bool enable)
   return *this;
 }
 
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::RtvFormat(DXGI_FORMAT format)
+{
+  rtv_format_ = format;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::DsvFormat(DXGI_FORMAT format)
+{
+  dsv_format_ = format;
+  return *this;
+}
+
 GraphicsPipelineBuilder& GraphicsPipelineBuilder::CullMode(D3D12_CULL_MODE mode)
 {
   cull_mode_ = mode;
@@ -306,11 +324,11 @@ ComPtr<ID3D12PipelineState> GraphicsPipelineBuilder::Build(ID3D12Device2* device
   desc.DepthStencilState.DepthEnable = depth_enable_ ? TRUE : FALSE;
   desc.DepthStencilState.DepthWriteMask = depth_enable_ ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
   desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-  desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+  desc.DSVFormat = dsv_format_;
 
   desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   desc.NumRenderTargets = 1;
-  desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.RTVFormats[0] = rtv_format_;
   desc.SampleDesc.Count = 1;
 
   ComPtr<ID3D12PipelineState> pso;

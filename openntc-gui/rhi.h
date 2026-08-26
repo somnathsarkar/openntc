@@ -35,13 +35,13 @@ class DescriptorAllocator
 
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateBuffer(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t size);
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t buffer_size, uint64_t data_size, const void* data);
-Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t dim, uint32_t depth, uint32_t levels, DXGI_FORMAT format);
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE, const float* opt_clear_color = nullptr);
 
 class RootSignatureBuilder
 {
   public:
     RootSignatureBuilder& RootConstants(uint32_t num_32bit_values, D3D12_SHADER_VISIBILITY vis);
-    RootSignatureBuilder& Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_SHADER_VISIBILITY vis);
+    RootSignatureBuilder& Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_DESCRIPTOR_RANGE_FLAGS flags, D3D12_SHADER_VISIBILITY vis);
     RootSignatureBuilder& StaticSampler(D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address_mode, D3D12_SHADER_VISIBILITY vis);
     Microsoft::WRL::ComPtr<ID3D12RootSignature> Build(ID3D12Device2* device);
 
@@ -65,6 +65,8 @@ class GraphicsPipelineBuilder
     GraphicsPipelineBuilder& Input(const D3D12_INPUT_ELEMENT_DESC* elements, uint32_t count);
     GraphicsPipelineBuilder& DepthEnable(bool enable);
     GraphicsPipelineBuilder& CullMode(D3D12_CULL_MODE mode);
+    GraphicsPipelineBuilder& RtvFormat(DXGI_FORMAT format);
+    GraphicsPipelineBuilder& DsvFormat(DXGI_FORMAT format);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(ID3D12Device2* device);
 
   private:
@@ -75,5 +77,7 @@ class GraphicsPipelineBuilder
     uint32_t input_count_ = 0;
     bool depth_enable_ = true;
     D3D12_CULL_MODE cull_mode_ = D3D12_CULL_MODE_BACK;
+    DXGI_FORMAT rtv_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+    DXGI_FORMAT dsv_format_ = DXGI_FORMAT_D32_FLOAT;
     bool built_ = false;
 };

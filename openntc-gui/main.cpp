@@ -87,6 +87,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
+ComPtr<ID3D12PipelineState> g_pipelinestate_taa;
+ComPtr<ID3D12RootSignature> g_rootsignature_taa;
 ComPtr<ID3D12Resource> g_vertex_buffer[g_kModelCount];
 ComPtr<ID3D12Resource> g_index_buffer[g_kModelCount];
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
@@ -105,6 +107,18 @@ openntc::FileData g_fil_data;
 
 DescriptorAllocator g_dalloc_rtv;
 DescriptorHandle g_dhandle_rtv[g_numframes];
+
+ComPtr<ID3D12Resource> g_tex_frame;
+ComPtr<ID3D12Resource> g_tex_taa_accum[2];
+DescriptorHandle g_dhandle_frame_rtv;
+DescriptorHandle g_dhandle_frame_srv;
+DescriptorHandle g_dhandle_taa_rtv[2];
+DescriptorHandle g_dhandle_taa_srv[2];
+uint32_t g_taa_write_i = 0;
+bool g_taa_history_valid = false;
+D3D12_RESOURCE_STATES g_frame_state = D3D12_RESOURCE_STATE_COMMON;
+D3D12_RESOURCE_STATES g_taa_accum_state[2] = { D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON };
+constexpr FLOAT g_clear_color[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
 
 DescriptorAllocator g_dalloc_dsv;
 DescriptorHandle g_dhandle_dsv;
@@ -185,7 +199,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3;
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 3;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -320,6 +334,33 @@ void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr
   command_list->ResourceBarrier(1, &barrier);
 }
 
+void TransitionIfRequired(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES final_state)
+{
+  if (state == final_state)
+    return;
+  TransitionResource(command_list, res, state, final_state);
+  state = final_state;
+}
+
+void CreateTaaResources()
+{
+  g_tex_frame = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, g_clear_color);
+  g_device->CreateRenderTargetView(g_tex_frame.Get(), nullptr, g_dhandle_frame_rtv.cpu);
+  g_device->CreateShaderResourceView(g_tex_frame.Get(), nullptr, g_dhandle_frame_srv.cpu);
+  g_frame_state = D3D12_RESOURCE_STATE_COMMON;
+
+  for (int i = 0; i < 2; i++)
+  {
+    g_tex_taa_accum[i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                         DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    g_device->CreateRenderTargetView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_rtv[i].cpu);
+    g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu);
+    g_taa_accum_state[i] = D3D12_RESOURCE_STATE_COMMON;
+  }
+  g_taa_history_valid = false;
+}
+
 void CreateTextureBarrier(
   ComPtr<ID3D12GraphicsCommandList10> command_list,
   ComPtr<ID3D12Resource> res_tex,
@@ -404,7 +445,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
                         DXGI_FORMAT_R8_UNORM :
                         DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    g_tex[tex_i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, access.ctx_.GetMipDim(0), 1, tex_data.mip_count_, g_formats[tex_i]);
+    g_tex[tex_i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, access.ctx_.GetMipDim(0), access.ctx_.GetMipDim(0), 1, tex_data.mip_count_, g_formats[tex_i]);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = g_formats[tex_i];
@@ -527,7 +568,7 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_ibl = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 6, 5, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_ibl = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 6, 5, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -553,7 +594,7 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/dfg.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_dfg = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_dfg = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -626,7 +667,7 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(XMMATRIX) / 4, D3D12_SHADER_VISIBILITY_VERTEX)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_flat = rsb.Build(g_device.Get());
 
@@ -664,9 +705,9 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(5, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(5, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL);
     g_rootsignature_ggx = rsb.Build(g_device.Get());
     
@@ -699,10 +740,10 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
     
@@ -735,10 +776,10 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
@@ -764,8 +805,8 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(CubemapTransforms) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_PIXEL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_cubemap = rsb.Build(g_device.Get());
 
@@ -776,6 +817,28 @@ void LoadContent()
         .DepthEnable(false)
         .CullMode(D3D12_CULL_MODE_BACK);
     g_pipelinestate_cubemap = gpb.Build(g_device.Get());
+  }
+
+  // TAA resolve. Scene renders into g_tex_frame, the resolve blends it into the write half of the
+  //  accum ping-pong, and the result is copied to the backbuffer. All three textures match the
+  //  swapchain format so the display step and the history seed can be plain CopyResource.
+
+  {
+    CreateTaaResources();
+
+    RootSignatureBuilder rsb;
+    rsb.Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)    // t0: history (read half of ping-pong)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL);  // t1: current frame
+    g_rootsignature_taa = rsb.Build(g_device.Get());
+
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_taa.Get())
+        .VS(L"C:/Code/openntc/openntc-gui/taa_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/taa_ps.cso")
+        .DepthEnable(false)
+        .DsvFormat(DXGI_FORMAT_UNKNOWN)
+        .CullMode(D3D12_CULL_MODE_NONE);
+    g_pipelinestate_taa = gpb.Build(g_device.Get());
   }
 
   // Texture
@@ -1361,10 +1424,17 @@ void Render()
   scissor.bottom = LONG_MAX;
   scissor.right = LONG_MAX;
 
+  // Write directly to backbuffer if we're not using TAA
+
+  const bool use_taa = g_gui_taa;
+  D3D12_CPU_DESCRIPTOR_HANDLE scene_rtv = use_taa ? g_dhandle_frame_rtv.cpu : rtv_handle;
+
   {
-    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    FLOAT clear_color[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-    g_commandlist->ClearRenderTargetView(rtv_handle, clear_color, 0, nullptr);
+    if (use_taa)
+      TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    else
+      TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    g_commandlist->ClearRenderTargetView(scene_rtv, g_clear_color, 0, nullptr);
     g_commandlist->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
   }
 
@@ -1391,7 +1461,7 @@ void Render()
   {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
-    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+    g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
     cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
@@ -1410,7 +1480,7 @@ void Render()
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
     g_commandlist->RSSetScissorRects(1, &scissor);
-    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+    g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
     cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
@@ -1425,6 +1495,46 @@ void Render()
     SetPipelineStateForShader(shader_right);
     SetDescriptorsForShader(shader_right);
     g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+  }
+
+  if (use_taa)
+  {
+    const uint32_t w = g_taa_write_i;
+    const uint32_t r = w ^ 1;
+
+    if (!g_taa_history_valid)
+    {
+      TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+      TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_COPY_DEST);
+      g_commandlist->CopyResource(g_tex_taa_accum[r].Get(), g_tex_frame.Get());
+      g_taa_history_valid = true;
+    }
+
+    TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    D3D12_VIEWPORT viewport_full = { 0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f };
+    g_commandlist->RSSetViewports(1, &viewport_full);
+    g_commandlist->RSSetScissorRects(1, &scissor);
+    g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu, FALSE, nullptr);
+    g_commandlist->SetPipelineState(g_pipelinestate_taa.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_taa.Get());
+    g_commandlist->SetGraphicsRootDescriptorTable(0, g_dhandle_taa_srv[r].gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_frame_srv.gpu);
+    g_commandlist->DrawInstanced(6, 1, 0, 0);
+
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_COPY_SOURCE);
+    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+    g_commandlist->CopyResource(buffer.Get(), g_tex_taa_accum[w].Get());
+    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+
+    g_taa_write_i = r;
+  }
+  else
+  {
+    g_taa_history_valid = false;
   }
 
   ImGui::Render();
@@ -1485,6 +1595,7 @@ void Resize(uint32_t width, uint32_t height)
     VERIFY(g_swapchain->ResizeBuffers(g_numframes, g_width, g_height, swapchain_desc.BufferDesc.Format, swapchain_desc.Flags));
     g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
     UpdateRenderTargetViews(g_device, g_swapchain, g_dalloc_rtv.GetHeapUnsafe());
+    CreateTaaResources();
   }
 
   ResizeDepthBuffer(width, height);
@@ -1859,6 +1970,9 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     for (int i = 0; i < 2; i++)
       g_dhandle_ibl[i] = g_dalloc_srv.Allocate();
     g_dhandle_lparams = g_dalloc_srv.Allocate();
+    g_dhandle_frame_srv = g_dalloc_srv.Allocate();
+    for (int i = 0; i < 2; i++)
+      g_dhandle_taa_srv[i] = g_dalloc_srv.Allocate();
   }
 
   for (int i = 0; i < g_imgui_srv_count; i++)
@@ -1869,9 +1983,12 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   }
 
   {
-    g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes);
+    g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes + 3);
     for (int frame_i = 0; frame_i < g_numframes; frame_i++)
       g_dhandle_rtv[frame_i] = g_dalloc_rtv.Allocate();
+    g_dhandle_frame_rtv = g_dalloc_rtv.Allocate();
+    for (int i = 0; i < 2; i++)
+      g_dhandle_taa_rtv[i] = g_dalloc_rtv.Allocate();
   }
 
   {
