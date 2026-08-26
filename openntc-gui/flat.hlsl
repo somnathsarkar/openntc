@@ -29,7 +29,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   return v_out;
 }
 
-Texture2D<float4> tex_color : register(t1, space0);
+Texture2D<float4> tex_color : register(t0, space0);
 SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput

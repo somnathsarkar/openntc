@@ -1,6 +1,7 @@
 #include <openntc-gui/rhi.h>
 
 #include <cassert>
+#include <d3dcompiler.h>
 
 using namespace Microsoft::WRL;
 
@@ -137,4 +138,184 @@ ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE he
   VERIFY(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&tex)));
   
   return tex;
+}
+
+RootSignatureBuilder& RootSignatureBuilder::RootConstants(uint32_t num_32bit_values, D3D12_SHADER_VISIBILITY vis)
+{
+  D3D12_ROOT_PARAMETER1 param = {};
+  param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  param.Constants.Num32BitValues = num_32bit_values;
+  param.Constants.RegisterSpace = 0;
+  param.Constants.ShaderRegister = cbv_register_i_;
+  param.ShaderVisibility = vis;
+  cbv_register_i_++;
+  params_.push_back(param);
+
+  return *this;
+}
+
+RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_SHADER_VISIBILITY vis)
+{
+  assert(range_type == D3D12_DESCRIPTOR_RANGE_TYPE_CBV || range_type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV);
+
+  D3D12_DESCRIPTOR_RANGE1 drange = {};
+  drange.RegisterSpace = 0;
+  drange.BaseShaderRegister = (range_type == D3D12_DESCRIPTOR_RANGE_TYPE_CBV) ?
+                                            cbv_register_i_ :
+                                            srv_register_i_;
+  drange.NumDescriptors = num_descriptors;
+  drange.OffsetInDescriptorsFromTableStart = 0;
+  drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+  drange.RangeType = range_type;
+  ranges_.push_back(drange);
+
+  D3D12_ROOT_PARAMETER1 rparam = {};
+  rparam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  rparam.DescriptorTable.NumDescriptorRanges = 1;
+  rparam.DescriptorTable.pDescriptorRanges = nullptr;
+  rparam.ShaderVisibility = vis;
+  param_range_index_.push_back(static_cast<uint32_t>(ranges_.size() - 1));
+  params_.push_back(rparam);
+  if (range_type == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+    cbv_register_i_ += num_descriptors;
+  else
+    srv_register_i_ += num_descriptors;
+
+  return *this;
+}
+
+RootSignatureBuilder& RootSignatureBuilder::StaticSampler(D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address_mode, D3D12_SHADER_VISIBILITY vis)
+{
+  D3D12_STATIC_SAMPLER_DESC desc = {};
+  desc.Filter = filter;
+  desc.AddressU = address_mode;
+  desc.AddressV = address_mode;
+  desc.AddressW = address_mode;
+  desc.MipLODBias = 0.0f;
+  desc.MaxAnisotropy = 16;
+  desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+  desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+  desc.MinLOD = 0.0f;
+  desc.MaxLOD = D3D12_FLOAT32_MAX;
+  desc.ShaderRegister = smp_register_i_;
+  desc.RegisterSpace = 0;
+  desc.ShaderVisibility = vis;
+  smp_register_i_++;
+  samplers_.push_back(desc);
+
+  return *this;
+}
+
+ComPtr<ID3D12RootSignature> RootSignatureBuilder::Build(ID3D12Device2* device)
+{
+  assert(built_ == false);
+  if (built_)
+    return nullptr;
+
+  uint32_t table_i = 0;
+  for (D3D12_ROOT_PARAMETER1& param : params_)
+  {
+    if (param.ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+      param.DescriptorTable.pDescriptorRanges = &ranges_[param_range_index_[table_i++]];
+  }
+
+  D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                                                  D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                                                  D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                                                  D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+  D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+  root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+  root_signature_desc.Desc_1_1.NumParameters = static_cast<UINT>(params_.size());
+  root_signature_desc.Desc_1_1.pParameters = params_.data();
+  root_signature_desc.Desc_1_1.NumStaticSamplers = static_cast<UINT>(samplers_.size());
+  root_signature_desc.Desc_1_1.pStaticSamplers = samplers_.empty() ? nullptr : samplers_.data();
+  root_signature_desc.Desc_1_1.Flags = root_signature_flags;
+
+  ComPtr<ID3D12RootSignature> root_signature;
+  ComPtr<ID3DBlob> root_signature_blob;
+  ComPtr<ID3DBlob> error_blob;
+  VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+
+  VERIFY(device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&root_signature)));
+  built_ = true;
+
+  return root_signature;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::RootSignature(ID3D12RootSignature* root_signature)
+{
+  root_signature_ = root_signature;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::VS(const wchar_t* cso_path)
+{
+  VERIFY(D3DReadFileToBlob(cso_path, &vs_blob_));
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::PS(const wchar_t* cso_path)
+{
+  VERIFY(D3DReadFileToBlob(cso_path, &ps_blob_));
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::Input(const D3D12_INPUT_ELEMENT_DESC* elements, uint32_t count)
+{
+  input_elements_ = elements;
+  input_count_ = count;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::DepthEnable(bool enable)
+{
+  depth_enable_ = enable;
+  return *this;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::CullMode(D3D12_CULL_MODE mode)
+{
+  cull_mode_ = mode;
+  return *this;
+}
+
+ComPtr<ID3D12PipelineState> GraphicsPipelineBuilder::Build(ID3D12Device2* device)
+{
+  assert(built_ == false);
+  assert(root_signature_ != nullptr && vs_blob_ && ps_blob_);
+  if (built_)
+    return nullptr;
+
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+  desc.pRootSignature = root_signature_;
+  desc.VS = { vs_blob_->GetBufferPointer(), vs_blob_->GetBufferSize() };
+  desc.PS = { ps_blob_->GetBufferPointer(), ps_blob_->GetBufferSize() };
+  desc.InputLayout = { input_elements_, input_count_ };
+
+  desc.BlendState.AlphaToCoverageEnable = FALSE;
+  desc.BlendState.IndependentBlendEnable = FALSE;
+  desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+  desc.SampleMask = UINT_MAX;
+
+  desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+  desc.RasterizerState.CullMode = cull_mode_;
+  desc.RasterizerState.FrontCounterClockwise = FALSE;
+  desc.RasterizerState.DepthClipEnable = TRUE;
+
+  desc.DepthStencilState.DepthEnable = depth_enable_ ? TRUE : FALSE;
+  desc.DepthStencilState.DepthWriteMask = depth_enable_ ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+  desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+  desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+  desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+  desc.NumRenderTargets = 1;
+  desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+
+  ComPtr<ID3D12PipelineState> pso;
+  VERIFY(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)));
+  built_ = true;
+
+  return pso;
 }

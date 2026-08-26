@@ -29,13 +29,13 @@ struct VertexShaderOutput
 
 ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
 
-Texture2D<float4> tex_ao : register(t1, space0);
-Texture2D<float4> tex_albedo : register(t2, space0);
-Texture2D<float4> tex_displacement : register(t3, space0);
-Texture2D<float4> tex_normal : register(t4, space0);
-Texture2D<float4> tex_roughness : register(t5, space0);
-TextureCube<float4> tex_specular_ibl : register(t6, space0);
-Texture2D<float4> tex_dfg : register(t7, space0);
+Texture2D<float4> tex_ao : register(t0, space0);
+Texture2D<float4> tex_albedo : register(t1, space0);
+Texture2D<float4> tex_displacement : register(t2, space0);
+Texture2D<float4> tex_normal : register(t3, space0);
+Texture2D<float4> tex_roughness : register(t4, space0);
+TextureCube<float4> tex_specular_ibl : register(t5, space0);
+Texture2D<float4> tex_dfg : register(t6, space0);
 SamplerState sampler_trilinear : register(s0);
 
 VertexShaderOutput vs_main(VertexShaderInput v_in)

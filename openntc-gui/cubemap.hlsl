@@ -35,7 +35,7 @@ VertexShaderOutput vs_main(uint vid : SV_VertexID)
 
 ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
 
-TextureCube<float4> tex_cubemap : register(t1, space0);
+TextureCube<float4> tex_cubemap : register(t0, space0);
 SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput
