@@ -114,8 +114,13 @@ DescriptorHandle g_dhandle_frame_rtv;
 DescriptorHandle g_dhandle_frame_srv;
 DescriptorHandle g_dhandle_taa_rtv[2];
 DescriptorHandle g_dhandle_taa_srv[2];
+DescriptorHandle g_dhandle_depth_srv;
+ComPtr<ID3D12Resource> g_tex_depth_prev;
+DescriptorHandle g_dhandle_depth_prev_srv;
+D3D12_RESOURCE_STATES g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
 uint32_t g_taa_write_i = 0;
 bool g_taa_history_valid = false;
+XMMATRIX g_prev_world_to_proj;
 D3D12_RESOURCE_STATES g_frame_state = D3D12_RESOURCE_STATE_COMMON;
 D3D12_RESOURCE_STATES g_taa_accum_state[2] = { D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON };
 constexpr FLOAT g_clear_color[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
@@ -179,6 +184,16 @@ struct CubemapTransforms
   XMMATRIX view_to_world;
 };
 
+struct TaaConstants
+{
+  XMMATRIX proj_to_world_jittered;
+  XMMATRIX prev_world_to_proj_unjittered;
+  XMFLOAT3 eye;
+  float pad0;
+  XMFLOAT2 pane_origin;
+  XMFLOAT2 pane_dim;
+};
+
 struct LightingParams
 {
   float exposure;
@@ -199,7 +214,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 3;
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -358,6 +373,12 @@ void CreateTaaResources()
     g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu);
     g_taa_accum_state[i] = D3D12_RESOURCE_STATE_COMMON;
   }
+
+  g_tex_depth_prev = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                     DXGI_FORMAT_R32_FLOAT);
+  g_device->CreateShaderResourceView(g_tex_depth_prev.Get(), nullptr, g_dhandle_depth_prev_srv.cpu);
+  g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
+
   g_taa_history_valid = false;
 }
 
@@ -432,6 +453,13 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   dsv_desc.Texture2D.MipSlice = 0;
 
   g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_dhandle_dsv.cpu);
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+  srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+  srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srv_desc.Texture2D.MipLevels = 1;
+  g_device->CreateShaderResourceView(g_depthbuffer.Get(), &srv_desc, g_dhandle_depth_srv.cpu);
 }
 
 static void RebuildTextureResources(SharedContext::Access& access)
@@ -827,8 +855,12 @@ void LoadContent()
     CreateTaaResources();
 
     RootSignatureBuilder rsb;
-    rsb.Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)    // t0: history (read half of ping-pong)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL);  // t1: current frame
+    rsb.RootConstants(sizeof(TaaConstants) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_taa = rsb.Build(g_device.Get());
 
     GraphicsPipelineBuilder gpb;
@@ -1338,22 +1370,24 @@ void Render()
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
+  XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
   if (cmode == CameraMode::Orbit)
   {
     float angle = g_gui_spin ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
-    const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
-    const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
+    g_model_mat = XMMatrixIdentity();
+    eye_pos = XMVector3Transform(XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f), XMMatrixRotationY(-angle));
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
   }
   else if (cmode == CameraMode::Controlled)
   {
-    const XMVECTOR eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
+    eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
     g_model_mat = XMMatrixIdentity();
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov_y, aspect_ratio, 0.1f, 100.0f);
   }
+
+  const XMMATRIX view_proj_nojitter = XMMatrixMultiply(g_view_mat, g_proj_mat);
 
   if (g_gui_taa)
   {
@@ -1504,6 +1538,7 @@ void Render()
 
     if (!g_taa_history_valid)
     {
+      g_prev_world_to_proj = view_proj_nojitter;
       TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
       TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_COPY_DEST);
       g_commandlist->CopyResource(g_tex_taa_accum[r].Get(), g_tex_frame.Get());
@@ -1513,6 +1548,15 @@ void Render()
     TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    TaaConstants tc = {};
+    tc.proj_to_world_jittered = XMMatrixInverse(nullptr, XMMatrixMultiply(g_view_mat, g_proj_mat));
+    tc.prev_world_to_proj_unjittered = g_prev_world_to_proj;
+    XMStoreFloat3(&tc.eye, eye_pos);
+    tc.pane_origin = XMFLOAT2(cx, cy);
+    tc.pane_dim = XMFLOAT2(cw / 2.0f, ch);
 
     D3D12_VIEWPORT viewport_full = { 0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f };
     g_commandlist->RSSetViewports(1, &viewport_full);
@@ -1520,9 +1564,18 @@ void Render()
     g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu, FALSE, nullptr);
     g_commandlist->SetPipelineState(g_pipelinestate_taa.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_taa.Get());
-    g_commandlist->SetGraphicsRootDescriptorTable(0, g_dhandle_taa_srv[r].gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_frame_srv.gpu);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(TaaConstants) / 4, &tc, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_taa_srv[r].gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_frame_srv.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, g_dhandle_depth_srv.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(4, g_dhandle_depth_prev_srv.gpu);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
+
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    g_commandlist->CopyResource(g_tex_depth_prev.Get(), g_depthbuffer.Get());
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    g_prev_world_to_proj = view_proj_nojitter;
 
     TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_COPY_SOURCE);
     TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -1973,6 +2026,8 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     g_dhandle_frame_srv = g_dalloc_srv.Allocate();
     for (int i = 0; i < 2; i++)
       g_dhandle_taa_srv[i] = g_dalloc_srv.Allocate();
+    g_dhandle_depth_srv = g_dalloc_srv.Allocate();
+    g_dhandle_depth_prev_srv = g_dalloc_srv.Allocate();
   }
 
   for (int i = 0; i < g_imgui_srv_count; i++)
