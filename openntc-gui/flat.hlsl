@@ -30,7 +30,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 }
 
 Texture2D<float4> tex_color : register(t1, space0);
-SamplerState sampler_bilinear_clamp : register(s0);
+SamplerState sampler_trilinear : register(s0);
 
 struct PixelShaderInput
 {
@@ -47,7 +47,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
   PixelShaderOutput p_out;
 
-  p_out.color = tex_color.Sample(sampler_bilinear_clamp, p_in.uv);
+  p_out.color = tex_color.Sample(sampler_trilinear, p_in.uv);
   
   return p_out;
 }
