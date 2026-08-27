@@ -16,6 +16,7 @@ using namespace DirectX;
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <thread>
 #include <mutex>
 #include <future>
@@ -219,6 +220,81 @@ float g_fov_y = 65.0f;
 constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
+
+enum class GuiState : int32_t
+{
+  Empty = 0,
+  MaterialLoaded = 1,
+  Training = 2,
+  Compressed = 3,      // NTC data available, either trained or loaded from file
+};
+
+enum class GuiEvent : int32_t
+{
+  ManifestLoaded,
+  TrainStarted,
+  TrainFinished,
+  TrainStopped,
+  CompressedLoaded,
+  Saved,
+};
+
+GuiState g_app_state = GuiState::Empty;
+char g_status_text[512] = "Ready";
+
+const char* GetNameForGuiState(GuiState s)
+{
+  switch (s)
+  {
+    case GuiState::Empty:
+      return "No Material";
+    case GuiState::MaterialLoaded:
+      return "Material Loaded";
+    case GuiState::Training:
+      return "Training";
+    case GuiState::Compressed:
+      return "Compressed";
+  }
+  return "?";
+}
+
+void SetStatus(const char* fmt, ...)
+{
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(g_status_text, sizeof(g_status_text), fmt, args);
+  va_end(args);
+}
+
+void TransitionGuiState(GuiEvent e)
+{
+  const GuiState s = g_app_state;
+  switch (e)
+  {
+    case GuiEvent::ManifestLoaded:
+      if (s != GuiState::Training)
+        g_app_state = GuiState::MaterialLoaded;
+      break;
+    case GuiEvent::TrainStarted:
+      if (s == GuiState::MaterialLoaded || s == GuiState::Compressed)
+        g_app_state = GuiState::Training;
+      break;
+    case GuiEvent::TrainFinished:
+      if (s == GuiState::Training)
+        g_app_state = GuiState::Compressed;
+      break;
+    case GuiEvent::TrainStopped:
+      if (s == GuiState::Training)
+        g_app_state = GuiState::MaterialLoaded;
+      break;
+    case GuiEvent::CompressedLoaded:
+      if (s != GuiState::Training)
+        g_app_state = GuiState::Compressed;
+      break;
+    case GuiEvent::Saved:
+      break;
+  }
+}
 
 void PerformTrainingJob()
 {
@@ -882,8 +958,10 @@ void LoadContent()
 
     openntc::Result load_res = access.ctx_.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
     VERIFY(load_res == openntc::Result::Success);
-    
+
     RebuildTextureResources(access);
+    TransitionGuiState(GuiEvent::ManifestLoaded);
+    SetStatus("Loaded Manifest: Bricks101_2K-JPG/manifest.json");
   }
 
   LoadIBL();
@@ -1082,10 +1160,16 @@ void LoadCompressedDataFromFile()
   if (g_compressed_data_loaded) return;
 
   openntc::Result res = openntc::Context::Load("bricks101_2k.ntc", g_fil_data);
-  VERIFY(res == openntc::Result::Success);
+  if (res != openntc::Result::Success)
+  {
+    SetStatus("Compressed load failed (Error Code %d): bricks101_2k.ntc", static_cast<int>(res));
+    return;
+  }
   openntc::CompressedData cdata = g_fil_data.Data();
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
+  TransitionGuiState(GuiEvent::CompressedLoaded);
+  SetStatus("Loaded Compressed Data: bricks101_2k.ntc");
 }
 
 static void SetPipelineStateForShader(Shader shader)
@@ -1203,13 +1287,21 @@ void PerformLoadManifest()
       {
         SharedContext::Access& access = oaccess.value();
         openntc::Result load_res = access.ctx_.LoadManifest(file_path);
-        
-        // TODO: Log failure in GUI.
 
         if (load_res == openntc::Result::Success)
         {
           RebuildTextureResources(access);
+          TransitionGuiState(GuiEvent::ManifestLoaded);
+          SetStatus("Loaded Manifest %s", file_path.c_str());
         }
+        else
+        {
+          SetStatus("Manifest load failure (Error Code %d): %s", static_cast<int>(load_res), file_path.c_str());
+        }
+      }
+      else
+      {
+        SetStatus("Context busy: Manifest load failed");
       }
     }
   }
@@ -1224,6 +1316,7 @@ void PerformLoadCompressed()
 void PerformSaveCompressed()
 {
   // TODO: Currently we auto-save to a path fixed in code. Add save dialog.
+  SetStatus("Save dialog not implemented yet");
 }
 
 void Render()
@@ -1323,12 +1416,28 @@ void Render()
           g_stop_training.store(false, std::memory_order_seq_cst);
           g_compressed_data_loaded = false;
           g_train_job = std::async(std::launch::async, PerformTrainingJob);
+          TransitionGuiState(GuiEvent::TrainStarted);
+          SetStatus("Training Started: %d total steps", fields.train_total_steps);
+        }
+        else
+        {
+          SetStatus("Training already in progress");
         }
       }
+    }
+    else if (train_button)
+    {
+      SetStatus("Context busy: Train start failed");
     }
     if (fields.train_in_progress)
     {
       ImGui::ProgressBar((float)fields.train_steps / fields.train_total_steps);
+    }
+    // Worker ended without completing (cancelled/aborted)
+    if (g_app_state == GuiState::Training && !fields.train_in_progress && !fields.train_complete)
+    {
+      TransitionGuiState(GuiEvent::TrainStopped);
+      SetStatus("Training stopped before completion");
     }
     if (fields.train_complete)
     {
@@ -1340,6 +1449,8 @@ void Render()
         {
           SharedContext::Access& access = oaccess.value();
           LoadCompressedDataFromContext(access);
+          TransitionGuiState(GuiEvent::TrainFinished);
+          SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr);
         }
       }
     }
@@ -1350,6 +1461,14 @@ void Render()
   ImGui::SetNextWindowSize({vp->WorkSize.x, footer_h});
   ImGui::Begin("Footer", nullptr, pinned_flags);
   ImGui::Text("openntc-gui v0.1 pre-release");
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", GetNameForGuiState(g_app_state));
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::TextUnformatted(g_status_text);
   ImGui::End();
 
   float cx = vp->WorkPos.x;
