@@ -70,6 +70,11 @@ float Fd_Lambert()
   return 1.0 / PI;
 }
 
+float SpecularOcclusion(float NoV, float ao, float perceptual_roughness)
+{
+  return saturate(pow(NoV + ao, exp2(-16.0 * perceptual_roughness - 1.0)) - 1.0 + ao);
+}
+
 float3 IrradianceSh(LightingParams LightingParamsCBV, float3 n)
 {
   return LightingParamsCBV.diffuse_sh[0] +
