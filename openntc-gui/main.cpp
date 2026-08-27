@@ -1319,6 +1319,34 @@ void PerformSaveCompressed()
   SetStatus("Save dialog not implemented yet");
 }
 
+// Display only the shader options that are valid for our current GUI state
+static void ShaderCombo(const char* label, int32_t* value)
+{
+  const bool ntc_available = (g_app_state == GuiState::Compressed);
+  if (!ntc_available &&
+      (*value == static_cast<int32_t>(Shader::PBR_NTC) || *value == static_cast<int32_t>(Shader::PBR_NTC_COOP)))
+    *value = static_cast<int32_t>(Shader::GGX);
+
+  if (ImGui::BeginCombo(label, g_map_shader_to_name[*value]))
+  {
+    for (int32_t i = 0; i < static_cast<int32_t>(Shader::Count); i++)
+    {
+      bool enabled = true;
+      if (i == static_cast<int32_t>(Shader::PBR_NTC) || i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
+        enabled = ntc_available;
+#if !OPENNTC_COOP
+      if (i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
+        enabled = false;
+#endif
+      ImGui::BeginDisabled(!enabled);
+      if (ImGui::Selectable(g_map_shader_to_name[i], *value == i))
+        *value = i;
+      ImGui::EndDisabled();
+    }
+    ImGui::EndCombo();
+  }
+}
+
 void Render()
 {
   ImGui_ImplDX12_NewFrame();
@@ -1329,17 +1357,19 @@ void Render()
   {
     if (ImGui::BeginMainMenuBar())
     {
+      const bool loads_enabled = (g_app_state != GuiState::Training);
+      const bool save_enabled = (g_app_state == GuiState::Compressed);
       if (ImGui::BeginMenu("File"))
       {
-        if (ImGui::MenuItem("Load Manifest...", "Ctrl+O"))
+        if (ImGui::MenuItem("Load Manifest...", "Ctrl+O", false, loads_enabled))
         {
           PerformLoadManifest();
         }
-        if (ImGui::MenuItem("Load Compressed...", "Ctrl+Shift+O"))
+        if (ImGui::MenuItem("Load Compressed...", "Ctrl+Shift+O", false, loads_enabled))
         {
           PerformLoadCompressed();
         }
-        if (ImGui::MenuItem("Save Compressed...", "Ctrl+S"))
+        if (ImGui::MenuItem("Save Compressed...", "Ctrl+S", false, save_enabled))
         {
           PerformSaveCompressed();
         }
@@ -1354,17 +1384,20 @@ void Render()
     }
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state != GuiState::Training)
   {
     PerformLoadManifest();
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state != GuiState::Training)
   {
     PerformLoadCompressed();
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state == GuiState::Compressed)
   {
     PerformSaveCompressed();
   }
@@ -1380,8 +1413,8 @@ void Render()
   ImGui::Begin("Sidebar", nullptr, pinned_flags);
   ImGui::SeparatorText("Shading");
   ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
-  ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
-  ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  ShaderCombo("Left", &g_gui_shader_left);
+  ShaderCombo("Right", &g_gui_shader_right);
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
   ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
@@ -1397,7 +1430,10 @@ void Render()
   ImGui::Checkbox("Spin", &g_gui_spin);
 
   ImGui::SeparatorText("Train");
+  const bool can_train = (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
+  ImGui::BeginDisabled(!can_train);
   bool train_button = ImGui::Button("Train");
+  ImGui::EndDisabled();
   {
     std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
     SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
