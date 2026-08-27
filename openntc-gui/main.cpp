@@ -103,6 +103,8 @@ UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
+bool g_compressed_dirty = false;
+bool g_compressed_from_training = false;
 std::atomic<SharedFields> g_shared_fields;
 openntc::FileData g_fil_data;
 
@@ -1150,26 +1152,30 @@ void LoadCompressedDataFromContext(SharedContext::Access& access)
   if (g_compressed_data_loaded) return;
 
   openntc::CompressedData cdata = access.ctx_.GetCompressedData();
-  openntc::Context::Dump("bricks101_2k.ntc", cdata);
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
+  g_compressed_from_training = true;
+  g_compressed_dirty = true;
 }
 
-void LoadCompressedDataFromFile()
+void LoadCompressedDataFromFile(const std::string& path)
 {
-  if (g_compressed_data_loaded) return;
-
-  openntc::Result res = openntc::Context::Load("bricks101_2k.ntc", g_fil_data);
+  openntc::Result res = openntc::Context::Load(path, g_fil_data);
   if (res != openntc::Result::Success)
   {
-    SetStatus("Compressed load failed (Error Code %d): bricks101_2k.ntc", static_cast<int>(res));
+    SetStatus("Compressed load failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
     return;
   }
+
+  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+
   openntc::CompressedData cdata = g_fil_data.Data();
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
+  g_compressed_from_training = false;
+  g_compressed_dirty = false;
   TransitionGuiState(GuiEvent::CompressedLoaded);
-  SetStatus("Loaded Compressed Data: bricks101_2k.ntc");
+  SetStatus("Loaded Compressed Data: %s", path.c_str());
 }
 
 static void SetPipelineStateForShader(Shader shader)
@@ -1265,8 +1271,51 @@ void Update()
   }
 }
 
+static bool GetPathFromShellItem(IShellItem* item, std::string& o_path)
+{
+  PWSTR wpath = nullptr;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath)))
+    return false;
+  int size = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, nullptr, 0, nullptr, nullptr);
+  o_path.assign(size - 1, 0);
+  WideCharToMultiByte(CP_UTF8, 0, wpath, -1, o_path.data(), size, nullptr, nullptr);
+  CoTaskMemFree(wpath);
+  return true;
+}
+
+static bool ShowNtcFileDialog(bool save, std::string& o_path)
+{
+  static const COMDLG_FILTERSPEC kFilter = { L"NTC compressed data (*.ntc)", L"*.ntc" };
+
+  ComPtr<IFileDialog> dialog;
+  if (save)
+    VERIFY(CoCreateInstance(CLSID_FileSaveDialog, NULL, CLSCTX_ALL, IID_IFileDialog, &dialog));
+  else
+    VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileDialog, &dialog));
+  dialog->SetFileTypes(1, &kFilter);
+  dialog->SetDefaultExtension(L"ntc");
+
+  if (FAILED(dialog->Show(NULL)))
+    return false;
+  ComPtr<IShellItem> item;
+  if (FAILED(dialog->GetResult(&item)))
+    return false;
+  return GetPathFromShellItem(item.Get(), o_path);
+}
+
+static bool ConfirmDiscardUnsaved()
+{
+  if (!g_compressed_dirty)
+    return true;
+  return MessageBoxA(g_hwnd, "The trained compression has not been saved. Discard it?",
+                     "openntc-gui", MB_YESNO | MB_ICONWARNING) == IDYES;
+}
+
 void PerformLoadManifest()
 {
+  if (!ConfirmDiscardUnsaved())
+    return;
+
   ComPtr<IFileOpenDialog> open_dialog;
 
   VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, &open_dialog));
@@ -1309,14 +1358,49 @@ void PerformLoadManifest()
 
 void PerformLoadCompressed()
 {
-  // TODO: Add open file dialog
-  LoadCompressedDataFromFile();
+  if (!ConfirmDiscardUnsaved())
+    return;
+  std::string path;
+  if (!ShowNtcFileDialog(false, path))
+    return;
+  LoadCompressedDataFromFile(path);
 }
 
 void PerformSaveCompressed()
 {
-  // TODO: Currently we auto-save to a path fixed in code. Add save dialog.
-  SetStatus("Save dialog not implemented yet");
+  if (g_app_state != GuiState::Compressed)
+  {
+    SetStatus("Compressed Data Unavailable");
+    return;
+  }
+  std::string path;
+  if (!ShowNtcFileDialog(true, path))
+    return;
+
+  openntc::Result res = openntc::Result::Success;
+  if (g_compressed_from_training)
+  {
+    auto oaccess = g_ctx.TryAcquire();
+    if (!oaccess.has_value())
+    {
+      SetStatus("Context busy: Save Failed");
+      return;
+    }
+    res = openntc::Context::Dump(path, oaccess.value().ctx_.GetCompressedData());
+  }
+  else
+  {
+    res = openntc::Context::Dump(path, g_fil_data.Data());
+  }
+
+  if (res != openntc::Result::Success)
+  {
+    SetStatus("Save failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
+    return;
+  }
+  g_compressed_dirty = false;
+  TransitionGuiState(GuiEvent::Saved);
+  SetStatus("Saved %s", path.c_str());
 }
 
 // Display only the shader options that are valid for our current GUI state
@@ -1376,7 +1460,8 @@ void Render()
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
         {
-          PostQuitMessage(0);
+          if (ConfirmDiscardUnsaved())
+            PostQuitMessage(0);
         }
         ImGui::EndMenu();
       }
@@ -1442,8 +1527,9 @@ void Render()
       SharedContext::Access& access = oaccess.value();
       if (train_button)
       {
-        if (!fields.train_in_progress)
+        if (!fields.train_in_progress && ConfirmDiscardUnsaved())
         {
+          g_compressed_dirty = false;
           fields.train_in_progress = true;
           fields.train_complete = false;
           fields.train_steps = 0;
@@ -1455,7 +1541,7 @@ void Render()
           TransitionGuiState(GuiEvent::TrainStarted);
           SetStatus("Training Started: %d total steps", fields.train_total_steps);
         }
-        else
+        else if (fields.train_in_progress)
         {
           SetStatus("Training already in progress");
         }
@@ -1869,7 +1955,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             g_vsync = !g_vsync;
             break;
           case VK_ESCAPE:
-            ::PostQuitMessage(0);
+            if (ConfirmDiscardUnsaved())
+              ::PostQuitMessage(0);
             break;
           case VK_RETURN:
             if (alt)
@@ -1894,6 +1981,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         Resize(width, height);
       }
       break;
+
+      case WM_CLOSE:
+        if (ConfirmDiscardUnsaved())
+          ::DestroyWindow(hWnd);
+        return 0;
 
       case WM_DESTROY:
         ::PostQuitMessage(0);
