@@ -300,7 +300,7 @@ float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_spin = true;
-bool g_gui_taa = false;
+bool g_gui_taa = true;
 int32_t g_gui_model = 0;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
