@@ -87,6 +87,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
+ComPtr<ID3D12PipelineState> g_pipelinestate_taa;
+ComPtr<ID3D12RootSignature> g_rootsignature_taa;
 ComPtr<ID3D12Resource> g_vertex_buffer[g_kModelCount];
 ComPtr<ID3D12Resource> g_index_buffer[g_kModelCount];
 ComPtr<ID3D12Resource> g_tex[openntc::kMaxSources];
@@ -105,6 +107,23 @@ openntc::FileData g_fil_data;
 
 DescriptorAllocator g_dalloc_rtv;
 DescriptorHandle g_dhandle_rtv[g_numframes];
+
+ComPtr<ID3D12Resource> g_tex_frame;
+ComPtr<ID3D12Resource> g_tex_taa_accum[2];
+DescriptorHandle g_dhandle_frame_rtv;
+DescriptorHandle g_dhandle_frame_srv;
+DescriptorHandle g_dhandle_taa_rtv[2];
+DescriptorHandle g_dhandle_taa_srv[2];
+DescriptorHandle g_dhandle_depth_srv;
+ComPtr<ID3D12Resource> g_tex_depth_prev;
+DescriptorHandle g_dhandle_depth_prev_srv;
+D3D12_RESOURCE_STATES g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
+uint32_t g_taa_write_i = 0;
+bool g_taa_history_valid = false;
+XMMATRIX g_prev_world_to_proj;
+D3D12_RESOURCE_STATES g_frame_state = D3D12_RESOURCE_STATE_COMMON;
+D3D12_RESOURCE_STATES g_taa_accum_state[2] = { D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON };
+constexpr FLOAT g_clear_color[4] = { 0.4f, 0.6f, 0.9f, 1.0f };
 
 DescriptorAllocator g_dalloc_dsv;
 DescriptorHandle g_dhandle_dsv;
@@ -165,12 +184,24 @@ struct CubemapTransforms
   XMMATRIX view_to_world;
 };
 
+struct TaaConstants
+{
+  XMMATRIX proj_to_world_unjittered;
+  XMMATRIX prev_world_to_proj_unjittered;
+  XMFLOAT3 eye;
+  float pad0;
+  XMFLOAT2 pane_origin;
+  XMFLOAT2 pane_dim;
+};
+
 struct LightingParams
 {
   float exposure;
   float displacement_scale;
   float normal_scale;
   float pad0;
+  XMFLOAT2 jitter_px;
+  XMFLOAT2 pad1;
   XMFLOAT3A diffuse_sh[9];
 };
 
@@ -185,7 +216,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3;
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -269,6 +300,7 @@ float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_spin = true;
+bool g_gui_taa = true;
 int32_t g_gui_model = 0;
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
@@ -317,6 +349,39 @@ void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr
   barrier.Transition.StateBefore = initial_state;
   barrier.Transition.StateAfter = final_state;
   command_list->ResourceBarrier(1, &barrier);
+}
+
+void TransitionIfRequired(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES final_state)
+{
+  if (state == final_state)
+    return;
+  TransitionResource(command_list, res, state, final_state);
+  state = final_state;
+}
+
+void CreateTaaResources()
+{
+  g_tex_frame = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, g_clear_color);
+  g_device->CreateRenderTargetView(g_tex_frame.Get(), nullptr, g_dhandle_frame_rtv.cpu);
+  g_device->CreateShaderResourceView(g_tex_frame.Get(), nullptr, g_dhandle_frame_srv.cpu);
+  g_frame_state = D3D12_RESOURCE_STATE_COMMON;
+
+  for (int i = 0; i < 2; i++)
+  {
+    g_tex_taa_accum[i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                         DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    g_device->CreateRenderTargetView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_rtv[i].cpu);
+    g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu);
+    g_taa_accum_state[i] = D3D12_RESOURCE_STATE_COMMON;
+  }
+
+  g_tex_depth_prev = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
+                                     DXGI_FORMAT_R32_FLOAT);
+  g_device->CreateShaderResourceView(g_tex_depth_prev.Get(), nullptr, g_dhandle_depth_prev_srv.cpu);
+  g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
+
+  g_taa_history_valid = false;
 }
 
 void CreateTextureBarrier(
@@ -390,6 +455,13 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   dsv_desc.Texture2D.MipSlice = 0;
 
   g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_dhandle_dsv.cpu);
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+  srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+  srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srv_desc.Texture2D.MipLevels = 1;
+  g_device->CreateShaderResourceView(g_depthbuffer.Get(), &srv_desc, g_dhandle_depth_srv.cpu);
 }
 
 static void RebuildTextureResources(SharedContext::Access& access)
@@ -403,7 +475,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
                         DXGI_FORMAT_R8_UNORM :
                         DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    g_tex[tex_i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, access.ctx_.GetMipDim(0), 1, tex_data.mip_count_, g_formats[tex_i]);
+    g_tex[tex_i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, access.ctx_.GetMipDim(0), access.ctx_.GetMipDim(0), 1, tex_data.mip_count_, g_formats[tex_i]);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = g_formats[tex_i];
@@ -526,7 +598,7 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_ibl = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 6, 5, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_ibl = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 6, 5, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -552,7 +624,7 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/dfg.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_dfg = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_dfg = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -609,12 +681,6 @@ void LoadContent()
   // Flat
 
   {
-    ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_vs.cso", &vertex_shader_blob));
-
-    ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/flat_ps.cso", &pixel_shader_blob));
-
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
       { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -629,111 +695,25 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(XMMATRIX) / 4, D3D12_SHADER_VISIBILITY_VERTEX)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_flat = rsb.Build(g_device.Get());
 
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 1;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_ROOT_PARAMETER1 root_parameters[2];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(XMMATRIX) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc.ShaderRegister = 0;
-    sampler_desc.RegisterSpace = 0;
-    sampler_desc.MaxAnisotropy = 16;
-    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 2;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_flat)));
-
-    struct PipelineStream
-    {
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-      ID3D12RootSignature* root_signature;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-      D3D12_INPUT_LAYOUT_DESC input_layout;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-      D3D12_SHADER_BYTECODE vs;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-      D3D12_SHADER_BYTECODE ps;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-      DXGI_FORMAT dsv;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-      D3D12_RT_FORMAT_ARRAY rtv;
-    } pipeline_stream;
-
-    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-    pipeline_stream.root_signature = g_rootsignature_flat.Get();
-    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-    pipeline_stream.input_layout.NumElements = _countof(input_layout);
-    pipeline_stream.input_layout.pInputElementDescs = input_layout;
-    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-    pipeline_stream.rtv.NumRenderTargets = 1;
-    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
-
-    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-    pdesc.SizeInBytes = sizeof(PipelineStream);
-    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_flat)));
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_flat.Get())
+        .Input(input_layout, _countof(input_layout))
+        .VS(L"C:/Code/openntc/openntc-gui/flat_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/flat_ps.cso")
+        .DepthEnable(true)
+        .CullMode(D3D12_CULL_MODE_BACK);
+    g_pipelinestate_flat = gpb.Build(g_device.Get());
   }
 
   // GGX
 
   {
-    ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/ggx_vs.cso", &vertex_shader_blob));
-
-    ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/ggx_ps.cso", &pixel_shader_blob));
-
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
       { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -753,131 +733,27 @@ void LoadContent()
                                                       D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                                                       D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
 
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 5;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 6;
-    drange_srv.NumDescriptors = 2;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 1;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_srv;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_ggx)));
-
-    struct PipelineStream
-    {
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-      ID3D12RootSignature* root_signature;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-      D3D12_INPUT_LAYOUT_DESC input_layout;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-      D3D12_SHADER_BYTECODE vs;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-      D3D12_SHADER_BYTECODE ps;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-      DXGI_FORMAT dsv;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-      D3D12_RT_FORMAT_ARRAY rtv;
-    } pipeline_stream;
-
-    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-    pipeline_stream.root_signature = g_rootsignature_ggx.Get();
-    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-    pipeline_stream.input_layout.NumElements = _countof(input_layout);
-    pipeline_stream.input_layout.pInputElementDescs = input_layout;
-    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-    pipeline_stream.rtv.NumRenderTargets = 1;
-    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
-
-    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-    pdesc.SizeInBytes = sizeof(PipelineStream);
-    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_ggx)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(5, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL);
+    g_rootsignature_ggx = rsb.Build(g_device.Get());
+    
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_ggx.Get())
+        .Input(input_layout, _countof(input_layout))
+        .VS(L"C:/Code/openntc/openntc-gui/ggx_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/ggx_ps.cso")
+        .DepthEnable(true)
+        .CullMode(D3D12_CULL_MODE_BACK);
+    g_pipelinestate_ggx = gpb.Build(g_device.Get());
   }
 
   // PBR NTC
 
   {
-    ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso", &vertex_shader_blob));
-
-    ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso", &pixel_shader_blob));
-
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
       { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -892,147 +768,28 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
-    drange_cbv.RegisterSpace = 0;
-    drange_cbv.BaseShaderRegister = 1;
-    drange_cbv.NumDescriptors = 1;
-    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
-    drange_tex.RegisterSpace = 0;
-    drange_tex.BaseShaderRegister = 8;
-    drange_tex.NumDescriptors = 2;
-    drange_tex.OffsetInDescriptorsFromTableStart = 8;
-    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 2;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc)));
-
-    struct PipelineStream
-    {
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-      ID3D12RootSignature* root_signature;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-      D3D12_INPUT_LAYOUT_DESC input_layout;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-      D3D12_SHADER_BYTECODE vs;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-      D3D12_SHADER_BYTECODE ps;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-      DXGI_FORMAT dsv;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-      D3D12_RT_FORMAT_ARRAY rtv;
-    } pipeline_stream;
-
-    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-    pipeline_stream.root_signature = g_rootsignature_pbr_ntc.Get();
-    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-    pipeline_stream.input_layout.NumElements = _countof(input_layout);
-    pipeline_stream.input_layout.pInputElementDescs = input_layout;
-    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-    pipeline_stream.rtv.NumRenderTargets = 1;
-    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
-
-    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-    pdesc.SizeInBytes = sizeof(PipelineStream);
-    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc)));
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
+    
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_pbr_ntc.Get())
+        .Input(input_layout, _countof(input_layout))
+        .VS(L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso")
+        .DepthEnable(true)
+        .CullMode(D3D12_CULL_MODE_BACK);
+    g_pipelinestate_pbr_ntc = gpb.Build(g_device.Get());
   }
 
   // PBR NTC COOP
 
   {
-    ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso", &vertex_shader_blob));
-
-    ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso", &pixel_shader_blob));
-
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
       { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -1047,151 +804,28 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv = {};
-    drange_cbv.RegisterSpace = 0;
-    drange_cbv.BaseShaderRegister = 1;
-    drange_cbv.NumDescriptors = 1;
-    drange_cbv.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_srv = {};
-    drange_srv.RegisterSpace = 0;
-    drange_srv.BaseShaderRegister = 0;
-    drange_srv.NumDescriptors = 1 + 1 + 3 + 3;
-    drange_srv.OffsetInDescriptorsFromTableStart = 0;
-    drange_srv.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_srv.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_tex = {};
-    drange_tex.RegisterSpace = 0;
-    drange_tex.BaseShaderRegister = 8;
-    drange_tex.NumDescriptors = 2;
-    drange_tex.OffsetInDescriptorsFromTableStart = 8;
-    drange_tex.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_tex.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 2;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    D3D12_DESCRIPTOR_RANGE1 drange_pixel[2] = {drange_srv, drange_tex};
-
-    D3D12_ROOT_PARAMETER1 root_parameters[4];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(ModelViewProjection) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange_cbv;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 2;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = drange_pixel;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler_desc[1];
-    sampler_desc[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc[0].MinLOD = 0.0f;
-    sampler_desc[0].MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc[0].ShaderRegister = 0;
-    sampler_desc[0].RegisterSpace = 0;
-    sampler_desc[0].MaxAnisotropy = 16;
-    sampler_desc[0].MipLODBias = 0.0f;
-    sampler_desc[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 4;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_pbr_ntc_coop)));
-
-    struct PipelineStream
-    {
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-      ID3D12RootSignature* root_signature;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-      D3D12_INPUT_LAYOUT_DESC input_layout;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-      D3D12_SHADER_BYTECODE vs;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-      D3D12_SHADER_BYTECODE ps;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-      DXGI_FORMAT dsv;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-      D3D12_RT_FORMAT_ARRAY rtv;
-    } pipeline_stream;
-
-    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-    pipeline_stream.root_signature = g_rootsignature_pbr_ntc_coop.Get();
-    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-    pipeline_stream.input_layout.NumElements = _countof(input_layout);
-    pipeline_stream.input_layout.pInputElementDescs = input_layout;
-    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-    pipeline_stream.rtv.NumRenderTargets = 1;
-    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
-
-    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-    pdesc.SizeInBytes = sizeof(PipelineStream);
-    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_pbr_ntc_coop)));
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
+        .Input(input_layout, _countof(input_layout))
+        .VS(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso")
+        .DepthEnable(true)
+        .CullMode(D3D12_CULL_MODE_BACK);
+    g_pipelinestate_pbr_ntc_coop = gpb.Build(g_device.Get());
   }
 
   // Cubemap
 
   {
-    ComPtr<ID3DBlob> vertex_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/cubemap_vs.cso", &vertex_shader_blob));
-
-    ComPtr<ID3DBlob> pixel_shader_blob;
-    VERIFY(D3DReadFileToBlob(L"C:/Code/openntc/openntc-gui/cubemap_ps.cso", &pixel_shader_blob));
-
-    D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-      { "SV_Position", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    };
-
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
     feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
     if (FAILED(g_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, sizeof(feature_data))))
@@ -1199,119 +833,46 @@ void LoadContent()
       feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_ROOT_SIGNATURE_FLAGS root_signature_flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-                                                      D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(CubemapTransforms) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_cubemap = rsb.Build(g_device.Get());
 
-    D3D12_DESCRIPTOR_RANGE1 drange = {};
-    drange.RegisterSpace = 0;
-    drange.BaseShaderRegister = 1;
-    drange.NumDescriptors = 1;
-    drange.OffsetInDescriptorsFromTableStart = 0;
-    drange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_cubemap.Get())
+        .VS(L"C:/Code/openntc/openntc-gui/cubemap_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/cubemap_ps.cso")
+        .DepthEnable(false)
+        .CullMode(D3D12_CULL_MODE_BACK);
+    g_pipelinestate_cubemap = gpb.Build(g_device.Get());
+  }
 
-    D3D12_DESCRIPTOR_RANGE1 drange_cbv_light = {};
-    drange_cbv_light.RegisterSpace = 0;
-    drange_cbv_light.BaseShaderRegister = 1;
-    drange_cbv_light.NumDescriptors = 1;
-    drange_cbv_light.OffsetInDescriptorsFromTableStart = 0;
-    drange_cbv_light.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
-    drange_cbv_light.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+  // TAA resolve. Scene renders into g_tex_frame, the resolve blends it into the write half of the
+  //  accum ping-pong, and the result is copied to the backbuffer. All three textures match the
+  //  swapchain format so the display step and the history seed can be plain CopyResource.
 
-    D3D12_ROOT_PARAMETER1 root_parameters[3];
-    root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].Constants.Num32BitValues = sizeof(CubemapTransforms) / 4;
-    root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.ShaderRegister = 0;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[1].DescriptorTable.pDescriptorRanges = &drange;
-    root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[2].DescriptorTable.pDescriptorRanges = &drange_cbv_light;
-    root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  {
+    CreateTaaResources();
 
-    D3D12_STATIC_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler_desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler_desc.MinLOD = 0.0f;
-    sampler_desc.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler_desc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    sampler_desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
-    sampler_desc.ShaderRegister = 0;
-    sampler_desc.RegisterSpace = 0;
-    sampler_desc.MaxAnisotropy = 16;
-    sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootSignatureBuilder rsb;
+    rsb.RootConstants(sizeof(TaaConstants) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_SHADER_VISIBILITY_PIXEL);
+    g_rootsignature_taa = rsb.Build(g_device.Get());
 
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
-    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    root_signature_desc.Desc_1_1.NumParameters = 3;
-    root_signature_desc.Desc_1_1.pParameters = root_parameters;
-    root_signature_desc.Desc_1_1.NumStaticSamplers = 1;
-    root_signature_desc.Desc_1_1.pStaticSamplers = &sampler_desc;
-    root_signature_desc.Desc_1_1.Flags = root_signature_flags;
-
-    ComPtr<ID3DBlob> root_signature_blob;
-    ComPtr<ID3DBlob> error_blob;
-    VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
-
-    VERIFY(g_device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&g_rootsignature_cubemap)));
-
-    D3D12_DEPTH_STENCIL_DESC depth_stencil = {};
-    depth_stencil.DepthEnable = FALSE;
-
-    struct PipelineStream
-    {
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_signature_type;
-      ID3D12RootSignature* root_signature;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE input_layout_type;
-      D3D12_INPUT_LAYOUT_DESC input_layout;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE primitive_topology_type;
-      D3D12_PRIMITIVE_TOPOLOGY_TYPE primitive_topology;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE vs_type;
-      D3D12_SHADER_BYTECODE vs;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_type;
-      D3D12_SHADER_BYTECODE ps;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsv_type;
-      DXGI_FORMAT dsv;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ds_type;
-      D3D12_DEPTH_STENCIL_DESC ds;
-      D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtv_type;
-      D3D12_RT_FORMAT_ARRAY rtv;
-    } pipeline_stream;
-
-    pipeline_stream.root_signature_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
-    pipeline_stream.root_signature = g_rootsignature_cubemap.Get();
-    pipeline_stream.input_layout_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT;
-    pipeline_stream.input_layout.NumElements = _countof(input_layout);
-    pipeline_stream.input_layout.pInputElementDescs = input_layout;
-    pipeline_stream.primitive_topology_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
-    pipeline_stream.primitive_topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipeline_stream.vs_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS;
-    pipeline_stream.vs.BytecodeLength = vertex_shader_blob->GetBufferSize();
-    pipeline_stream.vs.pShaderBytecode = vertex_shader_blob->GetBufferPointer();
-    pipeline_stream.ps_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
-    pipeline_stream.ps.BytecodeLength = pixel_shader_blob->GetBufferSize();
-    pipeline_stream.ps.pShaderBytecode = pixel_shader_blob->GetBufferPointer();
-    pipeline_stream.dsv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
-    pipeline_stream.dsv = DXGI_FORMAT_D32_FLOAT;
-    pipeline_stream.ds_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL;
-    pipeline_stream.ds = depth_stencil;
-    pipeline_stream.rtv_type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
-    pipeline_stream.rtv.NumRenderTargets = 1;
-    pipeline_stream.rtv.RTFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    for(int i = 1; i < 8; i++) pipeline_stream.rtv.RTFormats[i] = DXGI_FORMAT_UNKNOWN;
-
-    D3D12_PIPELINE_STATE_STREAM_DESC pdesc = {};
-    pdesc.SizeInBytes = sizeof(PipelineStream);
-    pdesc.pPipelineStateSubobjectStream = &pipeline_stream;
-    VERIFY(g_device->CreatePipelineState(&pdesc, IID_PPV_ARGS(&g_pipelinestate_cubemap)));
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_taa.Get())
+        .VS(L"C:/Code/openntc/openntc-gui/taa_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/taa_ps.cso")
+        .DepthEnable(false)
+        .DsvFormat(DXGI_FORMAT_UNKNOWN)
+        .CullMode(D3D12_CULL_MODE_NONE);
+    g_pipelinestate_taa = gpb.Build(g_device.Get());
   }
 
   // Texture
@@ -1584,12 +1145,14 @@ static void SetDescriptorsForShader(Shader shader)
     mvp.view_to_proj = g_proj_mat;
 
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = g_dhandle_ntc_info.gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ntc_data[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ntc = g_dhandle_ntc_data[0].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ibl = g_dhandle_ibl[0].gpu;
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
-    g_commandlist->SetGraphicsRootDescriptorTable(3, cbv_lighing_handle);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle_ntc);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, srv_handle_ibl);
+    g_commandlist->SetGraphicsRootDescriptorTable(4, cbv_lighing_handle);
   }
 }
 
@@ -1731,6 +1294,7 @@ void Render()
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
   ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
+  ImGui::Checkbox("TAA", &g_gui_taa);
   Shader shader_left = static_cast<Shader>(g_gui_shader_left);
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   if (shader_left == Shader::Flat)
@@ -1808,21 +1372,36 @@ void Render()
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
+  XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
   if (cmode == CameraMode::Orbit)
   {
     float angle = g_gui_spin ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
-    const XMVECTOR rotation_axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_model_mat = XMMatrixRotationAxis(rotation_axis, angle);
-    const XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
+    g_model_mat = XMMatrixIdentity();
+    eye_pos = XMVector3Transform(XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f), XMMatrixRotationY(-angle));
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov, aspect_ratio, 0.1f, 100.0f);
   }
   else if (cmode == CameraMode::Controlled)
   {
-    const XMVECTOR eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
+    eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
     g_model_mat = XMMatrixIdentity();
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov_y, aspect_ratio, 0.1f, 100.0f);
+  }
+
+  const XMMATRIX view_proj_nojitter = XMMatrixMultiply(g_view_mat, g_proj_mat);
+
+  XMFLOAT2 taa_jitter_px = XMFLOAT2(0.0f, 0.0f);
+  if (g_gui_taa)
+  {
+    static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
+    static const float kHalton3[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+    static uint32_t jitter_frame = 0;
+    jitter_frame = (jitter_frame + 1) % 8;
+    float jitter_x = (kHalton2[jitter_frame] - 0.5f) * 2.0f / (cw * 0.5f);
+    float jitter_y = (kHalton3[jitter_frame] - 0.5f) * 2.0f / ch;
+    g_proj_mat.r[2] = XMVectorAdd(g_proj_mat.r[2], XMVectorSet(jitter_x, jitter_y, 0.0f, 0.0f));
+    taa_jitter_px = XMFLOAT2(kHalton2[jitter_frame] - 0.5f, -(kHalton3[jitter_frame] - 0.5f));
   }
 
   {
@@ -1883,10 +1462,17 @@ void Render()
   scissor.bottom = LONG_MAX;
   scissor.right = LONG_MAX;
 
+  // Write directly to backbuffer if we're not using TAA
+
+  const bool use_taa = g_gui_taa;
+  D3D12_CPU_DESCRIPTOR_HANDLE scene_rtv = use_taa ? g_dhandle_frame_rtv.cpu : rtv_handle;
+
   {
-    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    FLOAT clear_color[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-    g_commandlist->ClearRenderTargetView(rtv_handle, clear_color, 0, nullptr);
+    if (use_taa)
+      TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    else
+      TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    g_commandlist->ClearRenderTargetView(scene_rtv, g_clear_color, 0, nullptr);
     g_commandlist->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
   }
 
@@ -1901,6 +1487,7 @@ void Render()
     lp.exposure = g_gui_exposure;
     lp.displacement_scale = g_gui_displacement_scale;
     lp.normal_scale = g_gui_normal_scale;
+    lp.jitter_px = taa_jitter_px;
     for (int i = 0; i < 9; i++)
       lp.diffuse_sh[i] = g_diffuse_sh[i];
     void* mapped = 0;
@@ -1913,7 +1500,7 @@ void Render()
   {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
-    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+    g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
     cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
@@ -1932,7 +1519,7 @@ void Render()
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
     g_commandlist->RSSetScissorRects(1, &scissor);
-    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+    g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
     cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
@@ -1947,6 +1534,65 @@ void Render()
     SetPipelineStateForShader(shader_right);
     SetDescriptorsForShader(shader_right);
     g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+  }
+
+  if (use_taa)
+  {
+    const uint32_t w = g_taa_write_i;
+    const uint32_t r = w ^ 1;
+
+    if (!g_taa_history_valid)
+    {
+      g_prev_world_to_proj = view_proj_nojitter;
+      TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+      TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_COPY_DEST);
+      g_commandlist->CopyResource(g_tex_taa_accum[r].Get(), g_tex_frame.Get());
+      g_taa_history_valid = true;
+    }
+
+    TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    TaaConstants tc = {};
+    tc.proj_to_world_unjittered = XMMatrixInverse(nullptr, view_proj_nojitter);
+    tc.prev_world_to_proj_unjittered = g_prev_world_to_proj;
+    XMStoreFloat3(&tc.eye, eye_pos);
+    tc.pane_origin = XMFLOAT2(cx, cy);
+    tc.pane_dim = XMFLOAT2(cw / 2.0f, ch);
+
+    D3D12_VIEWPORT viewport_full = { 0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f };
+    g_commandlist->RSSetViewports(1, &viewport_full);
+    g_commandlist->RSSetScissorRects(1, &scissor);
+    g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu, FALSE, nullptr);
+    g_commandlist->SetPipelineState(g_pipelinestate_taa.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_taa.Get());
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(TaaConstants) / 4, &tc, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_taa_srv[r].gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_frame_srv.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, g_dhandle_depth_srv.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(4, g_dhandle_depth_prev_srv.gpu);
+    g_commandlist->DrawInstanced(6, 1, 0, 0);
+
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    g_commandlist->CopyResource(g_tex_depth_prev.Get(), g_depthbuffer.Get());
+    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    g_prev_world_to_proj = view_proj_nojitter;
+
+    TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_COPY_SOURCE);
+    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+    g_commandlist->CopyResource(buffer.Get(), g_tex_taa_accum[w].Get());
+    TransitionResource(g_commandlist, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    g_commandlist->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
+
+    g_taa_write_i = r;
+  }
+  else
+  {
+    g_taa_history_valid = false;
   }
 
   ImGui::Render();
@@ -2007,6 +1653,7 @@ void Resize(uint32_t width, uint32_t height)
     VERIFY(g_swapchain->ResizeBuffers(g_numframes, g_width, g_height, swapchain_desc.BufferDesc.Format, swapchain_desc.Flags));
     g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
     UpdateRenderTargetViews(g_device, g_swapchain, g_dalloc_rtv.GetHeapUnsafe());
+    CreateTaaResources();
   }
 
   ResizeDepthBuffer(width, height);
@@ -2381,6 +2028,11 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     for (int i = 0; i < 2; i++)
       g_dhandle_ibl[i] = g_dalloc_srv.Allocate();
     g_dhandle_lparams = g_dalloc_srv.Allocate();
+    g_dhandle_frame_srv = g_dalloc_srv.Allocate();
+    for (int i = 0; i < 2; i++)
+      g_dhandle_taa_srv[i] = g_dalloc_srv.Allocate();
+    g_dhandle_depth_srv = g_dalloc_srv.Allocate();
+    g_dhandle_depth_prev_srv = g_dalloc_srv.Allocate();
   }
 
   for (int i = 0; i < g_imgui_srv_count; i++)
@@ -2391,9 +2043,12 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   }
 
   {
-    g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes);
+    g_dalloc_rtv.Init(g_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, false, g_numframes + 3);
     for (int frame_i = 0; frame_i < g_numframes; frame_i++)
       g_dhandle_rtv[frame_i] = g_dalloc_rtv.Allocate();
+    g_dhandle_frame_rtv = g_dalloc_rtv.Allocate();
+    for (int i = 0; i < 2; i++)
+      g_dhandle_taa_rtv[i] = g_dalloc_rtv.Allocate();
   }
 
   {

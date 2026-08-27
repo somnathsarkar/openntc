@@ -104,7 +104,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   vector<uint, 64 / 4> feat;
   vector<float, 12> Woutx;
-  GetFeaturesPacked(g0, g1, NTCCBV, p_in.uv, p_in.pos.xy, feat);
+  GetFeaturesPacked(g0, g1, NTCCBV, UnjitterUv(p_in.uv, LightingParamsCBV.jitter_px), p_in.pos.xy, feat);
   PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);
 
   float ntc_ao = Woutx[0];
@@ -147,11 +147,12 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 normal_world = mul(float4(normal, 0.0), ModelViewProjectionCB.world_to_view).xyz;
   float lod_ibl = perceptual_roughness * 4.0;
   float3 specular_ibl = tex_specular_ibl.SampleLevel(sampler_trilinear, reflect_world, lod_ibl).rgb;
-  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, perceptual_roughness)).rg;
+  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, 1.0 - perceptual_roughness)).rg;
   float3 specular_color = f0 * specular_dfg.x + f90 * specular_dfg.y;
   float3 diffuse_ibl = max(IrradianceSh(LightingParamsCBV, normal_world), 0.0);
+  float so = SpecularOcclusion(NoV, ntc_ao, perceptual_roughness);
 
-  radiance += diffuse_ibl * albedo * ntc_ao + specular_color * specular_ibl;
+  radiance += diffuse_ibl * albedo * ntc_ao + specular_color * specular_ibl * so;
   
   // Tonemapping
 

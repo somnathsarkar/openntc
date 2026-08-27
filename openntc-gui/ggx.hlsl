@@ -29,13 +29,13 @@ struct VertexShaderOutput
 
 ConstantBuffer<LightingParams> LightingParamsCBV : register(b1, space0);
 
-Texture2D<float4> tex_ao : register(t1, space0);
-Texture2D<float4> tex_albedo : register(t2, space0);
-Texture2D<float4> tex_displacement : register(t3, space0);
-Texture2D<float4> tex_normal : register(t4, space0);
-Texture2D<float4> tex_roughness : register(t5, space0);
-TextureCube<float4> tex_specular_ibl : register(t6, space0);
-Texture2D<float4> tex_dfg : register(t7, space0);
+Texture2D<float4> tex_ao : register(t0, space0);
+Texture2D<float4> tex_albedo : register(t1, space0);
+Texture2D<float4> tex_displacement : register(t2, space0);
+Texture2D<float4> tex_normal : register(t3, space0);
+Texture2D<float4> tex_roughness : register(t4, space0);
+TextureCube<float4> tex_specular_ibl : register(t5, space0);
+Texture2D<float4> tex_dfg : register(t6, space0);
 SamplerState sampler_trilinear : register(s0);
 
 VertexShaderOutput vs_main(VertexShaderInput v_in)
@@ -95,13 +95,14 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float4 bitangent_view = float4(cross(p_in.normal_view.xyz, p_in.tangent_view.xyz), 0.0);
   matrix tbn_view = transpose(matrix(p_in.tangent_view, bitangent_view, p_in.normal_view, float4(0.0, 0.0, 0.0, 1.0)));
-  float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, p_in.uv).rgb * 2.0 - 1.0, 0.0);
+  float2 uv = UnjitterUv(p_in.uv, LightingParamsCBV.jitter_px);
+  float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, uv).rgb * 2.0 - 1.0, 0.0);
   float4 view_normal = mul(tbn_view, surface_normal);
   float3 normal_scaled = normalize(float3(view_normal.xy * LightingParamsCBV.normal_scale, view_normal.z));
   float3 normal = normal_scaled;
-  float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, p_in.uv).r;
-  float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, p_in.uv).rgb, 2.2);
-  float ao = tex_ao.Sample(sampler_trilinear, p_in.uv).r;
+  float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, uv).r;
+  float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, uv).rgb, 2.2);
+  float ao = tex_ao.Sample(sampler_trilinear, uv).r;
 
   float3 view_dir = -normalize(p_in.pos_view.xyz / p_in.pos_view.w);
   float3 light_dir = -normalize(directional_light);
@@ -129,11 +130,12 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 normal_world = mul(float4(normal, 0.0), ModelViewProjectionCB.world_to_view).xyz;
   float lod_ibl = perceptual_roughness * 4.0;
   float3 specular_ibl = tex_specular_ibl.SampleLevel(sampler_trilinear, reflect_world, lod_ibl).rgb;
-  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, perceptual_roughness)).rg;
+  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, 1.0 - perceptual_roughness)).rg;
   float3 specular_color = f0 * specular_dfg.x + f90 * specular_dfg.y;
   float3 diffuse_ibl = max(IrradianceSh(LightingParamsCBV, normal_world), 0.0);
+  float so = SpecularOcclusion(NoV, ao, perceptual_roughness);
 
-  radiance += diffuse_ibl * albedo * ao + specular_color * specular_ibl;
+  radiance += diffuse_ibl * albedo * ao + specular_color * specular_ibl * so;
   
   // Tonemapping
 

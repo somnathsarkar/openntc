@@ -8,8 +8,19 @@ struct LightingParams
   float displacement_scale;
   float normal_scale;
   float pad0;
+  float2 jitter_px;
+  float2 pad1;
   float3 diffuse_sh[9];
 };
+
+
+// Unjitter UVs from TAA to prevent texture blurring
+//  Details: https://www.elopezr.com/temporal-aa-and-the-quest-for-the-holy-trail/
+
+float2 UnjitterUv(float2 uv, float2 jitter_px)
+{
+  return uv + ddx(uv) * jitter_px.x + ddy(uv) * jitter_px.y;
+}
 
 struct NTC
 {
@@ -57,6 +68,11 @@ float V_SmithGGXCorrelated(float NoV, float NoL, float a)
 float Fd_Lambert()
 {
   return 1.0 / PI;
+}
+
+float SpecularOcclusion(float NoV, float ao, float perceptual_roughness)
+{
+  return saturate(pow(NoV + ao, exp2(-16.0 * perceptual_roughness - 1.0)) - 1.0 + ao);
 }
 
 float3 IrradianceSh(LightingParams LightingParamsCBV, float3 n)
