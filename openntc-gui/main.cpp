@@ -16,6 +16,7 @@ using namespace DirectX;
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <thread>
 #include <mutex>
 #include <future>
@@ -101,7 +102,9 @@ UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
-bool g_compressed_data_loaded = false;
+bool g_compressed_dirty = false;
+bool g_compressed_from_training = false;
+bool g_compressed_matches_manifest = false;
 std::atomic<SharedFields> g_shared_fields;
 openntc::FileData g_fil_data;
 
@@ -219,6 +222,81 @@ float g_fov_y = 65.0f;
 constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
+
+enum class GuiState : int32_t
+{
+  Empty = 0,
+  MaterialLoaded = 1,
+  Training = 2,
+  Compressed = 3,      // NTC data available, either trained or loaded from file
+};
+
+enum class GuiEvent : int32_t
+{
+  ManifestLoaded,
+  TrainStarted,
+  TrainFinished,
+  TrainStopped,
+  CompressedLoaded,
+  Saved,
+};
+
+GuiState g_app_state = GuiState::Empty;
+char g_status_text[512] = "Ready";
+
+const char* GetNameForGuiState(GuiState s)
+{
+  switch (s)
+  {
+    case GuiState::Empty:
+      return "No Material";
+    case GuiState::MaterialLoaded:
+      return "Material Loaded";
+    case GuiState::Training:
+      return "Training";
+    case GuiState::Compressed:
+      return "Compressed";
+  }
+  return "?";
+}
+
+void SetStatus(const char* fmt, ...)
+{
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(g_status_text, sizeof(g_status_text), fmt, args);
+  va_end(args);
+}
+
+void TransitionGuiState(GuiEvent e)
+{
+  const GuiState s = g_app_state;
+  switch (e)
+  {
+    case GuiEvent::ManifestLoaded:
+      if (s != GuiState::Training)
+        g_app_state = GuiState::MaterialLoaded;
+      break;
+    case GuiEvent::TrainStarted:
+      if (s == GuiState::MaterialLoaded || s == GuiState::Compressed)
+        g_app_state = GuiState::Training;
+      break;
+    case GuiEvent::TrainFinished:
+      if (s == GuiState::Training)
+        g_app_state = GuiState::Compressed;
+      break;
+    case GuiEvent::TrainStopped:
+      if (s == GuiState::Training)
+        g_app_state = GuiState::MaterialLoaded;
+      break;
+    case GuiEvent::CompressedLoaded:
+      if (s != GuiState::Training)
+        g_app_state = GuiState::Compressed;
+      break;
+    case GuiEvent::Saved:
+      break;
+  }
+}
 
 void PerformTrainingJob()
 {
@@ -487,7 +565,6 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
     g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu);
-    g_compressed_data_loaded = false;
   }
 
   UINT64 scratch_size = 0llu;
@@ -882,8 +959,10 @@ void LoadContent()
 
     openntc::Result load_res = access.ctx_.LoadManifest("C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json");
     VERIFY(load_res == openntc::Result::Success);
-    
+
     RebuildTextureResources(access);
+    TransitionGuiState(GuiEvent::ManifestLoaded);
+    SetStatus("Loaded Manifest: Bricks101_2K-JPG/manifest.json");
   }
 
   LoadIBL();
@@ -895,6 +974,8 @@ void LoadContent()
 
 void UploadCompressedData(openntc::CompressedData& cdata)
 {
+  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+
   {
     NTCInfo ntc_info = {};
     for (int i = 0; i < cdata.level_count_; i++)
@@ -1069,23 +1150,48 @@ void UploadCompressedData(openntc::CompressedData& cdata)
 
 void LoadCompressedDataFromContext(SharedContext::Access& access)
 {
-  if (g_compressed_data_loaded) return;
-
   openntc::CompressedData cdata = access.ctx_.GetCompressedData();
-  openntc::Context::Dump("bricks101_2k.ntc", cdata);
   UploadCompressedData(cdata);
-  g_compressed_data_loaded = true;
+  g_compressed_from_training = true;
+  g_compressed_dirty = true;
+  g_compressed_matches_manifest = true;
 }
 
-void LoadCompressedDataFromFile()
+void LoadCompressedDataFromFile(const std::string& path)
 {
-  if (g_compressed_data_loaded) return;
+  openntc::Result res = openntc::Context::Load(path, g_fil_data);
+  if (res != openntc::Result::Success)
+  {
+    SetStatus("Compressed load failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
+    return;
+  }
 
-  openntc::Result res = openntc::Context::Load("bricks101_2k.ntc", g_fil_data);
-  VERIFY(res == openntc::Result::Success);
   openntc::CompressedData cdata = g_fil_data.Data();
+
+  // Note: This only checks that the dimensions of the uncompressed and compressed versions match.
+  //  Which might be fine, but it would be useful to bake a manifest path inside the .ntc for
+  //  error-checking.
+  int32_t manifest_dim = 0;
+  int32_t manifest_mips = 0;
+  {
+    auto oaccess = g_ctx.TryAcquire();
+    if (oaccess.has_value())
+    {
+      manifest_dim = oaccess.value().ctx_.GetMipDim(0);
+      manifest_mips = oaccess.value().ctx_.GetTextureData().mip_count_;
+    }
+  }
+  g_compressed_matches_manifest = (cdata.dim_ == manifest_dim) && (cdata.mip_count_ == manifest_mips);
+
   UploadCompressedData(cdata);
-  g_compressed_data_loaded = true;
+  g_compressed_from_training = false;
+  g_compressed_dirty = false;
+  TransitionGuiState(GuiEvent::CompressedLoaded);
+  if (g_compressed_matches_manifest)
+    SetStatus("Loaded Compressed Data: %s", path.c_str());
+  else
+    SetStatus("Loaded Compressed Data: %s (Warning: Dimension mismatch! %dx%d/%d mips vs manifest %dx%d/%d mips)",
+              path.c_str(), cdata.dim_, cdata.dim_, cdata.mip_count_, manifest_dim, manifest_dim, manifest_mips);
 }
 
 static void SetPipelineStateForShader(Shader shader)
@@ -1181,8 +1287,51 @@ void Update()
   }
 }
 
+static bool GetPathFromShellItem(IShellItem* item, std::string& o_path)
+{
+  PWSTR wpath = nullptr;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath)))
+    return false;
+  int size = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, nullptr, 0, nullptr, nullptr);
+  o_path.assign(size - 1, 0);
+  WideCharToMultiByte(CP_UTF8, 0, wpath, -1, o_path.data(), size, nullptr, nullptr);
+  CoTaskMemFree(wpath);
+  return true;
+}
+
+static bool ShowNtcFileDialog(bool save, std::string& o_path)
+{
+  static const COMDLG_FILTERSPEC kFilter = { L"NTC compressed data (*.ntc)", L"*.ntc" };
+
+  ComPtr<IFileDialog> dialog;
+  if (save)
+    VERIFY(CoCreateInstance(CLSID_FileSaveDialog, NULL, CLSCTX_ALL, IID_IFileDialog, &dialog));
+  else
+    VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileDialog, &dialog));
+  dialog->SetFileTypes(1, &kFilter);
+  dialog->SetDefaultExtension(L"ntc");
+
+  if (FAILED(dialog->Show(NULL)))
+    return false;
+  ComPtr<IShellItem> item;
+  if (FAILED(dialog->GetResult(&item)))
+    return false;
+  return GetPathFromShellItem(item.Get(), o_path);
+}
+
+static bool ConfirmDiscardUnsaved()
+{
+  if (!g_compressed_dirty)
+    return true;
+  return MessageBoxA(g_hwnd, "The trained compression has not been saved. Discard it?",
+                     "openntc-gui", MB_YESNO | MB_ICONWARNING) == IDYES;
+}
+
 void PerformLoadManifest()
 {
+  if (!ConfirmDiscardUnsaved())
+    return;
+
   ComPtr<IFileOpenDialog> open_dialog;
 
   VERIFY(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, &open_dialog));
@@ -1203,13 +1352,22 @@ void PerformLoadManifest()
       {
         SharedContext::Access& access = oaccess.value();
         openntc::Result load_res = access.ctx_.LoadManifest(file_path);
-        
-        // TODO: Log failure in GUI.
 
         if (load_res == openntc::Result::Success)
         {
           RebuildTextureResources(access);
+          g_compressed_matches_manifest = false;
+          TransitionGuiState(GuiEvent::ManifestLoaded);
+          SetStatus("Loaded Manifest %s", file_path.c_str());
         }
+        else
+        {
+          SetStatus("Manifest load failure (Error Code %d): %s", static_cast<int>(load_res), file_path.c_str());
+        }
+      }
+      else
+      {
+        SetStatus("Context busy: Manifest load failed");
       }
     }
   }
@@ -1217,13 +1375,77 @@ void PerformLoadManifest()
 
 void PerformLoadCompressed()
 {
-  // TODO: Add open file dialog
-  LoadCompressedDataFromFile();
+  if (!ConfirmDiscardUnsaved())
+    return;
+  std::string path;
+  if (!ShowNtcFileDialog(false, path))
+    return;
+  LoadCompressedDataFromFile(path);
 }
 
 void PerformSaveCompressed()
 {
-  // TODO: Currently we auto-save to a path fixed in code. Add save dialog.
+  if (g_app_state != GuiState::Compressed)
+  {
+    SetStatus("Compressed Data Unavailable");
+    return;
+  }
+  std::string path;
+  if (!ShowNtcFileDialog(true, path))
+    return;
+
+  openntc::Result res = openntc::Result::Success;
+  if (g_compressed_from_training)
+  {
+    auto oaccess = g_ctx.TryAcquire();
+    if (!oaccess.has_value())
+    {
+      SetStatus("Context busy: Save Failed");
+      return;
+    }
+    res = openntc::Context::Dump(path, oaccess.value().ctx_.GetCompressedData());
+  }
+  else
+  {
+    res = openntc::Context::Dump(path, g_fil_data.Data());
+  }
+
+  if (res != openntc::Result::Success)
+  {
+    SetStatus("Save failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
+    return;
+  }
+  g_compressed_dirty = false;
+  TransitionGuiState(GuiEvent::Saved);
+  SetStatus("Saved %s", path.c_str());
+}
+
+// Display only the shader options that are valid for our current GUI state
+static void ShaderCombo(const char* label, int32_t* value)
+{
+  const bool ntc_available = (g_app_state == GuiState::Compressed);
+  if (!ntc_available &&
+      (*value == static_cast<int32_t>(Shader::PBR_NTC) || *value == static_cast<int32_t>(Shader::PBR_NTC_COOP)))
+    *value = static_cast<int32_t>(Shader::GGX);
+
+  if (ImGui::BeginCombo(label, g_map_shader_to_name[*value]))
+  {
+    for (int32_t i = 0; i < static_cast<int32_t>(Shader::Count); i++)
+    {
+      bool enabled = true;
+      if (i == static_cast<int32_t>(Shader::PBR_NTC) || i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
+        enabled = ntc_available;
+#if !OPENNTC_COOP
+      if (i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
+        enabled = false;
+#endif
+      ImGui::BeginDisabled(!enabled);
+      if (ImGui::Selectable(g_map_shader_to_name[i], *value == i))
+        *value = i;
+      ImGui::EndDisabled();
+    }
+    ImGui::EndCombo();
+  }
 }
 
 void Render()
@@ -1236,24 +1458,27 @@ void Render()
   {
     if (ImGui::BeginMainMenuBar())
     {
+      const bool loads_enabled = (g_app_state != GuiState::Training);
+      const bool save_enabled = (g_app_state == GuiState::Compressed);
       if (ImGui::BeginMenu("File"))
       {
-        if (ImGui::MenuItem("Load Manifest...", "Ctrl+O"))
+        if (ImGui::MenuItem("Load Manifest...", "Ctrl+O", false, loads_enabled))
         {
           PerformLoadManifest();
         }
-        if (ImGui::MenuItem("Load Compressed...", "Ctrl+Shift+O"))
+        if (ImGui::MenuItem("Load Compressed...", "Ctrl+Shift+O", false, loads_enabled))
         {
           PerformLoadCompressed();
         }
-        if (ImGui::MenuItem("Save Compressed...", "Ctrl+S"))
+        if (ImGui::MenuItem("Save Compressed...", "Ctrl+S", false, save_enabled))
         {
           PerformSaveCompressed();
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
         {
-          PostQuitMessage(0);
+          if (ConfirmDiscardUnsaved())
+            PostQuitMessage(0);
         }
         ImGui::EndMenu();
       }
@@ -1261,17 +1486,20 @@ void Render()
     }
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state != GuiState::Training)
   {
     PerformLoadManifest();
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state != GuiState::Training)
   {
     PerformLoadCompressed();
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal) &&
+      g_app_state == GuiState::Compressed)
   {
     PerformSaveCompressed();
   }
@@ -1287,8 +1515,14 @@ void Render()
   ImGui::Begin("Sidebar", nullptr, pinned_flags);
   ImGui::SeparatorText("Shading");
   ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
-  ImGui::Combo("Left", &g_gui_shader_left, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
-  ImGui::Combo("Right", &g_gui_shader_right, g_map_shader_to_name, static_cast<int32_t>(Shader::Count));
+  ShaderCombo("Left", &g_gui_shader_left);
+  ShaderCombo("Right", &g_gui_shader_right);
+  if (g_app_state == GuiState::Compressed && !g_compressed_matches_manifest)
+  {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+    ImGui::TextWrapped("Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
+    ImGui::PopStyleColor();
+  }
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
   ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
@@ -1304,7 +1538,10 @@ void Render()
   ImGui::Checkbox("Spin", &g_gui_spin);
 
   ImGui::SeparatorText("Train");
+  const bool can_train = (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
+  ImGui::BeginDisabled(!can_train);
   bool train_button = ImGui::Button("Train");
+  ImGui::EndDisabled();
   {
     std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
     SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
@@ -1313,35 +1550,50 @@ void Render()
       SharedContext::Access& access = oaccess.value();
       if (train_button)
       {
-        if (!fields.train_in_progress)
+        if (!fields.train_in_progress && ConfirmDiscardUnsaved())
         {
+          g_compressed_dirty = false;
           fields.train_in_progress = true;
           fields.train_complete = false;
           fields.train_steps = 0;
           fields.train_total_steps = 30000;
           g_shared_fields.store(fields, std::memory_order_seq_cst);
           g_stop_training.store(false, std::memory_order_seq_cst);
-          g_compressed_data_loaded = false;
           g_train_job = std::async(std::launch::async, PerformTrainingJob);
+          TransitionGuiState(GuiEvent::TrainStarted);
+          SetStatus("Training Started: %d total steps", fields.train_total_steps);
+        }
+        else if (fields.train_in_progress)
+        {
+          SetStatus("Training already in progress");
         }
       }
+    }
+    else if (train_button)
+    {
+      SetStatus("Context busy: Train start failed");
     }
     if (fields.train_in_progress)
     {
       ImGui::ProgressBar((float)fields.train_steps / fields.train_total_steps);
     }
-    if (fields.train_complete)
+    // Worker ended without completing (cancelled/aborted)
+    if (g_app_state == GuiState::Training && !fields.train_in_progress && !fields.train_complete)
+    {
+      TransitionGuiState(GuiEvent::TrainStopped);
+      SetStatus("Training stopped before completion");
+    }
+    if (g_app_state == GuiState::Training && fields.train_complete && oaccess.has_value())
+    {
+      SharedContext::Access& access = oaccess.value();
+      LoadCompressedDataFromContext(access);
+      SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr);
+      TransitionGuiState(GuiEvent::TrainFinished);
+    }
+    if (fields.train_complete && g_compressed_from_training)
     {
       ImGui::LabelText("PSNR", "%f", fields.eval_psnr);
       ImGui::LabelText("MSE", "%f", fields.eval_mse);
-      if (!g_compressed_data_loaded)
-      {
-        if (oaccess.has_value())
-        {
-          SharedContext::Access& access = oaccess.value();
-          LoadCompressedDataFromContext(access);
-        }
-      }
     }
   }
   ImGui::End();
@@ -1350,6 +1602,14 @@ void Render()
   ImGui::SetNextWindowSize({vp->WorkSize.x, footer_h});
   ImGui::Begin("Footer", nullptr, pinned_flags);
   ImGui::Text("openntc-gui v0.1 pre-release");
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", GetNameForGuiState(g_app_state));
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::TextUnformatted(g_status_text);
   ImGui::End();
 
   float cx = vp->WorkPos.x;
@@ -1714,7 +1974,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             g_vsync = !g_vsync;
             break;
           case VK_ESCAPE:
-            ::PostQuitMessage(0);
+            if (ConfirmDiscardUnsaved())
+              ::PostQuitMessage(0);
             break;
           case VK_RETURN:
             if (alt)
@@ -1739,6 +2000,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         Resize(width, height);
       }
       break;
+
+      case WM_CLOSE:
+        if (ConfirmDiscardUnsaved())
+          ::DestroyWindow(hWnd);
+        return 0;
 
       case WM_DESTROY:
         ::PostQuitMessage(0);
