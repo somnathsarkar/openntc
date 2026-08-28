@@ -105,6 +105,7 @@ bool g_contentloaded = false;
 bool g_compressed_data_loaded = false;
 bool g_compressed_dirty = false;
 bool g_compressed_from_training = false;
+bool g_compressed_matches_manifest = false;
 std::atomic<SharedFields> g_shared_fields;
 openntc::FileData g_fil_data;
 
@@ -1156,6 +1157,7 @@ void LoadCompressedDataFromContext(SharedContext::Access& access)
   g_compressed_data_loaded = true;
   g_compressed_from_training = true;
   g_compressed_dirty = true;
+  g_compressed_matches_manifest = true;
 }
 
 void LoadCompressedDataFromFile(const std::string& path)
@@ -1170,12 +1172,32 @@ void LoadCompressedDataFromFile(const std::string& path)
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
 
   openntc::CompressedData cdata = g_fil_data.Data();
+
+  // Note: This only checks that the dimensions of the uncompressed and compressed versions match.
+  //  Which might be fine, but it would be useful to bake a manifest path inside the .ntc for
+  //  error-checking.
+  int32_t manifest_dim = 0;
+  int32_t manifest_mips = 0;
+  {
+    auto oaccess = g_ctx.TryAcquire();
+    if (oaccess.has_value())
+    {
+      manifest_dim = oaccess.value().ctx_.GetMipDim(0);
+      manifest_mips = oaccess.value().ctx_.GetTextureData().mip_count_;
+    }
+  }
+  g_compressed_matches_manifest = (cdata.dim_ == manifest_dim) && (cdata.mip_count_ == manifest_mips);
+
   UploadCompressedData(cdata);
   g_compressed_data_loaded = true;
   g_compressed_from_training = false;
   g_compressed_dirty = false;
   TransitionGuiState(GuiEvent::CompressedLoaded);
-  SetStatus("Loaded Compressed Data: %s", path.c_str());
+  if (g_compressed_matches_manifest)
+    SetStatus("Loaded Compressed Data: %s", path.c_str());
+  else
+    SetStatus("Loaded Compressed Data: %s (Warning: Dimension mismatch! %dx%d/%d mips vs manifest %dx%d/%d mips)",
+              path.c_str(), cdata.dim_, cdata.dim_, cdata.mip_count_, manifest_dim, manifest_dim, manifest_mips);
 }
 
 static void SetPipelineStateForShader(Shader shader)
@@ -1340,6 +1362,7 @@ void PerformLoadManifest()
         if (load_res == openntc::Result::Success)
         {
           RebuildTextureResources(access);
+          g_compressed_matches_manifest = false;
           TransitionGuiState(GuiEvent::ManifestLoaded);
           SetStatus("Loaded Manifest %s", file_path.c_str());
         }
@@ -1500,6 +1523,12 @@ void Render()
   ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
   ShaderCombo("Left", &g_gui_shader_left);
   ShaderCombo("Right", &g_gui_shader_right);
+  if (g_app_state == GuiState::Compressed && !g_compressed_matches_manifest)
+  {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+    ImGui::TextWrapped("Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
+    ImGui::PopStyleColor();
+  }
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
   ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
