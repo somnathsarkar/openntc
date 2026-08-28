@@ -102,7 +102,6 @@ UINT g_descriptorsize;
 UINT g_frame_i;
 bool g_initialized;
 bool g_contentloaded = false;
-bool g_compressed_data_loaded = false;
 bool g_compressed_dirty = false;
 bool g_compressed_from_training = false;
 bool g_compressed_matches_manifest = false;
@@ -566,7 +565,6 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
     g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu);
-    g_compressed_data_loaded = false;
   }
 
   UINT64 scratch_size = 0llu;
@@ -976,6 +974,8 @@ void LoadContent()
 
 void UploadCompressedData(openntc::CompressedData& cdata)
 {
+  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
+
   {
     NTCInfo ntc_info = {};
     for (int i = 0; i < cdata.level_count_; i++)
@@ -1150,11 +1150,8 @@ void UploadCompressedData(openntc::CompressedData& cdata)
 
 void LoadCompressedDataFromContext(SharedContext::Access& access)
 {
-  if (g_compressed_data_loaded) return;
-
   openntc::CompressedData cdata = access.ctx_.GetCompressedData();
   UploadCompressedData(cdata);
-  g_compressed_data_loaded = true;
   g_compressed_from_training = true;
   g_compressed_dirty = true;
   g_compressed_matches_manifest = true;
@@ -1168,8 +1165,6 @@ void LoadCompressedDataFromFile(const std::string& path)
     SetStatus("Compressed load failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
     return;
   }
-
-  Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
 
   openntc::CompressedData cdata = g_fil_data.Data();
 
@@ -1189,7 +1184,6 @@ void LoadCompressedDataFromFile(const std::string& path)
   g_compressed_matches_manifest = (cdata.dim_ == manifest_dim) && (cdata.mip_count_ == manifest_mips);
 
   UploadCompressedData(cdata);
-  g_compressed_data_loaded = true;
   g_compressed_from_training = false;
   g_compressed_dirty = false;
   TransitionGuiState(GuiEvent::CompressedLoaded);
@@ -1565,7 +1559,6 @@ void Render()
           fields.train_total_steps = 30000;
           g_shared_fields.store(fields, std::memory_order_seq_cst);
           g_stop_training.store(false, std::memory_order_seq_cst);
-          g_compressed_data_loaded = false;
           g_train_job = std::async(std::launch::async, PerformTrainingJob);
           TransitionGuiState(GuiEvent::TrainStarted);
           SetStatus("Training Started: %d total steps", fields.train_total_steps);
@@ -1590,20 +1583,17 @@ void Render()
       TransitionGuiState(GuiEvent::TrainStopped);
       SetStatus("Training stopped before completion");
     }
-    if (fields.train_complete)
+    if (g_app_state == GuiState::Training && fields.train_complete && oaccess.has_value())
+    {
+      SharedContext::Access& access = oaccess.value();
+      LoadCompressedDataFromContext(access);
+      SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr);
+      TransitionGuiState(GuiEvent::TrainFinished);
+    }
+    if (fields.train_complete && g_compressed_from_training)
     {
       ImGui::LabelText("PSNR", "%f", fields.eval_psnr);
       ImGui::LabelText("MSE", "%f", fields.eval_mse);
-      if (!g_compressed_data_loaded)
-      {
-        if (oaccess.has_value())
-        {
-          SharedContext::Access& access = oaccess.value();
-          LoadCompressedDataFromContext(access);
-          TransitionGuiState(GuiEvent::TrainFinished);
-          SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr);
-        }
-      }
     }
   }
   ImGui::End();
