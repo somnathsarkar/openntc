@@ -273,10 +273,10 @@ Result Context::Init(const ContextInitInfo& init_info)
 
   // Profile constants
 
-  g0_bytes_per_channel_ = 2;
-  g1_bytes_per_channel_ = 4;
-  g0_delta_ = 2.0f / powf(2.0f, (float) g0_bytes_per_channel_);
-  g1_delta_ = 2.0f / powf(2.0f, (float) g1_bytes_per_channel_);
+  g0_bits_per_channel_ = 2;
+  g1_bits_per_channel_ = 4;
+  g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
+  g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
   g0_channels_ = 8;
   g1_channels_ = 12;
   
@@ -508,12 +508,12 @@ TrainProgress Context::Train(int32_t batch_count)
       {
         launch_quantize_grid(
           g0_grid_dim_[level_i] * g0_grid_dim_[level_i] * g0_channels_,
-          g0_bytes_per_channel_,
+          g0_bits_per_channel_,
           g0_delta_,
           g0_[level_i].DevicePtr());
         launch_quantize_grid(
           g1_grid_dim_[level_i] * g1_grid_dim_[level_i] * g1_channels_,
-          g1_bytes_per_channel_,
+          g1_bits_per_channel_,
           g1_delta_,
           g1_[level_i].DevicePtr());
       }
@@ -635,12 +635,12 @@ TrainProgress Context::Train(int32_t batch_count)
 
       launch_clamp_grid(
         g0_grid_dim_[feature_level] * g0_grid_dim_[feature_level] * g0_channels_,
-        g0_bytes_per_channel_,
+        g0_bits_per_channel_,
         g0_delta_,
         g0_[feature_level].DevicePtr());
       launch_clamp_grid(
         g1_grid_dim_[feature_level] * g1_grid_dim_[feature_level] * g1_channels_,
-        g1_bytes_per_channel_,
+        g1_bits_per_channel_,
         g1_delta_,
         g1_[feature_level].DevicePtr());
     }
@@ -660,15 +660,15 @@ TrainProgress Context::Train(int32_t batch_count)
     uint32_t* g0pack = nullptr;
     uint32_t* g1pack = nullptr;
 
-    cudaMalloc(&g0pack, sizeof(uint32_t) * (g0_[0].NumElems() * g0_bytes_per_channel_) / 32);
-    cudaMalloc(&g1pack, sizeof(uint32_t) * (g1_[0].NumElems() * g1_bytes_per_channel_) / 32);
+    cudaMalloc(&g0pack, sizeof(uint32_t) * (g0_[0].NumElems() * g0_bits_per_channel_) / 32);
+    cudaMalloc(&g1pack, sizeof(uint32_t) * (g1_[0].NumElems() * g1_bits_per_channel_) / 32);
 
     for (int i = 0; i < level_count_; i++)
     {
-      launch_quantize_pack(g0_[i].NumElems(), (g0_[i].NumElems() * g0_bytes_per_channel_) / 32, g0_bytes_per_channel_, g0_[i].DevicePtr(), g0pack);
-      launch_quantize_pack(g1_[i].NumElems(), (g1_[i].NumElems() * g1_bytes_per_channel_) / 32, g1_bytes_per_channel_, g1_[i].DevicePtr(), g1pack);
-      cudaMemcpy(g0_host_[i], g0pack, sizeof(uint32_t) * (g0_[i].NumElems() * g0_bytes_per_channel_) / 32, cudaMemcpyDeviceToHost);
-      cudaMemcpy(g1_host_[i], g1pack, sizeof(uint32_t) * (g1_[i].NumElems() * g1_bytes_per_channel_) / 32, cudaMemcpyDeviceToHost);
+      launch_quantize_pack(g0_[i].NumElems(), (g0_[i].NumElems() * g0_bits_per_channel_) / 32, g0_bits_per_channel_, g0_[i].DevicePtr(), g0pack);
+      launch_quantize_pack(g1_[i].NumElems(), (g1_[i].NumElems() * g1_bits_per_channel_) / 32, g1_bits_per_channel_, g1_[i].DevicePtr(), g1pack);
+      cudaMemcpy(g0_host_[i], g0pack, sizeof(uint32_t) * (g0_[i].NumElems() * g0_bits_per_channel_) / 32, cudaMemcpyDeviceToHost);
+      cudaMemcpy(g1_host_[i], g1pack, sizeof(uint32_t) * (g1_[i].NumElems() * g1_bits_per_channel_) / 32, cudaMemcpyDeviceToHost);
     }
 
     cudaFree(g0pack);
@@ -873,9 +873,9 @@ CompressedData Context::GetCompressedData()
   for (int i = 0; i < level_count_; i++)
   {
     data.g0_[i] = g0_host_[i];
-    data.g0_size_[i] = (g0_[i].NumElems() * g0_bytes_per_channel_) / 8;
+    data.g0_size_[i] = (g0_[i].NumElems() * g0_bits_per_channel_) / 8;
     data.g1_[i] = g1_host_[i];
-    data.g1_size_[i] = (g1_[i].NumElems() * g1_bytes_per_channel_) / 8;
+    data.g1_size_[i] = (g1_[i].NumElems() * g1_bits_per_channel_) / 8;
   }
   for (int i = 1; i < level_count_; i++)
   {
@@ -901,8 +901,8 @@ CompressedData Context::GetCompressedData()
     data.g0_grid_dim_[i] = g0_grid_dim_[i];
     data.g1_grid_dim_[i] = g1_grid_dim_[i];
   }
-  data.g0_bytes_per_channel_ = g0_bytes_per_channel_;
-  data.g1_bytes_per_channel_ = g1_bytes_per_channel_;
+  data.g0_bits_per_channel_ = g0_bits_per_channel_;
+  data.g1_bits_per_channel_ = g1_bits_per_channel_;
   data.g0_channels_ = g0_channels_;
   data.g1_channels_ = g1_channels_;
   data.dim_ = mip_dim_[0];
@@ -1110,8 +1110,8 @@ Result Context::LoadManifest(const std::string& filepath)
 
   for (int i = 0; i < level_count_; i++)
   {
-    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bytes_per_channel_) / 32];
-    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bytes_per_channel_) / 32];
+    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bits_per_channel_) / 32];
+    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bits_per_channel_) / 32];
   }
 
   for (int i = 0; i < mip_count_; i++)
@@ -1360,12 +1360,12 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
   j["level_count"] = data.level_count_;
   j["g0"] = {
     {"grid_dims", {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4]}},
-    {"bits", data.g0_bytes_per_channel_},
+    {"bits", data.g0_bits_per_channel_},
     {"channels", data.g0_channels_}
   };
   j["g1"] = {
     {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4]}},
-    {"bits", data.g1_bytes_per_channel_},
+    {"bits", data.g1_bits_per_channel_},
     {"channels", data.g1_channels_}
   };
   j["calibration"] = {
@@ -1499,10 +1499,10 @@ Result Context::Load(const std::string& path, FileData& o_data)
 
   bool success = true;
   success &= TryGetArray(*jg0, "grid_dims", o_data.data_.g0_grid_dim_, Context::kMaxLevels);
-  success &= TryGet(*jg0, "bits", o_data.data_.g0_bytes_per_channel_);
+  success &= TryGet(*jg0, "bits", o_data.data_.g0_bits_per_channel_);
   success &= TryGet(*jg0, "channels", o_data.data_.g0_channels_);
   success &= TryGetArray(*jg1, "grid_dims", o_data.data_.g1_grid_dim_, Context::kMaxLevels);
-  success &= TryGet(*jg1, "bits", o_data.data_.g1_bytes_per_channel_);
+  success &= TryGet(*jg1, "bits", o_data.data_.g1_bits_per_channel_);
   success &= TryGet(*jg1, "channels", o_data.data_.g1_channels_);
   success &= TryGet(j, "dim", o_data.data_.dim_);
   success &= TryGet(j, "mip_count", o_data.data_.mip_count_);

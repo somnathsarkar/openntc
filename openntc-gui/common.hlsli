@@ -28,8 +28,8 @@ struct NTC
   int4 g1_grid_dim[2];
   uint4 g0_offset[2];
   uint4 g1_offset[2];
-  int g0_bytes_per_channel;
-  int g1_bytes_per_channel;
+  int g0_bits_per_channel;
+  int g1_bits_per_channel;
   int g0_channels;
   int g1_channels;
   int dim;

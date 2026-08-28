@@ -171,8 +171,8 @@ struct NTCInfo
   int g1_grid_dim[8];
   uint32_t g0_offset[8];
   uint32_t g1_offset[8];
-  int g0_bytes_per_channel;
-  int g1_bytes_per_channel;
+  int g0_bits_per_channel;
+  int g1_bits_per_channel;
   int g0_channels;
   int g1_channels;
   int dim;
@@ -986,8 +986,8 @@ void UploadCompressedData(openntc::CompressedData& cdata)
       ntc_info.g1_offset[i] = static_cast<uint32_t>(cdata.g1_offset_[i]);
     }
 
-    ntc_info.g0_bytes_per_channel = cdata.g0_bytes_per_channel_;
-    ntc_info.g1_bytes_per_channel = cdata.g1_bytes_per_channel_;
+    ntc_info.g0_bits_per_channel = cdata.g0_bits_per_channel_;
+    ntc_info.g1_bits_per_channel = cdata.g1_bits_per_channel_;
     ntc_info.g0_channels = cdata.g0_channels_;
     ntc_info.g1_channels = cdata.g1_channels_;
     ntc_info.dim = cdata.dim_;
@@ -1627,7 +1627,7 @@ void Render()
   // Bounding sphere radius for cube with corner extent at +-1
   float bounding_sphere_radius = std::sqrtf(3.0f);
   // Some breathing room for the distance quantity
-  float distance_spacing_factor = 1.1f;
+  float distance_spacing_factor = 1.05f;
   float eye_distance = distance_spacing_factor * bounding_sphere_radius / std::sinf(fov / 2.0f);
   const XMVECTOR focus_pos = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);

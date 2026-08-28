@@ -249,8 +249,8 @@ private:
 
   bool initialized_;
   bool manifest_loaded_;
-  int g0_bytes_per_channel_;
-  int g1_bytes_per_channel_;
+  int g0_bits_per_channel_;
+  int g1_bits_per_channel_;
   float g0_delta_;
   float g1_delta_;
   int g0_channels_;
@@ -385,8 +385,8 @@ struct CompressedData
   
   int g0_grid_dim_[Context::kMaxLevels];
   int g1_grid_dim_[Context::kMaxLevels];
-  int g0_bytes_per_channel_;
-  int g1_bytes_per_channel_;
+  int g0_bits_per_channel_;
+  int g1_bits_per_channel_;
   int g0_channels_;
   int g1_channels_;
   int dim_;
