@@ -66,6 +66,17 @@ struct NTC
 #define POSENC_FEAT_BASE_UINT (G1_FEAT_BASE_UINT + G1_CHANNELS / 4)
 #define LOD_FEAT_UINT (POSENC_FEAT_BASE_UINT + POS_ENC_DIM / 4)
 
+// G0/G1 are structured as multi-channel cells, where each channel has a certain amount of bits
+//  Based on our profiles we are guaranteed to have cells aligned at certain bit boundaries,
+//  this is written with that assumption in mind. Writing arbitrary bits per channel or channels
+//  will result in unexpected behavior.
+#define CELL_PHASE_MAX(cell_bits) ((cell_bits) % 32 == 0 ? 0 : ((cell_bits) % 16 == 0 ? 16 : 24))
+#define CELL_SPAN_UINTS(cell_bits) ((CELL_PHASE_MAX(cell_bits) + (cell_bits) + 31) / 32)
+#define G0_CELL_BITS (G0_CHANNELS * G0_BITS)
+#define G1_CELL_BITS (G1_CHANNELS * G1_BITS)
+#define G0_SPAN_UINTS CELL_SPAN_UINTS(G0_CELL_BITS)
+#define G1_SPAN_UINTS CELL_SPAN_UINTS(G1_CELL_BITS)
+
 #define PI 3.14159265359
 
 float D_GGX(float NoH, float a)
@@ -134,12 +145,12 @@ int FeatureLevelForLod(int lod)
   return 4;
 }
 
-// Spread packed 4x2 bits (in the bottom 8 bits of input uint b) to 4 8-bit slots in a uint
-//  They occupy the top 2 bits of each 8-bit slot.
-uint Spread2(uint b)
+// Extract channel k: n contiguous bits from w0, w1, w2 contiguous uints at offset 'phase'.
+uint ExtractCellChannel(uint w0, uint w1, uint w2, uint phase, int k, uint n)
 {
-  return ((b & 0x03u) <<  6) | ((b & 0x0Cu) << 12) |
-         ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
+  uint bit = phase + (uint)k * n;
+  uint w = bit < 32u ? w0 : (bit < 64u ? w1 : w2);
+  return (w >> (bit & 31u)) & ((1u << n) - 1u);
 }
 
 #ifdef COOP_SUPPORT
@@ -203,25 +214,33 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     {
       int ij = i * 2 + j;
 
-      // Cell is the index of the 16-bit segment (inside the grid level)
+      // Cell is the index of the G0_CELL_BITS-wide segment (inside the grid level)
       //  containing all data for one feature grid point
       uint cell = (uint)(g0_y[i] * g0_dim + g0_x[j]);
 
-      // Word is the contents of the 32-bit segment containing the cell in the combined 
-      //  feature grid levels. 1 word contains 2 cells
-      uint word = g0.Load(g0_off + (cell / 2u));
+      uint bitpos = cell * G0_CELL_BITS;
+      uint base = g0_off + bitpos / 32u;
+      uint w0 = g0.Load(base);
+      uint w1 = (G0_SPAN_UINTS > 1) ? g0.Load(base + 1u) : 0u;
+      uint w2 = (G0_SPAN_UINTS > 2) ? g0.Load(base + 2u) : 0u;
+      uint phase = bitpos & 31u;
 
-      // c16 is the contents of the cell above
-      uint c16 = (word >> ((cell & 1u) * 16u)) & 0xFFFFu;
-      
-      // Unpack 2-bit integers to 8-bit by placing each in the upper 2-bits of a 8-bit slot
-      //  and xoring each 8-bit slot with 0x80. (Corresponds to (k << 6) - 128)
-      o_feat[G0_FEAT_BASE_UINT + ij * (G0_CHANNELS / 4) + 0] = Spread2(c16 & 0xFFu) ^ 0x80808080u;
-      o_feat[G0_FEAT_BASE_UINT + ij * (G0_CHANNELS / 4) + 1] = Spread2(c16 >> 8u) ^ 0x80808080u;
+      [unroll]
+      for (int q = 0; q < G0_CHANNELS / 4; q++)
+      {
+        uint packed = 0u;
+        [unroll]
+        for (int c = 0; c < 4; c++)
+        {
+          uint v = ExtractCellChannel(w0, w1, w2, phase, q * 4 + c, G0_BITS);
+          packed |= ((v << (8u - G0_BITS)) ^ 0x80u) << (c * 8);
+        }
+        o_feat[G0_FEAT_BASE_UINT + ij * (G0_CHANNELS / 4) + q] = packed;
+      }
     }
   }
 
-  // G1: 12ch x 4b = 48b per cell
+  // G1: G1_CHANNELS x G1_BITS bits per cell
   int2 g1_xy = int2(floor(uv_jittered * g1_dim - 0.5));
   int g1_x[2];
   g1_x[0] = max(g1_xy.x, 0);
@@ -245,27 +264,26 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     {
       float m = mult[i * 2 + j];
 
-      // Cell is the index of the 48-bit segment (inside the grid level)
+      // Cell is the index of the G1_CELL_BITS-wide segment (inside the grid level)
       //  containing all data for one feature grid point
       uint cell = (uint)(g1_y[i] * g1_dim + g1_x[j]);
 
       // Bitpos is the index of the first bit inside the grid level for this segment
-      uint bitpos = cell * 48u;
+      uint bitpos = cell * G1_CELL_BITS;
+      uint base = g1_off + bitpos / 32u;
+      uint w0 = g1.Load(base);
+      uint w1 = (G1_SPAN_UINTS > 1) ? g1.Load(base + 1u) : 0u;
+      uint w2 = (G1_SPAN_UINTS > 2) ? g1.Load(base + 2u) : 0u;
+      uint phase = bitpos & 31u;
 
-      // Word0/1 are the two 32-bit values that contain the 48-bit segment 
-      uint word0 = g1.Load(g1_off + (bitpos / 32u));
-      uint word1 = g1.Load(g1_off + (bitpos / 32u) + 1u);
-
-      // Each segment starts at 0 or 16, alternating
-      uint shift = bitpos & 31u;
+      const float half_range = (float)(1u << (G1_BITS - 1));
       [unroll]
       for (int k = 0; k < G1_CHANNELS; k++)
       {
-        uint bit = shift + (uint)k * 4u;
-        uint nib = ((bit < 32u ? word0 : word1) >> (bit & 31u)) & 0xFu;
+        uint v = ExtractCellChannel(w0, w1, w2, phase, k, G1_BITS);
 
-        // Remap 4 bit integers to [-1, 1) floats
-        g1_blend[k] += m * (((float)nib - 8.0f) / 8.0f);
+        // Remap G1_BITS-wide integers to [-1, 1) floats
+        g1_blend[k] += m * (((float)v - half_range) / half_range);
       }
     }
   }
