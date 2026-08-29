@@ -61,10 +61,18 @@ struct NTC
 #define FEATURE_DIM_PADDED ((((4 * G0_CHANNELS + G1_CHANNELS + POS_ENC_DIM + 1) + 15) / 16) * 16)
 #define FEAT_UINTS (FEATURE_DIM_PADDED / 4)
 #define HIDDEN_UINTS (HIDDEN_DIM / 4)
-#define G0_FEAT_BASE_UINT 0
-#define G1_FEAT_BASE_UINT ((4 * G0_CHANNELS) / 4)
-#define POSENC_FEAT_BASE_UINT (G1_FEAT_BASE_UINT + G1_CHANNELS / 4)
-#define LOD_FEAT_UINT (POSENC_FEAT_BASE_UINT + POS_ENC_DIM / 4)
+#define G0_FEAT_BASE_SLOT 0
+#define G1_FEAT_BASE_SLOT (4 * G0_CHANNELS)
+#define POSENC_FEAT_BASE_SLOT (G1_FEAT_BASE_SLOT + G1_CHANNELS)
+#define LOD_FEAT_SLOT (POSENC_FEAT_BASE_SLOT + POS_ENC_DIM)
+
+// Insert a value into a slot in the feature vector by OR-ing the corresponding uint
+#define PUT_FEAT_SLOT(o_feat, slot, byte_val) (o_feat[(slot) / 4] |= (byte_val) << (((slot) % 4) * 8))
+
+uint ClampS8(float f)
+{
+  return (uint)clamp(int(round(f)), -128, 127) & 0xFFu;
+}
 
 // G0/G1 are structured as multi-channel cells, where each channel has a certain amount of bits
 //  Based on our profiles we are guaranteed to have cells aligned at certain bit boundaries,
@@ -184,6 +192,10 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
   int lod = int(round(lodab_clamped));
 #endif
+  [unroll]
+  for (int z = 0; z < FEAT_UINTS; z++)
+    o_feat[z] = 0u;
+
   int feature_level = FeatureLevelForLod(lod);
 
   int fli = (feature_level / 4);
@@ -226,16 +238,11 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
       uint phase = bitpos & 31u;
 
       [unroll]
-      for (int q = 0; q < G0_CHANNELS / 4; q++)
+      for (int k = 0; k < G0_CHANNELS; k++)
       {
-        uint packed = 0u;
-        [unroll]
-        for (int c = 0; c < 4; c++)
-        {
-          uint v = ExtractCellChannel(w0, w1, w2, phase, q * 4 + c, G0_BITS);
-          packed |= ((v << (8u - G0_BITS)) ^ 0x80u) << (c * 8);
-        }
-        o_feat[G0_FEAT_BASE_UINT + ij * (G0_CHANNELS / 4) + q] = packed;
+        uint v = ExtractCellChannel(w0, w1, w2, phase, k, G0_BITS);
+        // xor with 0x80 is just subtracting 128 on a 8-bit uint without underflow
+        PUT_FEAT_SLOT(o_feat, G0_FEAT_BASE_SLOT + ij * G0_CHANNELS + k, (v << (8u - G0_BITS)) ^ 0x80u);
       }
     }
   }
@@ -289,12 +296,10 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   }
 
   [unroll]
-  for (int q = 0; q < G1_CHANNELS / 4; q++)
+  for (int k = 0; k < G1_CHANNELS; k++)
   {
     // Remap [-1, 1) floats to 8-bit signed integers
-    o_feat[G1_FEAT_BASE_UINT + q] = pack_clamp_s8(int4(round(float4(
-      g1_blend[q * 4 + 0], g1_blend[q * 4 + 1],
-      g1_blend[q * 4 + 2], g1_blend[q * 4 + 3]) * 128.0f)));
+    PUT_FEAT_SLOT(o_feat, G1_FEAT_BASE_SLOT + k, ClampS8(g1_blend[k] * 128.0f));
   }
 
   // 12 triangular waves
@@ -320,17 +325,12 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     }
   }
   [unroll]
-  for (int q = 0; q < POS_ENC_DIM / 4; q++)
+  for (int k = 0; k < POS_ENC_DIM; k++)
   {
-    o_feat[POSENC_FEAT_BASE_UINT + q] = pack_clamp_s8(int4(round(float4(
-      pe[q * 4 + 0], pe[q * 4 + 1], pe[q * 4 + 2], pe[q * 4 + 3]) * 128.0f)));
+    PUT_FEAT_SLOT(o_feat, POSENC_FEAT_BASE_SLOT + k, ClampS8(pe[k] * 128.0f));
   }
 
-  // Fill out lod feature, then zero pad up to FEATURE_DIM_PADDED
-  o_feat[LOD_FEAT_UINT] = pack_clamp_s8(int4(int(round(lod / float(NTCCBV.mip_count - 1) * 128.0f)), 0, 0, 0));
-  [unroll]
-  for (int z = LOD_FEAT_UINT + 1; z < FEAT_UINTS; z++)
-    o_feat[z] = 0u;
+  PUT_FEAT_SLOT(o_feat, LOD_FEAT_SLOT, ClampS8(lod / float(NTCCBV.mip_count - 1) * 128.0f));
 }
 
 #ifdef COOP_SUPPORT
