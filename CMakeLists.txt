@@ -76,14 +76,14 @@ set(DXC_PREVIEW C:/Dev/dxc_preview/bin/x64/dxc.exe)
 set(SHADER_DIR ${CMAKE_SOURCE_DIR}/openntc-gui)
 
 set(SHADER_OUTPUTS "")
-function(add_hlsl COMPILER SRC_BASE PROFILE_VS PROFILE_PS)
+function(add_hlsl_variant COMPILER SRC_BASE OUT_BASE PROFILE_VS PROFILE_PS)
   foreach(stage vs ps)
     if(stage STREQUAL "vs")
       set(profile ${PROFILE_VS})
     else()
       set(profile ${PROFILE_PS})
     endif()
-    set(out ${SHADER_DIR}/${SRC_BASE}_${stage}.cso)
+    set(out ${SHADER_DIR}/${OUT_BASE}_${stage}.cso)
     add_custom_command(
       OUTPUT ${out}
       COMMAND ${COMPILER} -T ${profile} -E ${stage}_main ${ARGN}
@@ -98,13 +98,21 @@ function(add_hlsl COMPILER SRC_BASE PROFILE_VS PROFILE_PS)
   set(SHADER_OUTPUTS ${SHADER_OUTPUTS} PARENT_SCOPE)
 endfunction()
 
+function(add_hlsl COMPILER SRC_BASE PROFILE_VS PROFILE_PS)
+  add_hlsl_variant(${COMPILER} ${SRC_BASE} ${SRC_BASE} ${PROFILE_VS} ${PROFILE_PS} ${ARGN})
+  set(SHADER_OUTPUTS ${SHADER_OUTPUTS} PARENT_SCOPE)
+endfunction()
+
 add_hlsl(${DXC} flat vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl(${DXC} ggx vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl(${DXC} cubemap vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl(${DXC} taa vs_6_6 ps_6_6 -D BPP_0_2)
+
 add_hlsl(${DXC} pbr_ntc vs_6_6 ps_6_6 -D BPP_0_2)
+add_hlsl_variant(${DXC} pbr_ntc pbr_ntc_bpp05 vs_6_6 ps_6_6 -D BPP_0_5)
 if(OPENNTC_COOP)
   add_hlsl(${DXC_PREVIEW} pbr_ntc_coop vs_6_10 ps_6_10 -I C:/Dev/dxc_preview/inc/hlsl -D BPP_0_2)
+  add_hlsl_variant(${DXC_PREVIEW} pbr_ntc_coop pbr_ntc_coop_bpp05 vs_6_10 ps_6_10 -I C:/Dev/dxc_preview/inc/hlsl -D BPP_0_5)
 endif()
 
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
