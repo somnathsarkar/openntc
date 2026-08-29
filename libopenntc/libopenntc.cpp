@@ -269,16 +269,27 @@ static int RoundUpToNearestK(int n, int k)
 
 Result Context::Init(const ContextInitInfo& init_info)
 {
-  assert(init_info.profile == Profile::Bpp_0_2);
-
   // Profile constants
 
-  g0_bits_per_channel_ = 2;
-  g1_bits_per_channel_ = 4;
+  switch (init_info.profile)
+  {
+  case Profile::Bpp_0_2:
+    g0_bits_per_channel_ = 2;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 8;
+    g1_channels_ = 12;
+    break;
+  case Profile::Bpp_0_5:
+    g0_bits_per_channel_ = 4;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 12;
+    g1_channels_ = 20;
+    break;
+  default:
+    assert(false);
+  }
   g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
-  g0_channels_ = 8;
-  g1_channels_ = 12;
   
   feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   feature_dim_padded_ = RoundUpToNearestK(feature_dim_, 16);

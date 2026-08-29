@@ -9,6 +9,7 @@ namespace openntc
 enum class Profile
 {
   Bpp_0_2,
+  Bpp_0_5,
 };
 
 struct ContextInitInfo

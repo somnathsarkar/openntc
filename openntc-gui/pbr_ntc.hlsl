@@ -45,8 +45,8 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 {
   VertexShaderOutput v_out;
 
-  uint feat[64 / 4];
-  float Woutx[12];
+  uint feat[FEAT_UINTS];
+  float Woutx[OUT_DIM_PADDED];
   GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv, v_in.pos.xy, feat);
   PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);
   float displacement = (Woutx[4] - 0.5) * LightingParamsCBV.displacement_scale;
@@ -102,8 +102,8 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Samples
 
-  uint feat[64 / 4];
-  float Woutx[12];
+  uint feat[FEAT_UINTS];
+  float Woutx[OUT_DIM_PADDED];
   GetFeaturesPacked(g0, g1, NTCCBV, UnjitterUv(p_in.uv, LightingParamsCBV.jitter_px), p_in.pos.xy, feat);
   PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);  
 
