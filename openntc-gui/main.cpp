@@ -82,9 +82,12 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_flat;
 ComPtr<ID3D12RootSignature> g_rootsignature_flat;
 ComPtr<ID3D12PipelineState> g_pipelinestate_ggx;
 ComPtr<ID3D12RootSignature> g_rootsignature_ggx;
-ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc;
+constexpr int32_t g_kProfileCount = static_cast<int32_t>(openntc::Profile::Count);
+const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5" };
+openntc::Profile g_profile = openntc::Profile::Bpp_0_2;
+ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
-ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop;
+ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
@@ -854,14 +857,25 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
     
-    GraphicsPipelineBuilder gpb;
-    gpb.RootSignature(g_rootsignature_pbr_ntc.Get())
-        .Input(input_layout, _countof(input_layout))
-        .VS(L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso")
-        .DepthEnable(true)
-        .CullMode(D3D12_CULL_MODE_BACK);
-    g_pipelinestate_pbr_ntc = gpb.Build(g_device.Get());
+    const wchar_t* vs_paths[g_kProfileCount] = {
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso",
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_bpp05_vs.cso",
+    };
+    const wchar_t* ps_paths[g_kProfileCount] = {
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso",
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_bpp05_ps.cso",
+    };
+    for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
+    {
+      GraphicsPipelineBuilder gpb;
+      gpb.RootSignature(g_rootsignature_pbr_ntc.Get())
+          .Input(input_layout, _countof(input_layout))
+          .VS(vs_paths[profile_i])
+          .PS(ps_paths[profile_i])
+          .DepthEnable(true)
+          .CullMode(D3D12_CULL_MODE_BACK);
+      g_pipelinestate_pbr_ntc[profile_i] = gpb.Build(g_device.Get());
+    }
   }
 
   // PBR NTC COOP
@@ -890,14 +904,25 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
-    GraphicsPipelineBuilder gpb;
-    gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
-        .Input(input_layout, _countof(input_layout))
-        .VS(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso")
-        .DepthEnable(true)
-        .CullMode(D3D12_CULL_MODE_BACK);
-    g_pipelinestate_pbr_ntc_coop = gpb.Build(g_device.Get());
+    const wchar_t* vs_paths[g_kProfileCount] = {
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso",
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_bpp05_vs.cso",
+    };
+    const wchar_t* ps_paths[g_kProfileCount] = {
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso",
+      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_bpp05_ps.cso",
+    };
+    for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
+    {
+      GraphicsPipelineBuilder gpb;
+      gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
+          .Input(input_layout, _countof(input_layout))
+          .VS(vs_paths[profile_i])
+          .PS(ps_paths[profile_i])
+          .DepthEnable(true)
+          .CullMode(D3D12_CULL_MODE_BACK);
+      g_pipelinestate_pbr_ntc_coop[profile_i] = gpb.Build(g_device.Get());
+    }
   }
 
   // Cubemap
@@ -1155,6 +1180,7 @@ void LoadCompressedDataFromContext(SharedContext::Access& access)
   g_compressed_from_training = true;
   g_compressed_dirty = true;
   g_compressed_matches_manifest = true;
+  g_profile = cdata.profile_;
 }
 
 void LoadCompressedDataFromFile(const std::string& path)
@@ -1167,6 +1193,7 @@ void LoadCompressedDataFromFile(const std::string& path)
   }
 
   openntc::CompressedData cdata = g_fil_data.Data();
+  openntc::Profile file_profile = cdata.profile_;
 
   // Note: This only checks that the dimensions of the uncompressed and compressed versions match.
   //  Which might be fine, but it would be useful to bake a manifest path inside the .ntc for
@@ -1186,8 +1213,13 @@ void LoadCompressedDataFromFile(const std::string& path)
   UploadCompressedData(cdata);
   g_compressed_from_training = false;
   g_compressed_dirty = false;
+  const bool switched_profile = (file_profile != g_profile);
+  g_profile = file_profile;
   TransitionGuiState(GuiEvent::CompressedLoaded);
-  if (g_compressed_matches_manifest)
+  if (switched_profile)
+    SetStatus("Loaded Compressed Data: %s (switched to profile %s)",
+              path.c_str(), g_map_profile_to_name[static_cast<int32_t>(g_profile)]);
+  else if (g_compressed_matches_manifest)
     SetStatus("Loaded Compressed Data: %s", path.c_str());
   else
     SetStatus("Loaded Compressed Data: %s (Warning: Dimension mismatch! %dx%d/%d mips vs manifest %dx%d/%d mips)",
@@ -1208,12 +1240,12 @@ static void SetPipelineStateForShader(Shader shader)
   }
   else if (shader == Shader::PBR_NTC)
   {
-    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc.Get());
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc[static_cast<int32_t>(g_profile)].Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
   }
   else if (shader == Shader::PBR_NTC_COOP)
   {
-    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop.Get());
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr_ntc_coop[static_cast<int32_t>(g_profile)].Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
   }
 }
@@ -1606,6 +1638,10 @@ void Render()
   ImGui::TextDisabled("|");
   ImGui::SameLine();
   ImGui::TextDisabled("%s", GetNameForGuiState(g_app_state));
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", g_map_profile_to_name[static_cast<int32_t>(g_profile)]);
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
