@@ -15,29 +15,6 @@ set_target_properties(libopenntc PROPERTIES CUDA_ARCHITECTURES native)
 target_include_directories(libopenntc PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(libopenntc PRIVATE CUDA::cublas CUDA::cudart)
 
-add_executable(openntc openntc/openntc.cpp openntc/ntc_kernel.cu openntc/dataloader.cpp)
-set_target_properties(openntc PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
-set_target_properties(openntc PROPERTIES CUDA_ARCHITECTURES native)
-target_include_directories(openntc PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(openntc PRIVATE CUDA::cublas)
-
-add_executable(test_backward openntc/test_backward.cpp openntc/ntc_kernel.cu)
-set_target_properties(test_backward PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
-set_target_properties(test_backward PROPERTIES CUDA_ARCHITECTURES native)
-target_include_directories(test_backward PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(test_backward PRIVATE CUDA::cublas)
-
-add_executable(test_forward openntc/test_forward.cpp openntc/ntc_kernel.cu)
-set_target_properties(test_forward PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
-set_target_properties(test_forward PROPERTIES CUDA_ARCHITECTURES native)
-target_include_directories(test_forward PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(test_forward PRIVATE CUDA::cublas)
-
-add_executable(test_dataloader openntc/test_dataloader.cpp openntc/dataloader.cpp)
-set_target_properties(test_dataloader PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
-target_include_directories(test_dataloader PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(test_dataloader PRIVATE CUDA::cudart)
-
 add_library(imgui STATIC
   C:/Dev/imgui/imgui.cpp
   C:/Dev/imgui/imgui_draw.cpp
@@ -56,7 +33,7 @@ option(OPENNTC_COOP "Coop Vector Support" ON)
 if(OPENNTC_COOP)
   set(AGILITY_DIR C:/Dev/microsoft.direct3d.d3d12.1.721.3-preview/build/native)
 else()
-  set(AGILITY_DIR C:/Dev/DirectXAgilitySDK/build/native)     # retail 1.619
+  set(AGILITY_DIR C:/Dev/DirectXAgilitySDK/build/native)
 endif()
 target_include_directories(openntc-gui BEFORE PRIVATE ${AGILITY_DIR}/include)
 target_compile_definitions(openntc-gui PRIVATE OPENNTC_COOP=$<BOOL:${OPENNTC_COOP}>)
