@@ -11,7 +11,7 @@ using namespace Microsoft::WRL;
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 using namespace DirectX;
-#include <DirectXTex/DirectXTex.h>
+#include <DirectXTex.h>
 
 #include <algorithm>
 #include <chrono>
@@ -1007,8 +1007,7 @@ void LoadContent()
     }
   }
 
-  // PBR NTC COOP
-
+#if OPENNTC_COOP
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
       {"SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
@@ -1063,6 +1062,7 @@ void LoadContent()
       g_pipelinestate_pbr_ntc_coop[profile_i] = gpb.Build(g_device.Get());
     }
   }
+#endif
 
   // Cubemap
 
@@ -2485,6 +2485,7 @@ ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
   }
 #endif
 
+#if OPENNTC_COOP
   D3D12_FEATURE_DATA_LINEAR_ALGEBRA_SUPPORT la = {};
   VERIFY(device2->CheckFeatureSupport(D3D12_FEATURE_LINEAR_ALGEBRA_SUPPORT, &la, sizeof(la)));
   assert(la.LinearAlgebraTier != D3D12_LINEAR_ALGEBRA_TIER_NOT_SUPPORTED);
@@ -2504,6 +2505,7 @@ ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
   bool native_support = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_SUPPORTED;
   bool emu_input = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_EMULATED_INPUTS;
   bool emu_output = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_EMULATED_OUTPUTS;
+#endif
 
   return device2;
 }
