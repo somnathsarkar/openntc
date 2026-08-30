@@ -1,9 +1,6 @@
 #include <random>
 #include <atomic>
 
-#include <cublas_v2.h>
-#include <curand_kernel.h>
-
 namespace openntc
 {
 enum class Profile
@@ -284,8 +281,8 @@ private:
   TrainPhase train_phase_;
 
   std::mt19937 gen_;
-  cublasHandle_t handle_;
-  curandState* rstate_;
+  void* handle_;
+  void* rstate_;
 
   // Feature grids
 

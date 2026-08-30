@@ -1,6 +1,3 @@
-#include <cuda_runtime.h>
-#include <curand_kernel.h>
-
 void launch_forward_hardgelu(int n, float* input, float* o_output);
 void launch_backward_hardgelu(
   int n,
@@ -56,8 +53,8 @@ void launch_update_adam(
   float* m,
   float* v,
   float* params);
-void launch_initialize_rand(int n, curandState* o_rstate);
-void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise);
+void launch_initialize_rand(int n, void* o_rstate);
+void launch_generate_noise(int n, int rand_n, float delta, void* rstate, float* o_noise);
 void launch_quantize_grid(int n, int num_bytes, float delta, float* g);
 void launch_clamp_grid(int n, int num_bytes, float delta, float* g);
 void launch_quantize_pack(int n, int n_bytes, int bits, float* input, uint32_t* output);

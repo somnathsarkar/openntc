@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstdio>
 
+#include <cuda_runtime.h>
+#include <curand_kernel.h>
 #include <cuda_fp16.h>
 
 #define OUT_DIM 9
@@ -410,10 +412,10 @@ __global__ void initialize_rand(
   curand_init(123, 0, tid, &o_rstate[tid]);
 }
 
-void launch_initialize_rand(int n, curandState* o_rstate)
+void launch_initialize_rand(int n, void* o_rstate)
 {
   int block_count = (n + 1023) / 1024;
-  initialize_rand<<<block_count, 1024>>>(n, o_rstate);
+  initialize_rand<<<block_count, 1024>>>(n, (curandState*)o_rstate);
 }
 
 __global__ void generate_noise(
@@ -431,10 +433,10 @@ __global__ void generate_noise(
   rstate[tid] = rs;
 }
 
-void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise)
+void launch_generate_noise(int n, int rand_n, float delta, void* rstate, float* o_noise)
 {
   int block_count = (rand_n + 1023) / 1024;
-  generate_noise<<<block_count, 1024>>>(n, delta, rstate, o_noise);
+  generate_noise<<<block_count, 1024>>>(n, delta, (curandState*)rstate, o_noise);
 }
 
 __global__ void quantize_grid(

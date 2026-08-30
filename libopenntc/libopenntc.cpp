@@ -4,6 +4,8 @@
 #include <bit>
 #include <fstream>
 
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
 #include <curand_kernel.h>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -337,8 +339,10 @@ Result Context::Init(const ContextInitInfo& init_info)
 
   grid_draws_.Init(2 * max_batch_);
 
-  cublasCreate(&handle_);
-  cublasSetMathMode(handle_, CUBLAS_TF32_TENSOR_OP_MATH);
+  cublasHandle_t cublas_handle = nullptr;
+  cublasCreate(&cublas_handle);
+  cublasSetMathMode(cublas_handle, CUBLAS_TF32_TENSOR_OP_MATH);
+  handle_ = cublas_handle;
 
   rand_dim_ = 1024 * 1024;
   cudaMalloc(&rstate_, sizeof(curandState) * rand_dim_);
@@ -357,26 +361,26 @@ Result Context::Init(const ContextInitInfo& init_info)
 
 // C = A * B, where A, B, C are row-major. C is n x m, A is n x k, B is k x m
 
-static void matmulAB(cublasHandle_t handle, int n, int m, int k, float* A, float* B, float* C)
+static void matmulAB(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, m, A, k, &sgemm_beta, C, m);
+  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, m, A, k, &sgemm_beta, C, m);
 }
 
 // C = A^T * B, where A, B, C are row-major. C is n x m, A is k x n, B is k x m
 
-static void matmulATB(cublasHandle_t handle, int n, int m, int k, float* A, float* B, float* C)
+static void matmulATB(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, m, n, k, &sgemm_alpha, B, m, A, n, &sgemm_beta, C, m);
+  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_T, m, n, k, &sgemm_alpha, B, m, A, n, &sgemm_beta, C, m);
 }
 
 // C = A * B^T, where A, B, C are row-major. C is n x m, A is n x k, B is m x k
 
-static void matmulABT(cublasHandle_t handle, int n, int m, int k, float* A, float* B, float* C)
+static void matmulABT(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, k, A, k, &sgemm_beta, C, m);
+  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, k, A, k, &sgemm_beta, C, m);
 }
 
 static float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
@@ -578,8 +582,8 @@ TrainProgress Context::Train(int32_t batch_count)
 
     float host_neg1 = -1.0f;
     float total_squared_error = 0.0f;
-    cublasSaxpy(handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
-    cublasSdot(handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
+    cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
+    cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
     float mse = total_squared_error / ((float) out_dim_ * batch_dim);
     launch_scalar_product(
       out_dim_ * batch_dim,
@@ -934,8 +938,8 @@ EvalResults Context::Eval()
 
       float host_neg1 = -1.0f;
       float total_squared_error = 0.0f;
-      cublasSaxpy(handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
-      cublasSdot(handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
+      cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
+      cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
       mse_numer += total_squared_error;
       mse_denom += batch_dim * out_dim_;
     }
@@ -1411,7 +1415,7 @@ void Context::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
   
-  cublasDestroy(handle_);
+  cublasDestroy((cublasHandle_t)handle_);
   cudaFree(rstate_);
   rstate_ = nullptr;
 
