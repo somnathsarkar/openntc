@@ -16,10 +16,10 @@ constexpr int32_t g_kModelCount = static_cast<int32_t>(ModelType::kCount);
 
 struct VertexDescriptor
 {
-  DirectX::XMFLOAT3 pos;
-  DirectX::XMFLOAT3 normal;
-  DirectX::XMFLOAT3 tangent;
-  DirectX::XMFLOAT2 uv;
+  DirectX::XMFLOAT3 pos_;
+  DirectX::XMFLOAT3 normal_;
+  DirectX::XMFLOAT3 tangent_;
+  DirectX::XMFLOAT2 uv_;
 };
 
 class Model

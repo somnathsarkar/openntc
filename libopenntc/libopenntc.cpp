@@ -275,8 +275,8 @@ Result Context::Init(const ContextInitInfo& init_info)
 
   // Profile constants
 
-  profile_ = init_info.profile;
-  switch (init_info.profile)
+  profile_ = init_info.profile_;
+  switch (init_info.profile_)
   {
   case Profile::Bpp_0_2:
     g0_bits_per_channel_ = 2;
@@ -772,8 +772,8 @@ TrainProgress Context::Train(int32_t batch_count)
       memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, feature_dim_ * sizeof(float));
     }
     QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_host_, W0_scale_);
-    QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1, W1_host_, W1_scale_);
-    QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2, Wout_host_, Wout_scale_);
+    QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1_, W1_host_, W1_scale_);
+    QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2_, Wout_host_, Wout_scale_);
     for (int i = out_dim_; i < out_dim_padded_; i++) Wout_scale_[i] = 0.0f;
 
     delete[] W0_unpack;
@@ -861,10 +861,10 @@ CalibrationData Context::Calibrate(float headroom)
   cudaFree(dmax);
 
   CalibrationData cal = {};
-  cal.max_abs_a1 = hmax[0];
-  cal.max_abs_a2 = hmax[1];
-  cal.s_a1 = headroom * hmax[0] / 127.0f;
-  cal.s_a2 = headroom * hmax[1] / 127.0f;
+  cal.max_abs_a1_ = hmax[0];
+  cal.max_abs_a2_ = hmax[1];
+  cal.s_a1_ = headroom * hmax[0] / 127.0f;
+  cal.s_a2_ = headroom * hmax[1] / 127.0f;
   return cal;
 }
 
@@ -942,8 +942,8 @@ EvalResults Context::Eval()
   }
 
   EvalResults results = {};
-  results.mse = mse_numer / mse_denom;
-  results.psnr = -10.0 * std::log10(results.mse);
+  results.mse_ = mse_numer / mse_denom;
+  results.psnr_ = -10.0 * std::log10(results.mse_);
   return results;
 }
 
@@ -1500,10 +1500,10 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
     {"channels", data.g1_channels_}
   };
   j["calibration"] = {
-    {"max_abs_a1", data.caldata_.max_abs_a1},
-    {"max_abs_a2", data.caldata_.max_abs_a2},
-    {"s_a1", data.caldata_.s_a1},
-    {"s_a2", data.caldata_.s_a2}
+    {"max_abs_a1", data.caldata_.max_abs_a1_},
+    {"max_abs_a2", data.caldata_.max_abs_a2_},
+    {"s_a1", data.caldata_.s_a1_},
+    {"s_a2", data.caldata_.s_a2_}
   };
 
   uint64_t off = 0;
@@ -1642,10 +1642,10 @@ Result Context::Load(const std::string& path, FileData& o_data)
   success &= TryGet(j, "dim", o_data.data_.dim_);
   success &= TryGet(j, "mip_count", o_data.data_.mip_count_);
   success &= TryGet(j, "level_count", o_data.data_.level_count_);
-  success &= TryGet(*jcal, "max_abs_a1", o_data.data_.caldata_.max_abs_a1);
-  success &= TryGet(*jcal, "s_a1", o_data.data_.caldata_.s_a1);
-  success &= TryGet(*jcal, "max_abs_a2", o_data.data_.caldata_.max_abs_a2);
-  success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2);
+  success &= TryGet(*jcal, "max_abs_a1", o_data.data_.caldata_.max_abs_a1_);
+  success &= TryGet(*jcal, "s_a1", o_data.data_.caldata_.s_a1_);
+  success &= TryGet(*jcal, "max_abs_a2", o_data.data_.caldata_.max_abs_a2_);
+  success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2_);
   if (!success)
     return Result::InvalidFile;
 

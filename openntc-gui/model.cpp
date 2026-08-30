@@ -35,11 +35,11 @@ uint32_t* Model::GetIndices()
 
 struct CubeFace
 {
-  XMFLOAT3 origin;   // position at uv=(0, 0)
-  XMFLOAT3 axis_u;   // axis along which u increases
-  XMFLOAT3 axis_v;   // axis along which v increases
-  XMFLOAT3 normal;
-  XMFLOAT3 tangent;
+  XMFLOAT3 origin_;   // position at uv=(0, 0)
+  XMFLOAT3 axis_u_;   // axis along which u increases
+  XMFLOAT3 axis_v_;   // axis along which v increases
+  XMFLOAT3 normal_;
+  XMFLOAT3 tangent_;
 };
 
 static const CubeFace kCubeFaces[6] = {
@@ -73,11 +73,11 @@ static void BuildPatchGrid(
     {
       float tu = static_cast<float>(i) / static_cast<float>(n);
       VertexDescriptor& v = vertices[vert_i++];
-      XMVECTOR vpos = XMLoadFloat3(&face.origin) + tu * XMLoadFloat3(&face.axis_u) + tv * XMLoadFloat3(&face.axis_v);
-      XMStoreFloat3(&v.pos, vpos);
-      v.normal = face.normal;
-      v.tangent = face.tangent;
-      v.uv = XMFLOAT2(tu, tv);
+      XMVECTOR vpos = XMLoadFloat3(&face.origin_) + tu * XMLoadFloat3(&face.axis_u_) + tv * XMLoadFloat3(&face.axis_v_);
+      XMStoreFloat3(&v.pos_, vpos);
+      v.normal_ = face.normal_;
+      v.tangent_ = face.tangent_;
+      v.uv_ = XMFLOAT2(tu, tv);
     }
   }
   for (uint32_t j = 0; j < n; j++)
@@ -150,10 +150,10 @@ void Model::InitSphere(uint32_t detail, Model& o_model)
       float tu = static_cast<float>(i) / static_cast<float>(lon);
       float theta = -2.0f * XM_PI * tu;
       VertexDescriptor& v = o_model.vertices_[vert_i++];
-      v.pos = XMFLOAT3(s * sinf(theta), y, s * cosf(theta));
-      v.normal = v.pos;
-      v.tangent = XMFLOAT3(-cosf(theta), 0.0f, sinf(theta));
-      v.uv = XMFLOAT2(tu, tv);
+      v.pos_ = XMFLOAT3(s * sinf(theta), y, s * cosf(theta));
+      v.normal_ = v.pos_;
+      v.tangent_ = XMFLOAT3(-cosf(theta), 0.0f, sinf(theta));
+      v.uv_ = XMFLOAT2(tu, tv);
     }
   }
 

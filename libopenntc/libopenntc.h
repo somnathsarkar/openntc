@@ -16,7 +16,7 @@ enum class Profile
 
 struct ContextInitInfo
 {
-  Profile profile;
+  Profile profile_;
 };
 
 enum class Result
@@ -114,16 +114,16 @@ public:
 
 struct EvalResults
 {
-  double mse;
-  double psnr;
+  double mse_;
+  double psnr_;
 };
 
 struct CalibrationData
 {
-  float max_abs_a1;
-  float max_abs_a2;
-  float s_a1;
-  float s_a2;
+  float max_abs_a1_;
+  float max_abs_a2_;
+  float s_a1_;
+  float s_a2_;
 };
 
 enum TrainPhase : int32_t

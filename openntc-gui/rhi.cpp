@@ -42,8 +42,8 @@ DescriptorHandle DescriptorAllocator::Allocate()
   assert(handle_i_ < size_);
 
   DescriptorHandle ret = {};
-  ret.cpu = { cpu_start_.ptr + handle_increment_ * handle_i_ };
-  ret.gpu = { gpu_start_.ptr + handle_increment_ * handle_i_ };
+  ret.cpu_ = { cpu_start_.ptr + handle_increment_ * handle_i_ };
+  ret.gpu_ = { gpu_start_.ptr + handle_increment_ * handle_i_ };
   handle_i_++;
 
   return ret;
@@ -54,8 +54,8 @@ DescriptorHandle DescriptorAllocator::At(uint32_t handle_i) const
   assert(handle_i < handle_i_);
 
   DescriptorHandle ret = {};
-  ret.cpu = { cpu_start_.ptr + handle_increment_ * handle_i };
-  ret.gpu = { gpu_start_.ptr + handle_increment_ * handle_i };
+  ret.cpu_ = { cpu_start_.ptr + handle_increment_ * handle_i };
+  ret.gpu_ = { gpu_start_.ptr + handle_increment_ * handle_i };
 
   return ret;
 }

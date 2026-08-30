@@ -4,12 +4,12 @@
 
 struct SharedFields
 {
-  bool train_in_progress;
-  bool train_complete;
-  int train_steps;
-  int train_total_steps;
-  double eval_psnr;
-  double eval_mse;
+  bool train_in_progress_;
+  bool train_complete_;
+  int train_steps_;
+  int train_total_steps_;
+  double eval_psnr_;
+  double eval_mse_;
 };
 
 class SharedContext

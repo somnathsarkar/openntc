@@ -4,13 +4,13 @@
 
 struct LightingParams
 {
-  float exposure;
-  float displacement_scale;
-  float normal_scale;
-  float pad0;
-  float2 jitter_px;
-  float2 pad1;
-  float3 diffuse_sh[9];
+  float exposure_;
+  float displacement_scale_;
+  float normal_scale_;
+  float pad0_;
+  float2 jitter_px_;
+  float2 pad1_;
+  float3 diffuse_sh_[9];
 };
 
 
@@ -24,18 +24,18 @@ float2 UnjitterUv(float2 uv, float2 jitter_px)
 
 struct NTC
 {
-  int4 g0_grid_dim[2];
-  int4 g1_grid_dim[2];
-  uint4 g0_offset[2];
-  uint4 g1_offset[2];
-  int g0_bits_per_channel;
-  int g1_bits_per_channel;
-  int g0_channels;
-  int g1_channels;
-  int dim;
-  int mip_count;
-  float rcp_s_a1;
-  float rcp_s_a2;
+  int4 g0_grid_dim_[2];
+  int4 g1_grid_dim_[2];
+  uint4 g0_offset_[2];
+  uint4 g1_offset_[2];
+  int g0_bits_per_channel_;
+  int g1_bits_per_channel_;
+  int g0_channels_;
+  int g1_channels_;
+  int dim_;
+  int mip_count_;
+  float rcp_s_a1_;
+  float rcp_s_a2_;
 };
 
 #if defined(BPP_0_2)
@@ -119,15 +119,15 @@ float SpecularOcclusion(float NoV, float ao, float perceptual_roughness)
 
 float3 IrradianceSh(LightingParams LightingParamsCBV, float3 n)
 {
-  return LightingParamsCBV.diffuse_sh[0] +
-          LightingParamsCBV.diffuse_sh[1] * n.y +
-          LightingParamsCBV.diffuse_sh[2] * n.z +
-          LightingParamsCBV.diffuse_sh[3] * n.x +
-          LightingParamsCBV.diffuse_sh[4] * (n.y * n.x) +
-          LightingParamsCBV.diffuse_sh[5] * (n.y * n.z) +
-          LightingParamsCBV.diffuse_sh[6] * (3.0 * n.z * n.z - 1.0) +
-          LightingParamsCBV.diffuse_sh[7] * (n.z * n.x) +
-          LightingParamsCBV.diffuse_sh[8] * (n.x * n.x - n.y * n.y);
+  return LightingParamsCBV.diffuse_sh_[0] +
+          LightingParamsCBV.diffuse_sh_[1] * n.y +
+          LightingParamsCBV.diffuse_sh_[2] * n.z +
+          LightingParamsCBV.diffuse_sh_[3] * n.x +
+          LightingParamsCBV.diffuse_sh_[4] * (n.y * n.x) +
+          LightingParamsCBV.diffuse_sh_[5] * (n.y * n.z) +
+          LightingParamsCBV.diffuse_sh_[6] * (3.0 * n.z * n.z - 1.0) +
+          LightingParamsCBV.diffuse_sh_[7] * (n.z * n.x) +
+          LightingParamsCBV.diffuse_sh_[8] * (n.x * n.x - n.y * n.y);
 }
 
 // ACES tonemapping code based on Stephen Hill's (@self_shadow) snippet in BakingLab
@@ -181,8 +181,8 @@ void GetFeaturesPacked(
 #endif
 {
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
-  float2 dUvdX = ddx(uv) * NTCCBV.dim;
-  float2 dUvdY = ddy(uv) * NTCCBV.dim;
+  float2 dUvdX = ddx(uv) * NTCCBV.dim_;
+  float2 dUvdY = ddy(uv) * NTCCBV.dim_;
   float gUvdX = dot(dUvdX, dUvdX);
   float gUvdY = dot(dUvdY, dUvdY);
   float2 texels_along_major_axis = (gUvdX > gUvdY) ? dUvdX : dUvdY;
@@ -192,7 +192,7 @@ void GetFeaturesPacked(
   minor_axis = max(minor_axis, major_axis / max_aniso);
 
   float lodab = log2(minor_axis);
-  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count_ - 1));
   // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
   float ign0 = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
   int lod = int(lodab_clamped) + (ign0 < frac(lodab_clamped) ? 1 : 0);
@@ -200,9 +200,9 @@ void GetFeaturesPacked(
   // No stochastic filtering in vertex shader
 
   float2 texels_along_major_axis = 0.0.xx;
-  float texels_per_vertex_step = NTCCBV.dim / 200.0f;
+  float texels_per_vertex_step = NTCCBV.dim_ / 200.0f;
   float lodab = max(0.0f, log2(texels_per_vertex_step));
-  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
+  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count_ - 1));
   int lod = int(round(lodab_clamped));
 #endif
   [unroll]
@@ -213,11 +213,11 @@ void GetFeaturesPacked(
 
   int fli = (feature_level / 4);
   int flj = (feature_level % 4);
-  int g0_dim = NTCCBV.g0_grid_dim[fli][flj];
-  int g1_dim = NTCCBV.g1_grid_dim[fli][flj];
+  int g0_dim = NTCCBV.g0_grid_dim_[fli][flj];
+  int g1_dim = NTCCBV.g1_grid_dim_[fli][flj];
 
   float ign1 = frac(52.9829189 * frac(0.06711056 * (pos_screen.x + 61.0) + 0.00583715 * (pos_screen.y + 37.0)));
-  float2 uv_jittered = uv + (texels_along_major_axis / NTCCBV.dim) * (ign1 - 0.5);
+  float2 uv_jittered = uv + (texels_along_major_axis / NTCCBV.dim_) * (ign1 - 0.5);
 
   // G0: G0_CHANNELS x G0_BITS bits per cell (8ch x 2b = 16b for BPP_0_2)
   int2 g0_xy = int2(floor(uv_jittered * g0_dim - 0.5));
@@ -228,8 +228,8 @@ void GetFeaturesPacked(
   g0_y[0] = max(g0_xy.y, 0);
   g0_y[1] = min(g0_xy.y + 1, g0_dim - 1);
 
-  uint g0_off = NTCCBV.g0_offset[fli][flj] / 4;
-  uint g1_off = NTCCBV.g1_offset[fli][flj] / 4;
+  uint g0_off = NTCCBV.g0_offset_[fli][flj] / 4;
+  uint g1_off = NTCCBV.g1_offset_[fli][flj] / 4;
 
   [unroll]
   for (int i = 0; i < 2; i++)
@@ -317,7 +317,7 @@ void GetFeaturesPacked(
 
   // 12 triangular waves
   // Compare against training code, this should probably be part of a shared header
-  float2 cpos = uv_jittered * float(NTCCBV.dim >> lod);
+  float2 cpos = uv_jittered * float(NTCCBV.dim_ >> lod);
   float pe[12];
   int periods[3] = {8, 4, 2};
   [unroll]
@@ -343,7 +343,7 @@ void GetFeaturesPacked(
     PUT_FEAT_SLOT(o_feat, POSENC_FEAT_BASE_SLOT + k, ClampS8(pe[k] * 128.0f));
   }
 
-  PUT_FEAT_SLOT(o_feat, LOD_FEAT_SLOT, ClampS8(lod / float(NTCCBV.mip_count - 1) * 128.0f));
+  PUT_FEAT_SLOT(o_feat, LOD_FEAT_SLOT, ClampS8(lod / float(NTCCBV.mip_count_ - 1) * 128.0f));
 }
 
 #ifdef COOP_SUPPORT
@@ -377,7 +377,7 @@ void PerformNTCInference(
   vector<int32_t, HIDDEN_DIM> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero_hidden);
   vector<float, HIDDEN_DIM> W0_scale_coop = W0_scale.Load< vector<float, HIDDEN_DIM> >(0);
   vector<float, HIDDEN_DIM> W0x_facc = vector<float, HIDDEN_DIM>(W0x_acc) * W0_scale_coop;
-  W0x_facc = hardgelu_coop(W0x_facc) * NTCCBV.rcp_s_a1;
+  W0x_facc = hardgelu_coop(W0x_facc) * NTCCBV.rcp_s_a1_;
   vector<int32_t, HIDDEN_DIM> W0x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W0x_facc));
   [unroll]
   for (int i = 0 ; i < HIDDEN_DIM; i+=4)
@@ -389,7 +389,7 @@ void PerformNTCInference(
   vector<int32_t, HIDDEN_DIM> W1x_acc = MultiplyAdd<int32_t>(W1_coop, W0x_coop, zero_hidden);
   vector<float, HIDDEN_DIM> W1_scale_coop = W1_scale.Load< vector<float, HIDDEN_DIM> >(0);
   vector<float, HIDDEN_DIM> W1x_facc = vector<float, HIDDEN_DIM>(W1x_acc) * W1_scale_coop;
-  W1x_facc = hardgelu_coop(W1x_facc) * NTCCBV.rcp_s_a2;
+  W1x_facc = hardgelu_coop(W1x_facc) * NTCCBV.rcp_s_a2_;
   vector<int32_t, HIDDEN_DIM> W1x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W1x_facc));
   [unroll]
   for (int i = 0 ; i < HIDDEN_DIM; i+=4)
@@ -451,7 +451,7 @@ void PerformNTCInference(
       }
     }
     float4 facc = float4(acc) * W0_scale.Load<float4>(i * 4);
-    facc = hardgelu4(facc) * NTCCBV.rcp_s_a1;
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a1_;
     int4 unpacked = int4(round(facc));
     W0x[i / 4] = PackS8(unpacked);
   }
@@ -477,7 +477,7 @@ void PerformNTCInference(
       }
     }
     float4 facc = float4(acc) * W1_scale.Load<float4>(i * 4);
-    facc = hardgelu4(facc) * NTCCBV.rcp_s_a2;
+    facc = hardgelu4(facc) * NTCCBV.rcp_s_a2_;
     int4 unpacked = int4(round(facc));
     W1x[i / 4] = PackS8(unpacked);
   }

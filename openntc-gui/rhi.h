@@ -8,8 +8,8 @@
 
 struct DescriptorHandle
 {
-  D3D12_CPU_DESCRIPTOR_HANDLE cpu;
-  D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_;
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu_;
 };
 
 // Simple linear allocator for descriptor heap management

@@ -165,52 +165,52 @@ bool g_fullscreen = false;
 
 struct ModelViewProjection
 {
-  XMMATRIX model_to_world;
-  XMMATRIX world_to_view;
-  XMMATRIX view_to_proj;
+  XMMATRIX model_to_world_;
+  XMMATRIX world_to_view_;
+  XMMATRIX view_to_proj_;
 };
 
 struct NTCInfo
 {
-  int g0_grid_dim[8];
-  int g1_grid_dim[8];
-  uint32_t g0_offset[8];
-  uint32_t g1_offset[8];
-  int g0_bits_per_channel;
-  int g1_bits_per_channel;
-  int g0_channels;
-  int g1_channels;
-  int dim;
-  int mip_count;
-  float rcp_s_a1;
-  float rcp_s_a2;
+  int g0_grid_dim_[8];
+  int g1_grid_dim_[8];
+  uint32_t g0_offset_[8];
+  uint32_t g1_offset_[8];
+  int g0_bits_per_channel_;
+  int g1_bits_per_channel_;
+  int g0_channels_;
+  int g1_channels_;
+  int dim_;
+  int mip_count_;
+  float rcp_s_a1_;
+  float rcp_s_a2_;
 };
 
 struct CubemapTransforms
 {
-  XMMATRIX proj_to_view;
-  XMMATRIX view_to_world;
+  XMMATRIX proj_to_view_;
+  XMMATRIX view_to_world_;
 };
 
 struct TaaConstants
 {
-  XMMATRIX proj_to_world_unjittered;
-  XMMATRIX prev_world_to_proj_unjittered;
-  XMFLOAT3 eye;
-  float pad0;
-  XMFLOAT2 pane_origin;
-  XMFLOAT2 pane_dim;
+  XMMATRIX proj_to_world_unjittered_;
+  XMMATRIX prev_world_to_proj_unjittered_;
+  XMFLOAT3 eye_;
+  float pad0_;
+  XMFLOAT2 pane_origin_;
+  XMFLOAT2 pane_dim_;
 };
 
 struct LightingParams
 {
-  float exposure;
-  float displacement_scale;
-  float normal_scale;
-  float pad0;
-  XMFLOAT2 jitter_px;
-  XMFLOAT2 pad1;
-  XMFLOAT3A diffuse_sh[9];
+  float exposure_;
+  float displacement_scale_;
+  float normal_scale_;
+  float pad0_;
+  XMFLOAT2 jitter_px_;
+  XMFLOAT2 pad1_;
+  XMFLOAT3A diffuse_sh_[9];
 };
 
 D3D12_VERTEX_BUFFER_VIEW g_vbv[g_kModelCount];
@@ -309,8 +309,8 @@ void PerformTrainingJob()
   train_info.grids_per_batch_ = 1;
   train_info.batch_count_ = 30000;
   SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
-  fields.train_complete = false;
-  fields.train_in_progress = true;
+  fields.train_complete_ = false;
+  fields.train_in_progress_ = true;
   g_shared_fields.store(fields, std::memory_order_seq_cst);
   {
     SharedContext::Access access = g_ctx.Acquire();
@@ -325,17 +325,17 @@ void PerformTrainingJob()
     if (tprogress.phase_ == openntc::TrainPhase::TrainComplete)
     {
       openntc::EvalResults eval_results = access.ctx_.Eval();
-      fields.eval_psnr = eval_results.psnr;
-      fields.eval_mse = eval_results.mse;
-      fields.train_in_progress = false;
-      fields.train_complete = true;
+      fields.eval_psnr_ = eval_results.psnr_;
+      fields.eval_mse_ = eval_results.mse_;
+      fields.train_in_progress_ = false;
+      fields.train_complete_ = true;
       g_shared_fields.store(fields);
       break;
     }
     else
     {
-      fields.train_steps = tprogress.batches_complete_;
-      fields.train_total_steps = tprogress.total_batches_;
+      fields.train_steps_ = tprogress.batches_complete_;
+      fields.train_total_steps_ = tprogress.total_batches_;
       g_shared_fields.store(fields);
     }
   }
@@ -400,8 +400,8 @@ void ImguiDescriptorSrvAlloc(
   UINT slot = g_imgui_available_srv_slots.back();
   g_imgui_available_srv_slots.pop_back();
   DescriptorHandle dhandle = g_dalloc_srv.At(slot);
-  *cpu_handle = dhandle.cpu;
-  *gpu_handle = dhandle.gpu;
+  *cpu_handle = dhandle.cpu_;
+  *gpu_handle = dhandle.gpu_;
 }
 
 void ImguiDescriptorSrvFree(
@@ -473,8 +473,8 @@ void CreateTaaResources()
     DXGI_FORMAT_R8G8B8A8_UNORM,
     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
     g_clear_color);
-  g_device->CreateRenderTargetView(g_tex_frame.Get(), nullptr, g_dhandle_frame_rtv.cpu);
-  g_device->CreateShaderResourceView(g_tex_frame.Get(), nullptr, g_dhandle_frame_srv.cpu);
+  g_device->CreateRenderTargetView(g_tex_frame.Get(), nullptr, g_dhandle_frame_rtv.cpu_);
+  g_device->CreateShaderResourceView(g_tex_frame.Get(), nullptr, g_dhandle_frame_srv.cpu_);
   g_frame_state = D3D12_RESOURCE_STATE_COMMON;
 
   for (int i = 0; i < 2; i++)
@@ -488,8 +488,8 @@ void CreateTaaResources()
       1,
       DXGI_FORMAT_R8G8B8A8_UNORM,
       D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    g_device->CreateRenderTargetView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_rtv[i].cpu);
-    g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu);
+    g_device->CreateRenderTargetView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_rtv[i].cpu_);
+    g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu_);
     g_taa_accum_state[i] = D3D12_RESOURCE_STATE_COMMON;
   }
 
@@ -501,7 +501,7 @@ void CreateTaaResources()
     1,
     1,
     DXGI_FORMAT_R32_FLOAT);
-  g_device->CreateShaderResourceView(g_tex_depth_prev.Get(), nullptr, g_dhandle_depth_prev_srv.cpu);
+  g_device->CreateShaderResourceView(g_tex_depth_prev.Get(), nullptr, g_dhandle_depth_prev_srv.cpu_);
   g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
 
   g_taa_history_valid = false;
@@ -583,14 +583,14 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
   dsv_desc.Texture2D.MipSlice = 0;
 
-  g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_dhandle_dsv.cpu);
+  g_device->CreateDepthStencilView(g_depthbuffer.Get(), &dsv_desc, g_dhandle_dsv.cpu_);
 
   D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
   srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
   srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   srv_desc.Texture2D.MipLevels = 1;
-  g_device->CreateShaderResourceView(g_depthbuffer.Get(), &srv_desc, g_dhandle_depth_srv.cpu);
+  g_device->CreateShaderResourceView(g_depthbuffer.Get(), &srv_desc, g_dhandle_depth_srv.cpu_);
 }
 
 static void RebuildTextureResources(SharedContext::Access& access)
@@ -622,7 +622,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu);
+    g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu_);
   }
 
   UINT64 scratch_size = 0llu;
@@ -755,7 +755,7 @@ static void LoadIBL()
     srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, g_dhandle_ibl[0].cpu);
+    g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, g_dhandle_ibl[0].cpu_);
 
     for (int face_i = 0; face_i < 6; face_i++)
     {
@@ -794,7 +794,7 @@ static void LoadIBL()
     srv_desc.Texture2D.PlaneSlice = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, g_dhandle_ibl[1].cpu);
+    g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, g_dhandle_ibl[1].cpu_);
 
     const Image* pimg = img.GetImage(0, 0, 0);
     VERIFY(g_tex_specular_dfg->WriteToSubresource(0, nullptr, pimg->pixels, pimg->rowPitch, pimg->slicePitch));
@@ -809,7 +809,7 @@ static void LoadIBL()
     cbv_desc.BufferLocation = g_buffer_lighting_params->GetGPUVirtualAddress();
     cbv_desc.SizeInBytes = cbv_size;
 
-    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_lparams.cpu);
+    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_lparams.cpu_);
   }
 }
 
@@ -1173,20 +1173,20 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     NTCInfo ntc_info = {};
     for (int i = 0; i < cdata.level_count_; i++)
     {
-      ntc_info.g0_grid_dim[i] = cdata.g0_grid_dim_[i];
-      ntc_info.g1_grid_dim[i] = cdata.g1_grid_dim_[i];
-      ntc_info.g0_offset[i] = static_cast<uint32_t>(cdata.g0_offset_[i]);
-      ntc_info.g1_offset[i] = static_cast<uint32_t>(cdata.g1_offset_[i]);
+      ntc_info.g0_grid_dim_[i] = cdata.g0_grid_dim_[i];
+      ntc_info.g1_grid_dim_[i] = cdata.g1_grid_dim_[i];
+      ntc_info.g0_offset_[i] = static_cast<uint32_t>(cdata.g0_offset_[i]);
+      ntc_info.g1_offset_[i] = static_cast<uint32_t>(cdata.g1_offset_[i]);
     }
 
-    ntc_info.g0_bits_per_channel = cdata.g0_bits_per_channel_;
-    ntc_info.g1_bits_per_channel = cdata.g1_bits_per_channel_;
-    ntc_info.g0_channels = cdata.g0_channels_;
-    ntc_info.g1_channels = cdata.g1_channels_;
-    ntc_info.dim = cdata.dim_;
-    ntc_info.mip_count = cdata.mip_count_;
-    ntc_info.rcp_s_a1 = 1.0f / cdata.caldata_.s_a1;
-    ntc_info.rcp_s_a2 = 1.0f / cdata.caldata_.s_a2;
+    ntc_info.g0_bits_per_channel_ = cdata.g0_bits_per_channel_;
+    ntc_info.g1_bits_per_channel_ = cdata.g1_bits_per_channel_;
+    ntc_info.g0_channels_ = cdata.g0_channels_;
+    ntc_info.g1_channels_ = cdata.g1_channels_;
+    ntc_info.dim_ = cdata.dim_;
+    ntc_info.mip_count_ = cdata.mip_count_;
+    ntc_info.rcp_s_a1_ = 1.0f / cdata.caldata_.s_a1_;
+    ntc_info.rcp_s_a2_ = 1.0f / cdata.caldata_.s_a2_;
 
     uint64_t cbv_size = RoundUpTo(sizeof(NTCInfo), 256);
 
@@ -1200,7 +1200,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
     cbv_desc.BufferLocation = g_buffer_ntc_info->GetGPUVirtualAddress();
     cbv_desc.SizeInBytes = cbv_size;
-    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_ntc_info.cpu);
+    g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_ntc_info.cpu_);
   }
 
   uint64_t g0_size = 0;
@@ -1223,7 +1223,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, g_dhandle_ntc_data[0].cpu);
+    g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, g_dhandle_ntc_data[0].cpu_);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1245,7 +1245,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, g_dhandle_ntc_data[1].cpu);
+    g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, g_dhandle_ntc_data[1].cpu_);
     
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
@@ -1272,7 +1272,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu);
+    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu_);
   }
 
   {
@@ -1292,7 +1292,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, g_dhandle_ntc_data[3].cpu);
+    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, g_dhandle_ntc_data[3].cpu_);
   }
 
   {
@@ -1312,7 +1312,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, g_dhandle_ntc_data[4].cpu);
+    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, g_dhandle_ntc_data[4].cpu_);
   }
 
   {
@@ -1332,7 +1332,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, g_dhandle_ntc_data[5].cpu);
+    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, g_dhandle_ntc_data[5].cpu_);
   }
 
   {
@@ -1352,7 +1352,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, g_dhandle_ntc_data[6].cpu);
+    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, g_dhandle_ntc_data[6].cpu_);
   }
 
   {
@@ -1372,7 +1372,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, g_dhandle_ntc_data[7].cpu);
+    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, g_dhandle_ntc_data[7].cpu_);
   }
 }
 
@@ -1468,20 +1468,20 @@ static void SetDescriptorsForShader(Shader shader)
   {
     XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
     mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[g_gui_texture].gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[g_gui_texture].gpu_;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   }
   else if (shader == Shader::GGX)
   {
     ModelViewProjection mvp = {};
-    mvp.model_to_world = g_model_mat;
-    mvp.world_to_view = g_view_mat;
-    mvp.view_to_proj = g_proj_mat;
+    mvp.model_to_world_ = g_model_mat;
+    mvp.world_to_view_ = g_view_mat;
+    mvp.view_to_proj_ = g_proj_mat;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[0].gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ibl[0].gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[0].gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ibl[0].gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu_;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
     g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle);
@@ -1490,14 +1490,14 @@ static void SetDescriptorsForShader(Shader shader)
   else if (shader == Shader::PBR_NTC || shader == Shader::PBR_NTC_COOP)
   {
     ModelViewProjection mvp = {};
-    mvp.model_to_world = g_model_mat;
-    mvp.world_to_view = g_view_mat;
-    mvp.view_to_proj = g_proj_mat;
+    mvp.model_to_world_ = g_model_mat;
+    mvp.world_to_view_ = g_view_mat;
+    mvp.view_to_proj_ = g_proj_mat;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = g_dhandle_ntc_info.gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ntc = g_dhandle_ntc_data[0].gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ibl = g_dhandle_ibl[0].gpu;
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_handle = g_dhandle_ntc_info.gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ntc = g_dhandle_ntc_data[0].gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_handle_ibl = g_dhandle_ibl[0].gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu_;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, cbv_handle);
     g_commandlist->SetGraphicsRootDescriptorTable(2, srv_handle_ntc);
@@ -1636,7 +1636,7 @@ static bool PerformProfileChange(openntc::Profile profile)
 
   access.ctx_.Destroy();
   openntc::ContextInitInfo init_info = {};
-  init_info.profile = profile;
+  init_info.profile_ = profile;
   openntc::Result res = access.ctx_.Init(init_info);
   if (res != openntc::Result::Success)
   {
@@ -1852,20 +1852,20 @@ void Render()
       SharedContext::Access& access = oaccess.value();
       if (train_button)
       {
-        if (!fields.train_in_progress && ConfirmDiscardUnsaved())
+        if (!fields.train_in_progress_ && ConfirmDiscardUnsaved())
         {
           g_compressed_dirty = false;
-          fields.train_in_progress = true;
-          fields.train_complete = false;
-          fields.train_steps = 0;
-          fields.train_total_steps = 30000;
+          fields.train_in_progress_ = true;
+          fields.train_complete_ = false;
+          fields.train_steps_ = 0;
+          fields.train_total_steps_ = 30000;
           g_shared_fields.store(fields, std::memory_order_seq_cst);
           g_stop_training.store(false, std::memory_order_seq_cst);
           g_train_job = std::async(std::launch::async, PerformTrainingJob);
           TransitionGuiState(GuiEvent::TrainStarted);
-          SetStatus("Training Started: %d total steps", fields.train_total_steps);
+          SetStatus("Training Started: %d total steps", fields.train_total_steps_);
         }
-        else if (fields.train_in_progress)
+        else if (fields.train_in_progress_)
         {
           SetStatus("Training already in progress");
         }
@@ -1875,27 +1875,27 @@ void Render()
     {
       SetStatus("Context busy: Train start failed");
     }
-    if (fields.train_in_progress)
+    if (fields.train_in_progress_)
     {
-      ImGui::ProgressBar((float)fields.train_steps / fields.train_total_steps);
+      ImGui::ProgressBar((float)fields.train_steps_ / fields.train_total_steps_);
     }
     // Worker ended without completing (cancelled/aborted)
-    if (g_app_state == GuiState::Training && !fields.train_in_progress && !fields.train_complete)
+    if (g_app_state == GuiState::Training && !fields.train_in_progress_ && !fields.train_complete_)
     {
       TransitionGuiState(GuiEvent::TrainStopped);
       SetStatus("Training stopped before completion");
     }
-    if (g_app_state == GuiState::Training && fields.train_complete && oaccess.has_value())
+    if (g_app_state == GuiState::Training && fields.train_complete_ && oaccess.has_value())
     {
       SharedContext::Access& access = oaccess.value();
       LoadCompressedDataFromContext(access);
-      SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr);
+      SetStatus("Training Complete: PSNR %.2f dB", fields.eval_psnr_);
       TransitionGuiState(GuiEvent::TrainFinished);
     }
-    if (fields.train_complete && g_compressed_from_training)
+    if (fields.train_complete_ && g_compressed_from_training)
     {
-      ImGui::LabelText("PSNR", "%f", fields.eval_psnr);
-      ImGui::LabelText("MSE", "%f", fields.eval_mse);
+      ImGui::LabelText("PSNR", "%f", fields.eval_psnr_);
+      ImGui::LabelText("MSE", "%f", fields.eval_mse_);
     }
   }
   ImGui::End();
@@ -2007,8 +2007,8 @@ void Render()
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
   g_commandlist->Reset(command_allocator.Get(), nullptr);
-  D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu;
-  D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_dhandle_dsv.cpu;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu_;
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_dhandle_dsv.cpu_;
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   D3D12_VIEWPORT viewport_left = {};
@@ -2036,7 +2036,7 @@ void Render()
   // Write directly to backbuffer if we're not using TAA
 
   const bool use_taa = g_gui_taa;
-  D3D12_CPU_DESCRIPTOR_HANDLE scene_rtv = use_taa ? g_dhandle_frame_rtv.cpu : rtv_handle;
+  D3D12_CPU_DESCRIPTOR_HANDLE scene_rtv = use_taa ? g_dhandle_frame_rtv.cpu_ : rtv_handle;
 
   {
     if (use_taa)
@@ -2055,12 +2055,12 @@ void Render()
 
   {
     LightingParams lp = {};
-    lp.exposure = g_gui_exposure;
-    lp.displacement_scale = g_gui_displacement_scale;
-    lp.normal_scale = g_gui_normal_scale;
-    lp.jitter_px = taa_jitter_px;
+    lp.exposure_ = g_gui_exposure;
+    lp.displacement_scale_ = g_gui_displacement_scale;
+    lp.normal_scale_ = g_gui_normal_scale;
+    lp.jitter_px_ = taa_jitter_px;
     for (int i = 0; i < 9; i++)
-      lp.diffuse_sh[i] = g_diffuse_sh[i];
+      lp.diffuse_sh_[i] = g_diffuse_sh[i];
     void* mapped = 0;
     D3D12_RANGE map_range = {0, 0};
     g_buffer_lighting_params->Map(0, &map_range, &mapped);
@@ -2074,13 +2074,13 @@ void Render()
     g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
-    cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
-    cubemap_transforms.view_to_world = XMMatrixInverse(nullptr, g_view_mat);
+    cubemap_transforms.proj_to_view_ = XMMatrixInverse(nullptr, g_proj_mat);
+    cubemap_transforms.view_to_world_ = XMMatrixInverse(nullptr, g_view_mat);
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu_);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu_);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_left);
@@ -2093,13 +2093,13 @@ void Render()
     g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
 
     CubemapTransforms cubemap_transforms = {};
-    cubemap_transforms.proj_to_view = XMMatrixInverse(nullptr, g_proj_mat);
-    cubemap_transforms.view_to_world = XMMatrixInverse(nullptr, g_view_mat);
+    cubemap_transforms.proj_to_view_ = XMMatrixInverse(nullptr, g_proj_mat);
+    cubemap_transforms.view_to_world_ = XMMatrixInverse(nullptr, g_view_mat);
     g_commandlist->SetPipelineState(g_pipelinestate_cubemap.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_cubemap.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(CubemapTransforms) / 4, &cubemap_transforms, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_ibl[0].gpu_);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu_);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     SetPipelineStateForShader(shader_right);
@@ -2140,23 +2140,23 @@ void Render()
       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     TaaConstants tc = {};
-    tc.proj_to_world_unjittered = XMMatrixInverse(nullptr, view_proj_nojitter);
-    tc.prev_world_to_proj_unjittered = g_prev_world_to_proj;
-    XMStoreFloat3(&tc.eye, eye_pos);
-    tc.pane_origin = XMFLOAT2(cx, cy);
-    tc.pane_dim = XMFLOAT2(cw / 2.0f, ch);
+    tc.proj_to_world_unjittered_ = XMMatrixInverse(nullptr, view_proj_nojitter);
+    tc.prev_world_to_proj_unjittered_ = g_prev_world_to_proj;
+    XMStoreFloat3(&tc.eye_, eye_pos);
+    tc.pane_origin_ = XMFLOAT2(cx, cy);
+    tc.pane_dim_ = XMFLOAT2(cw / 2.0f, ch);
 
     D3D12_VIEWPORT viewport_full = {0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f};
     g_commandlist->RSSetViewports(1, &viewport_full);
     g_commandlist->RSSetScissorRects(1, &scissor);
-    g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu, FALSE, nullptr);
+    g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu_, FALSE, nullptr);
     g_commandlist->SetPipelineState(g_pipelinestate_taa.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_taa.Get());
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(TaaConstants) / 4, &tc, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_taa_srv[r].gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_frame_srv.gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(3, g_dhandle_depth_srv.gpu);
-    g_commandlist->SetGraphicsRootDescriptorTable(4, g_dhandle_depth_prev_srv.gpu);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_taa_srv[r].gpu_);
+    g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_frame_srv.gpu_);
+    g_commandlist->SetGraphicsRootDescriptorTable(3, g_dhandle_depth_srv.gpu_);
+    g_commandlist->SetGraphicsRootDescriptorTable(4, g_dhandle_depth_prev_srv.gpu_);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
     TransitionResource(
@@ -2619,12 +2619,12 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     SharedContext::Access access = g_ctx.Acquire();
     SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
     openntc::ContextInitInfo init_info = {};
-    init_info.profile = openntc::Profile::Bpp_0_2;
+    init_info.profile_ = openntc::Profile::Bpp_0_2;
     access.ctx_.Init(init_info);
-    fields.train_in_progress = false;
-    fields.train_complete = false;
-    fields.train_steps = 0;
-    fields.train_total_steps = 0;
+    fields.train_in_progress_ = false;
+    fields.train_complete_ = false;
+    fields.train_steps_ = 0;
+    fields.train_total_steps_ = 0;
 
     g_shared_fields.store(fields, std::memory_order_seq_cst);
   }
