@@ -118,7 +118,7 @@ struct EvalResults
   double psnr;
 };
 
-struct Calibration
+struct CalibrationData
 {
   float max_abs_a1;
   float max_abs_a2;
@@ -224,12 +224,13 @@ public:
   TrainProgress Train(int32_t num_batches);
   TrainProgress TrainUntilComplete();
   EvalResults Eval();
-  Calibration Calibrate(float headroom = 1.1f);
+  CalibrationData Calibrate(float headroom = 1.1f);
   CompressedData GetCompressedData();
   Result LoadManifest(const std::string& filepath);
   void UnloadManifest();
   TextureData GetTextureData();
   int32_t GetMipDim(int mip) const;
+  int32_t FeatureLevelForLod(int32_t mip) const;
 
   static Result Dump(const std::string& path, const CompressedData& data);
   static Result Load(const std::string& path, FileData& data);
@@ -244,7 +245,7 @@ public:
   float* W0_scale_;
   float* W1_scale_;
   float* Wout_scale_;
-  Calibration caldata_;
+  CalibrationData caldata_;
 
   uint8_t* mips_host_[kMaxSources][kMaxMips];
 
@@ -400,7 +401,7 @@ struct CompressedData
   // Compression profile this data was produced with
   Profile profile_;
 
-  Calibration caldata_;
+  CalibrationData caldata_;
 };
 
 class FileData

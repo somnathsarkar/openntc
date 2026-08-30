@@ -49,28 +49,6 @@ void launch_initialize_rand(int n, curandState* o_rstate);
 void launch_generate_noise(int n, int rand_n, float delta, curandState* rstate, float* o_noise);
 void launch_quantize_grid(int n, int num_bytes, float delta, float* g);
 void launch_clamp_grid(int n, int num_bytes, float delta, float* g);
-void launch_forward_pass(
-  int n,
-  float* x,
-  float* W0,
-  float* W1,
-  float* Wout,
-  float* o_W0x,
-  float* o_W0xa,
-  float* o_W1x,
-  float* o_W1xa,
-  float* o_Woutx);
-void launch_backward_pass(
-  int n,
-  float* W0,
-  float* W1,
-  float* Wout,
-  float* dLdPred,
-  float* W0x,
-  float* W1x,
-  float* o_dLdx,
-  float* o_dLdW0x,
-  float* o_dLdW1x);
 void launch_quantize_pack(int n, int n_bytes, int bits, float* input, uint32_t* output);
 void launch_max_abs(int n, float* data, float* result);
 

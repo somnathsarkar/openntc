@@ -493,18 +493,7 @@ TrainProgress Context::Train(int32_t batch_count)
     int lod_uniform = dist_lod(gen_);
     if (draw_uniform)
       lod = lod_uniform;
-    lod = std::clamp(lod, 0, 8);
-    int feature_level = -1;
-    if (lod <= 3)
-      feature_level = 0;
-    else if (lod <= 5)
-      feature_level = 1;
-    else if (lod <= 7)
-      feature_level = 2;
-    else if (lod <= 9)
-      feature_level = 3;
-    else
-      feature_level = 4;
+    int feature_level = FeatureLevelForLod(lod);
     int grid_draws[16];
     std::uniform_int_distribution<int> dist_grid(0, std::max(mip_dim_[lod] - 256, 0));
     for (int i = 0; i < grids_per_batch_; i++)
@@ -719,12 +708,26 @@ TrainProgress Context::Train(int32_t batch_count)
   return tprogress;
 }
 
-Calibration Context::Calibrate(float headroom)
+int32_t Context::FeatureLevelForLod(int32_t lod) const
+{
+  lod = std::clamp(lod, 0, 8);
+  if (lod <= 3)
+    return 0;
+  else if (lod <= 5)
+    return 1;
+  else if (lod <= 7)
+    return 2;
+  else if (lod <= 9)
+    return 3;
+  return 4;
+}
+
+CalibrationData Context::Calibrate(float headroom)
 {
   assert (manifest_loaded_ && train_phase_ == TrainPhase::TrainComplete);
 
-  // Exact per-layer max |activation| over every texel of every mip, using the
-  // same tiling as Eval. Requires trained (post-freeze) weights and grids.
+  // TODO: Switch this out with allcation at Init-time.
+
   float* dmax = nullptr;
   cudaMalloc(&dmax, sizeof(float) * 2);
   cudaMemset(dmax, 0, sizeof(float) * 2);
@@ -747,17 +750,7 @@ Calibration Context::Calibrate(float headroom)
       }
       cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice);
 
-      int feature_level = -1;
-      if (mip_i <= 3)
-        feature_level = 0;
-      else if (mip_i <= 5)
-        feature_level = 1;
-      else if (mip_i <= 7)
-        feature_level = 2;
-      else if (mip_i <= 9)
-        feature_level = 3;
-      else
-        feature_level = 4;
+      int32_t feature_level = FeatureLevelForLod(mip_i);
 
       int batch_dim = num_batches * grid_dim_draw * grid_dim_draw;
 
@@ -791,7 +784,7 @@ Calibration Context::Calibrate(float headroom)
   cudaMemcpy(hmax, dmax, sizeof(float) * 2, cudaMemcpyDeviceToHost);
   cudaFree(dmax);
 
-  Calibration cal = {};
+  CalibrationData cal = {};
   cal.max_abs_a1 = hmax[0];
   cal.max_abs_a2 = hmax[1];
   cal.s_a1 = headroom * hmax[0] / 127.0f;
@@ -826,17 +819,7 @@ EvalResults Context::Eval()
 
       cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice);
 
-      int feature_level = -1;
-      if (mip_i <= 3)
-        feature_level = 0;
-      else if (mip_i <= 5)
-        feature_level = 1;
-      else if (mip_i <= 7)
-        feature_level = 2;
-      else if (mip_i <= 9)
-        feature_level = 3;
-      else
-        feature_level = 4;
+      int feature_level = FeatureLevelForLod(mip_i);
 
       int batch_dim = num_batches * grid_dim_draw * grid_dim_draw;
 
