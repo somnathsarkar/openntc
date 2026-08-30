@@ -32,11 +32,11 @@ class Model
     VertexDescriptor* GetVertices();
     uint32_t* GetIndices();
   private:
-    friend void InitModel(ModelType type, uint32_t detail, Model& o_model);
+    friend void InitModel(ModelType type, uint32_t detail, Model& o_model, const void* knob_data, size_t knob_size);
     static void InitCube(uint32_t detail, Model& o_model);
     static void InitSphere(uint32_t detail, Model& o_model);
     static void InitPlane(uint32_t detail, Model& o_model);
-    static void InitKnob(Model& o_model);
+    static void InitKnob(const void* data, size_t size, Model& o_model);
 
     uint32_t vertex_count_;
     uint32_t index_count_;
@@ -44,4 +44,9 @@ class Model
     uint32_t* indices_;
 };
 
-void InitModel(ModelType type, uint32_t detail, Model& o_model);
+void InitModel(
+  ModelType type,
+  uint32_t detail,
+  Model& o_model,
+  const void* knob_data = nullptr,
+  size_t knob_size = 0);

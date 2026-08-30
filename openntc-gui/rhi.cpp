@@ -295,15 +295,23 @@ GraphicsPipelineBuilder& GraphicsPipelineBuilder::RootSignature(ID3D12RootSignat
   return *this;
 }
 
-GraphicsPipelineBuilder& GraphicsPipelineBuilder::VS(const wchar_t* cso_path)
+static ComPtr<ID3DBlob> BlobFromMemory(const void* data, size_t size)
 {
-  VERIFY(D3DReadFileToBlob(cso_path, &vs_blob_));
+  ComPtr<ID3DBlob> blob;
+  VERIFY(D3DCreateBlob(size, &blob));
+  memcpy(blob->GetBufferPointer(), data, size);
+  return blob;
+}
+
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::VS(const void* data, size_t size)
+{
+  vs_blob_ = BlobFromMemory(data, size);
   return *this;
 }
 
-GraphicsPipelineBuilder& GraphicsPipelineBuilder::PS(const wchar_t* cso_path)
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::PS(const void* data, size_t size)
 {
-  VERIFY(D3DReadFileToBlob(cso_path, &ps_blob_));
+  ps_blob_ = BlobFromMemory(data, size);
   return *this;
 }
 

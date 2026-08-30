@@ -81,8 +81,8 @@ class GraphicsPipelineBuilder
 {
   public:
     GraphicsPipelineBuilder& RootSignature(ID3D12RootSignature* root_signature);
-    GraphicsPipelineBuilder& VS(const wchar_t* cso_path);
-    GraphicsPipelineBuilder& PS(const wchar_t* cso_path);
+    GraphicsPipelineBuilder& VS(const void* data, size_t size);
+    GraphicsPipelineBuilder& PS(const void* data, size_t size);
     GraphicsPipelineBuilder& Input(const D3D12_INPUT_ELEMENT_DESC* elements, uint32_t count);
     GraphicsPipelineBuilder& DepthEnable(bool enable);
     GraphicsPipelineBuilder& CullMode(D3D12_CULL_MODE mode);

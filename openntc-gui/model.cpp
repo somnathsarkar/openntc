@@ -1,7 +1,7 @@
 #include <openntc-gui/model.h>
 
 #include <cassert>
-#include <cstdio>
+#include <cstring>
 
 using namespace DirectX;
 
@@ -206,35 +206,34 @@ void Model::InitPlane(uint32_t detail, Model& o_model)
 
 // Material Test Ball ("Mitsuba knob") from https://benedikt-bitterli.me/resources/
 //  Available under public domain. Preprocessed to match our vertex descriptor format.
-void Model::InitKnob(Model& o_model)
+void Model::InitKnob(const void* data, size_t size, Model& o_model)
 {
-  FILE* f = nullptr;
-  fopen_s(&f, "C:/Code/openntc/img/models/knob.bin", "rb");
-  assert(f != nullptr);
-  if (f == nullptr) return;
+  assert(data != nullptr && size >= sizeof(uint32_t) * 2);
 
   delete[] o_model.vertices_;
   delete[] o_model.indices_;
+  const uint8_t* p = static_cast<const uint8_t*>(data);
   uint32_t counts[2] = {};
-  fread(counts, sizeof(uint32_t), 2, f);
+  memcpy(counts, p, sizeof(counts));
   o_model.vertex_count_ = counts[0];
   o_model.index_count_ = counts[1];
+  size_t vbytes = sizeof(VertexDescriptor) * o_model.vertex_count_;
+  size_t ibytes = sizeof(uint32_t) * o_model.index_count_;
+  assert(sizeof(counts) + vbytes + ibytes <= size);
   o_model.vertices_ = new VertexDescriptor[o_model.vertex_count_];
   o_model.indices_ = new uint32_t[o_model.index_count_];
-  size_t vread = fread(o_model.vertices_, sizeof(VertexDescriptor), o_model.vertex_count_, f);
-  size_t iread = fread(o_model.indices_, sizeof(uint32_t), o_model.index_count_, f);
-  fclose(f);
-  assert(vread == o_model.vertex_count_ && iread == o_model.index_count_);
+  memcpy(o_model.vertices_, p + sizeof(counts), vbytes);
+  memcpy(o_model.indices_, p + sizeof(counts) + vbytes, ibytes);
 }
 
-void InitModel(ModelType type, uint32_t detail, Model& o_model)
+void InitModel(ModelType type, uint32_t detail, Model& o_model, const void* knob_data, size_t knob_size)
 {
   switch (type)
   {
     case ModelType::kCube:   Model::InitCube(detail, o_model); break;
     case ModelType::kSphere: Model::InitSphere(detail, o_model); break;
     case ModelType::kPlane:  Model::InitPlane(detail, o_model); break;
-    case ModelType::kKnob:   Model::InitKnob(o_model); break;
+    case ModelType::kKnob:   Model::InitKnob(knob_data, knob_size, o_model); break;
     default: assert(false); break;
   }
 }

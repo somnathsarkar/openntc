@@ -20,12 +20,14 @@ using namespace DirectX;
 #include <thread>
 #include <mutex>
 #include <future>
+#include <sstream>
 #include <string>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 
+#include <openntc-gui/datapack.h>
 #include <openntc-gui/thread.h>
 #include <openntc-gui/model.h>
 #include <openntc-gui/rhi.h>
@@ -86,7 +88,9 @@ ComPtr<ID3D12RootSignature> g_rootsignature_pbr;
 constexpr int32_t g_kProfileCount = static_cast<int32_t>(openntc::Profile::Count);
 const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5" };
 openntc::Profile g_profile = openntc::Profile::Bpp_0_2;
-std::string g_manifest_path = "C:/Code/openntc/img/Bricks101_2K-JPG/manifest.json";
+std::string g_manifest_path;
+DataPack g_datapack;
+#define PACK_BLOB_ARGS(name) g_datapack.Get(name).data_, g_datapack.Get(name).size_
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop[g_kProfileCount];
@@ -710,33 +714,34 @@ static void RebuildTextureResources(SharedContext::Access& access)
   }
 }
 
-static void LoadDiffuseSH(const char* path)
+static void LoadDiffuseSH(const void* data, size_t size)
 {
-  FILE* f = nullptr;
-  fopen_s(&f, path, "r");
-  VERIFY(f != nullptr);
-  if (f == nullptr) return;
+  std::istringstream stream(std::string(static_cast<const char*>(data), size));
   int count = 0;
-  char line[256];
-  while (count < 9 && fgets(line, sizeof(line), f))
+  std::string line;
+  while (count < 9 && std::getline(stream, line))
   {
     float x, y, z;
-    if (sscanf_s(line, " ( %f , %f , %f", &x, &y, &z) == 3)
+    if (sscanf_s(line.c_str(), " ( %f , %f , %f", &x, &y, &z) == 3)
     {
       g_diffuse_sh[count] = XMFLOAT3A(x, y, z);
       count++;
     }
   }
-  fclose(f);
   VERIFY(count == 9);
 }
 
 static void LoadIBL()
 {
-  LoadDiffuseSH("C:/Code/openntc/img/ibl/baked/sh.txt");
+  LoadDiffuseSH(PACK_BLOB_ARGS("sh.txt"));
   {
     ScratchImage img;
-    LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
+    LoadFromDDSMemory(
+      static_cast<const uint8_t*>(g_datapack.Get("specular_cube.dds").data_),
+      g_datapack.Get("specular_cube.dds").size_,
+      DDS_FLAGS_NONE,
+      nullptr,
+      img);
 
     g_tex_specular_ibl = CreateTexture2D(
       g_device.Get(),
@@ -774,7 +779,12 @@ static void LoadIBL()
 
   {
     ScratchImage img;
-    LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/dfg.dds", DDS_FLAGS_NONE, nullptr, img);
+    LoadFromDDSMemory(
+      static_cast<const uint8_t*>(g_datapack.Get("dfg.dds").data_),
+      g_datapack.Get("dfg.dds").size_,
+      DDS_FLAGS_NONE,
+      nullptr,
+      img);
 
     g_tex_specular_dfg = CreateTexture2D(
       g_device.Get(),
@@ -825,7 +835,7 @@ void LoadContent()
   for (int i = 0; i < g_kModelCount; i++)
   {
     Model model;
-    InitModel(static_cast<ModelType>(i), 200, model);
+    InitModel(static_cast<ModelType>(i), 200, model, PACK_BLOB_ARGS("knob.bin"));
     g_map_model_to_index_count[i] = model.GetIndexCount();
     g_vertex_buffer[i] = CreateBufferWithData(
       g_device.Get(),
@@ -881,8 +891,8 @@ void LoadContent()
     GraphicsPipelineBuilder gpb;
     gpb.RootSignature(g_rootsignature_flat.Get())
         .Input(input_layout, _countof(input_layout))
-        .VS(L"C:/Code/openntc/openntc-gui/flat_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/flat_ps.cso")
+        .VS(PACK_BLOB_ARGS("flat_vs"))
+        .PS(PACK_BLOB_ARGS("flat_ps"))
         .DepthEnable(true)
         .CullMode(D3D12_CULL_MODE_BACK);
     g_pipelinestate_flat = gpb.Build(g_device.Get());
@@ -933,8 +943,8 @@ void LoadContent()
     GraphicsPipelineBuilder gpb;
     gpb.RootSignature(g_rootsignature_pbr.Get())
         .Input(input_layout, _countof(input_layout))
-        .VS(L"C:/Code/openntc/openntc-gui/pbr_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/pbr_ps.cso")
+        .VS(PACK_BLOB_ARGS("pbr_vs"))
+        .PS(PACK_BLOB_ARGS("pbr_ps"))
         .DepthEnable(true)
         .CullMode(D3D12_CULL_MODE_BACK);
     g_pipelinestate_pbr = gpb.Build(g_device.Get());
@@ -982,21 +992,15 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
     
-    const wchar_t* vs_paths[g_kProfileCount] = {
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_vs.cso",
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_bpp05_vs.cso",
-    };
-    const wchar_t* ps_paths[g_kProfileCount] = {
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_ps.cso",
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_bpp05_ps.cso",
-    };
+    const char* vs_names[g_kProfileCount] = {"pbr_ntc_vs", "pbr_ntc_bpp05_vs"};
+    const char* ps_names[g_kProfileCount] = {"pbr_ntc_ps", "pbr_ntc_bpp05_ps"};
     for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
     {
       GraphicsPipelineBuilder gpb;
       gpb.RootSignature(g_rootsignature_pbr_ntc.Get())
           .Input(input_layout, _countof(input_layout))
-          .VS(vs_paths[profile_i])
-          .PS(ps_paths[profile_i])
+          .VS(PACK_BLOB_ARGS(vs_names[profile_i]))
+          .PS(PACK_BLOB_ARGS(ps_names[profile_i]))
           .DepthEnable(true)
           .CullMode(D3D12_CULL_MODE_BACK);
       g_pipelinestate_pbr_ntc[profile_i] = gpb.Build(g_device.Get());
@@ -1045,21 +1049,15 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
-    const wchar_t* vs_paths[g_kProfileCount] = {
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_vs.cso",
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_bpp05_vs.cso",
-    };
-    const wchar_t* ps_paths[g_kProfileCount] = {
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_ps.cso",
-      L"C:/Code/openntc/openntc-gui/pbr_ntc_coop_bpp05_ps.cso",
-    };
+    const char* vs_names[g_kProfileCount] = {"pbr_ntc_coop_vs", "pbr_ntc_coop_bpp05_vs"};
+    const char* ps_names[g_kProfileCount] = {"pbr_ntc_coop_ps", "pbr_ntc_coop_bpp05_ps"};
     for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
     {
       GraphicsPipelineBuilder gpb;
       gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
           .Input(input_layout, _countof(input_layout))
-          .VS(vs_paths[profile_i])
-          .PS(ps_paths[profile_i])
+          .VS(PACK_BLOB_ARGS(vs_names[profile_i]))
+          .PS(PACK_BLOB_ARGS(ps_names[profile_i]))
           .DepthEnable(true)
           .CullMode(D3D12_CULL_MODE_BACK);
       g_pipelinestate_pbr_ntc_coop[profile_i] = gpb.Build(g_device.Get());
@@ -1093,8 +1091,8 @@ void LoadContent()
 
     GraphicsPipelineBuilder gpb;
     gpb.RootSignature(g_rootsignature_cubemap.Get())
-        .VS(L"C:/Code/openntc/openntc-gui/cubemap_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/cubemap_ps.cso")
+        .VS(PACK_BLOB_ARGS("cubemap_vs"))
+        .PS(PACK_BLOB_ARGS("cubemap_ps"))
         .DepthEnable(false)
         .CullMode(D3D12_CULL_MODE_BACK);
     g_pipelinestate_cubemap = gpb.Build(g_device.Get());
@@ -1137,26 +1135,15 @@ void LoadContent()
 
     GraphicsPipelineBuilder gpb;
     gpb.RootSignature(g_rootsignature_taa.Get())
-        .VS(L"C:/Code/openntc/openntc-gui/taa_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/taa_ps.cso")
+        .VS(PACK_BLOB_ARGS("taa_vs"))
+        .PS(PACK_BLOB_ARGS("taa_ps"))
         .DepthEnable(false)
         .DsvFormat(DXGI_FORMAT_UNKNOWN)
         .CullMode(D3D12_CULL_MODE_NONE);
     g_pipelinestate_taa = gpb.Build(g_device.Get());
   }
 
-  // Texture
-
-  {
-    SharedContext::Access access = g_ctx.Acquire();
-
-    openntc::Result load_res = access.ctx_.LoadManifest(g_manifest_path);
-    VERIFY(load_res == openntc::Result::Success);
-
-    RebuildTextureResources(access);
-    TransitionGuiState(GuiEvent::ManifestLoaded);
-    SetStatus("Loaded Manifest: Bricks101_2K-JPG/manifest.json");
-  }
+  SetStatus("Ready");
 
   LoadIBL();
 
@@ -1403,6 +1390,7 @@ void LoadCompressedDataFromFile(const std::string& path)
   //  error-checking.
   int32_t manifest_dim = 0;
   int32_t manifest_mips = 0;
+  if (!g_manifest_path.empty())
   {
     auto oaccess = g_ctx.TryAcquire();
     if (oaccess.has_value())
@@ -1644,6 +1632,12 @@ static bool PerformProfileChange(openntc::Profile profile)
     return false;
   }
 
+  if (g_manifest_path.empty())
+  {
+    SetStatus("Training profile set to %s", g_map_profile_to_name[static_cast<int32_t>(profile)]);
+    return true;
+  }
+
   res = access.ctx_.LoadManifest(g_manifest_path);
   if (res != openntc::Result::Success)
   {
@@ -1708,26 +1702,37 @@ void PerformSaveCompressed()
   SetStatus("Saved %s", path.c_str());
 }
 
+// Do we have all the data required to render the model with the desired shader?
+
+static bool IsShaderAvailable(Shader shader)
+{
+  switch (shader)
+  {
+    case Shader::Flat:
+    case Shader::PBR:
+      return !g_manifest_path.empty();
+    case Shader::PBR_NTC:
+      return g_app_state == GuiState::Compressed;
+    case Shader::PBR_NTC_COOP:
+      return OPENNTC_COOP && g_app_state == GuiState::Compressed;
+    default:
+      return false;
+  }
+}
+
 // Display only the shader options that are valid for our current GUI state
 static void ShaderCombo(const char* label, int32_t* value)
 {
-  const bool ntc_available = (g_app_state == GuiState::Compressed);
-  if (!ntc_available &&
-      (*value == static_cast<int32_t>(Shader::PBR_NTC) || *value == static_cast<int32_t>(Shader::PBR_NTC_COOP)))
+  if (!IsShaderAvailable(static_cast<Shader>(*value)) &&
+    IsShaderAvailable(Shader::PBR) &&
+    (*value == static_cast<int32_t>(Shader::PBR_NTC) || *value == static_cast<int32_t>(Shader::PBR_NTC_COOP)))
     *value = static_cast<int32_t>(Shader::PBR);
 
   if (ImGui::BeginCombo(label, g_map_shader_to_name[*value]))
   {
     for (int32_t i = 0; i < static_cast<int32_t>(Shader::Count); i++)
     {
-      bool enabled = true;
-      if (i == static_cast<int32_t>(Shader::PBR_NTC) || i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
-        enabled = ntc_available;
-#if !OPENNTC_COOP
-      if (i == static_cast<int32_t>(Shader::PBR_NTC_COOP))
-        enabled = false;
-#endif
-      ImGui::BeginDisabled(!enabled);
+      ImGui::BeginDisabled(!IsShaderAvailable(static_cast<Shader>(i)));
       if (ImGui::Selectable(g_map_shader_to_name[i], *value == i))
         *value = i;
       ImGui::EndDisabled();
@@ -1828,7 +1833,8 @@ void Render()
   ImGui::Checkbox("Spin", &g_gui_spin);
 
   ImGui::SeparatorText("Train");
-  const bool can_train = (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
+  const bool can_train = !g_manifest_path.empty() &&
+    (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
   ImGui::BeginDisabled(!can_train);
   {
     const int32_t prev_profile = g_gui_profile;
@@ -2083,9 +2089,12 @@ void Render()
     g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu_);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
-    SetPipelineStateForShader(shader_left);
-    SetDescriptorsForShader(shader_left);
-    g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+    if (IsShaderAvailable(shader_left))
+    {
+      SetPipelineStateForShader(shader_left);
+      SetDescriptorsForShader(shader_left);
+      g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+    }
   }
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
@@ -2102,9 +2111,12 @@ void Render()
     g_commandlist->SetGraphicsRootDescriptorTable(2, g_dhandle_lparams.gpu_);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
-    SetPipelineStateForShader(shader_right);
-    SetDescriptorsForShader(shader_right);
-    g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+    if (IsShaderAvailable(shader_right))
+    {
+      SetPipelineStateForShader(shader_right);
+      SetDescriptorsForShader(shader_right);
+      g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
+    }
   }
 
   if (use_taa)
@@ -2633,6 +2645,12 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
   const char* wndclass_name = "openntc-gui-window-class";
+
+  if (!g_datapack.Load(GetExeRelativePath(L"data.bin")))
+  {
+    ::MessageBoxA(nullptr, "data.bin not found! Download from latest release or rebuild", "openntc-gui", MB_ICONERROR);
+    return 1;
+  }
 
   EnableDebugLayer();
   g_gsync = CheckTearingSupport();

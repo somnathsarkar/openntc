@@ -28,7 +28,8 @@ target_include_directories(imgui PUBLIC C:/Dev/imgui C:/Dev/imgui/backends)
 add_executable(openntc-gui WIN32 openntc-gui/main.cpp
   openntc-gui/thread.cpp
   openntc-gui/model.cpp
-  openntc-gui/rhi.cpp)
+  openntc-gui/rhi.cpp
+  openntc-gui/datapack.cpp)
 option(OPENNTC_COOP "Coop Vector Support" ON)
 if(OPENNTC_COOP)
   set(AGILITY_DIR C:/Dev/microsoft.direct3d.d3d12.1.721.3-preview/build/native)
@@ -51,6 +52,8 @@ target_link_libraries(openntc-gui PRIVATE imgui libopenntc)
 set(DXC C:/Dev/dxc/bin/x64/dxc.exe)
 set(DXC_PREVIEW C:/Dev/dxc_preview/bin/x64/dxc.exe)
 set(SHADER_DIR ${CMAKE_SOURCE_DIR}/openntc-gui)
+set(SHADER_OUT_DIR ${CMAKE_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
 
 set(SHADER_OUTPUTS "")
 function(add_hlsl_variant COMPILER SRC_BASE OUT_BASE PROFILE_VS PROFILE_PS)
@@ -60,7 +63,7 @@ function(add_hlsl_variant COMPILER SRC_BASE OUT_BASE PROFILE_VS PROFILE_PS)
     else()
       set(profile ${PROFILE_PS})
     endif()
-    set(out ${SHADER_DIR}/${OUT_BASE}_${stage}.cso)
+    set(out ${SHADER_OUT_DIR}/${OUT_BASE}_${stage}.cso)
     add_custom_command(
       OUTPUT ${out}
       COMMAND ${COMPILER} -T ${profile} -E ${stage}_main ${ARGN}
@@ -94,3 +97,44 @@ endif()
 
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 add_dependencies(openntc-gui shaders)
+
+set(OPENNTC_ASSET_FILES
+  ${CMAKE_SOURCE_DIR}/data/specular_cube.dds
+  ${CMAKE_SOURCE_DIR}/data/dfg.dds
+  ${CMAKE_SOURCE_DIR}/data/sh.txt
+  ${CMAKE_SOURCE_DIR}/data/knob.bin)
+foreach(f ${OPENNTC_ASSET_FILES})
+  if(NOT EXISTS ${f})
+    message(FATAL_ERROR "Missing binary asset: ${f}")
+  endif()
+endforeach()
+
+add_executable(pack_data tools/pack_data.cpp)
+
+set(PACK_INPUTS "")
+foreach(cso ${SHADER_OUTPUTS})
+  get_filename_component(blob_name ${cso} NAME_WE)
+  list(APPEND PACK_INPUTS "${blob_name}=${cso}")
+endforeach()
+list(APPEND PACK_INPUTS
+  "specular_cube.dds=${CMAKE_SOURCE_DIR}/data/specular_cube.dds"
+  "dfg.dds=${CMAKE_SOURCE_DIR}/data/dfg.dds"
+  "sh.txt=${CMAKE_SOURCE_DIR}/data/sh.txt"
+  "knob.bin=${CMAKE_SOURCE_DIR}/data/knob.bin")
+
+set(PACK_FILE_DEPS "")
+foreach(pair ${PACK_INPUTS})
+  string(REGEX REPLACE "^[^=]+=" "" dep ${pair})
+  list(APPEND PACK_FILE_DEPS ${dep})
+endforeach()
+
+add_custom_command(
+  OUTPUT ${CMAKE_BINARY_DIR}/data.bin
+  COMMAND pack_data ${CMAKE_BINARY_DIR}/data.bin ${PACK_INPUTS}
+  DEPENDS pack_data ${PACK_FILE_DEPS}
+  COMMENT "pack_data -> data.bin"
+  VERBATIM)
+add_custom_target(datapack ALL DEPENDS ${CMAKE_BINARY_DIR}/data.bin)
+add_dependencies(openntc-gui datapack)
+add_custom_command(TARGET openntc-gui POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/data.bin $<TARGET_FILE_DIR:openntc-gui>/data.bin)
