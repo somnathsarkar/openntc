@@ -81,8 +81,8 @@ ComPtr<ID3D12GraphicsCommandList10> g_commandlist;
 ComPtr<ID3D12CommandAllocator> g_commandallocators[g_numframes];
 ComPtr<ID3D12PipelineState> g_pipelinestate_flat;
 ComPtr<ID3D12RootSignature> g_rootsignature_flat;
-ComPtr<ID3D12PipelineState> g_pipelinestate_ggx;
-ComPtr<ID3D12RootSignature> g_rootsignature_ggx;
+ComPtr<ID3D12PipelineState> g_pipelinestate_pbr;
+ComPtr<ID3D12RootSignature> g_rootsignature_pbr;
 constexpr int32_t g_kProfileCount = static_cast<int32_t>(openntc::Profile::Count);
 const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5" };
 openntc::Profile g_profile = openntc::Profile::Bpp_0_2;
@@ -346,7 +346,7 @@ std::vector<UINT> g_imgui_available_srv_slots;
 enum class Shader: int32_t
 {
   Flat,
-  GGX,
+  PBR,
   PBR_NTC,
   PBR_NTC_COOP,
 
@@ -355,7 +355,7 @@ enum class Shader: int32_t
 
 const char* g_map_shader_to_name[] = {
   "Flat",
-  "GGX",
+  "PBR",
   "PBR_NTC",
   "PBR_NTC_COOP"
 };
@@ -375,8 +375,8 @@ const char* g_map_camera_mode_to_name[] = {
   "Controlled"
 };
 
-int32_t g_gui_shader_left = static_cast<int32_t>(Shader::GGX);
-int32_t g_gui_shader_right = static_cast<int32_t>(Shader::GGX);
+int32_t g_gui_shader_left = static_cast<int32_t>(Shader::PBR);
+int32_t g_gui_shader_right = static_cast<int32_t>(Shader::PBR);
 int32_t g_gui_texture = 0;
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
 float g_gui_displacement_scale = 0.01f;
@@ -888,7 +888,7 @@ void LoadContent()
     g_pipelinestate_flat = gpb.Build(g_device.Get());
   }
 
-  // GGX
+  // PBR
 
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
@@ -928,16 +928,16 @@ void LoadContent()
           D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
           D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL);
-    g_rootsignature_ggx = rsb.Build(g_device.Get());
+    g_rootsignature_pbr = rsb.Build(g_device.Get());
     
     GraphicsPipelineBuilder gpb;
-    gpb.RootSignature(g_rootsignature_ggx.Get())
+    gpb.RootSignature(g_rootsignature_pbr.Get())
         .Input(input_layout, _countof(input_layout))
-        .VS(L"C:/Code/openntc/openntc-gui/ggx_vs.cso")
-        .PS(L"C:/Code/openntc/openntc-gui/ggx_ps.cso")
+        .VS(L"C:/Code/openntc/openntc-gui/pbr_vs.cso")
+        .PS(L"C:/Code/openntc/openntc-gui/pbr_ps.cso")
         .DepthEnable(true)
         .CullMode(D3D12_CULL_MODE_BACK);
-    g_pipelinestate_ggx = gpb.Build(g_device.Get());
+    g_pipelinestate_pbr = gpb.Build(g_device.Get());
   }
 
   // PBR NTC
@@ -1445,10 +1445,10 @@ static void SetPipelineStateForShader(Shader shader)
     g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
   }
-  else if (shader == Shader::GGX)
+  else if (shader == Shader::PBR)
   {
-    g_commandlist->SetPipelineState(g_pipelinestate_ggx.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_ggx.Get());
+    g_commandlist->SetPipelineState(g_pipelinestate_pbr.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr.Get());
   }
   else if (shader == Shader::PBR_NTC)
   {
@@ -1472,7 +1472,7 @@ static void SetDescriptorsForShader(Shader shader)
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
     g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
   }
-  else if (shader == Shader::GGX)
+  else if (shader == Shader::PBR)
   {
     ModelViewProjection mvp = {};
     mvp.model_to_world_ = g_model_mat;
@@ -1714,7 +1714,7 @@ static void ShaderCombo(const char* label, int32_t* value)
   const bool ntc_available = (g_app_state == GuiState::Compressed);
   if (!ntc_available &&
       (*value == static_cast<int32_t>(Shader::PBR_NTC) || *value == static_cast<int32_t>(Shader::PBR_NTC_COOP)))
-    *value = static_cast<int32_t>(Shader::GGX);
+    *value = static_cast<int32_t>(Shader::PBR);
 
   if (ImGui::BeginCombo(label, g_map_shader_to_name[*value]))
   {

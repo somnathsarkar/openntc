@@ -81,7 +81,7 @@ function(add_hlsl COMPILER SRC_BASE PROFILE_VS PROFILE_PS)
 endfunction()
 
 add_hlsl(${DXC} flat vs_6_6 ps_6_6 -D BPP_0_2)
-add_hlsl(${DXC} ggx vs_6_6 ps_6_6 -D BPP_0_2)
+add_hlsl(${DXC} pbr vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl(${DXC} cubemap vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl(${DXC} taa vs_6_6 ps_6_6 -D BPP_0_2)
 
