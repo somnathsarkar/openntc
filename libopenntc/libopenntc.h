@@ -9,6 +9,9 @@ namespace openntc
 enum class Profile
 {
   Bpp_0_2,
+  Bpp_0_5,
+  
+  Count
 };
 
 struct ContextInitInfo
@@ -249,6 +252,7 @@ private:
 
   bool initialized_;
   bool manifest_loaded_;
+  Profile profile_;
   int g0_bits_per_channel_;
   int g1_bits_per_channel_;
   float g0_delta_;
@@ -392,6 +396,9 @@ struct CompressedData
   int dim_;
   int mip_count_;
   int level_count_;
+
+  // Compression profile this data was produced with
+  Profile profile_;
 
   Calibration caldata_;
 };

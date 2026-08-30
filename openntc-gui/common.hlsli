@@ -38,11 +38,53 @@ struct NTC
   float rcp_s_a2;
 };
 
+#if defined(BPP_0_2)
 #define G0_BITS 2
 #define G1_BITS 4
 #define G0_CHANNELS 8
 #define G1_CHANNELS 12
+#elif defined(BPP_0_5)
+#define G0_BITS 4
+#define G1_BITS 4
+#define G0_CHANNELS 12
+#define G1_CHANNELS 20
+#else
+#error Undefined profile
+#endif
+
 #define MAX_LEVELS 5
+
+#define HIDDEN_DIM 64
+#define OUT_DIM 9
+#define OUT_DIM_PADDED 12
+#define POS_ENC_DIM 12
+#define FEATURE_DIM_PADDED ((((4 * G0_CHANNELS + G1_CHANNELS + POS_ENC_DIM + 1) + 15) / 16) * 16)
+#define FEAT_UINTS (FEATURE_DIM_PADDED / 4)
+#define HIDDEN_UINTS (HIDDEN_DIM / 4)
+#define G0_FEAT_BASE_SLOT 0
+#define G1_FEAT_BASE_SLOT (4 * G0_CHANNELS)
+#define POSENC_FEAT_BASE_SLOT (G1_FEAT_BASE_SLOT + G1_CHANNELS)
+#define LOD_FEAT_SLOT (POSENC_FEAT_BASE_SLOT + POS_ENC_DIM)
+
+// Insert a value into a slot in the feature vector by OR-ing the corresponding uint
+#define PUT_FEAT_SLOT(o_feat, slot, byte_val) (o_feat[(slot) / 4] |= (byte_val) << (((slot) % 4) * 8))
+
+uint ClampS8(float f)
+{
+  return (uint)clamp(int(round(f)), -128, 127) & 0xFFu;
+}
+
+// G0/G1 are structured as multi-channel cells, where each channel has a certain amount of bits
+//  Based on our profiles we are guaranteed to have cells aligned at certain bit boundaries,
+//  this is written with that assumption in mind. Writing arbitrary bits per channel or channels
+//  will result in unexpected behavior.
+#define CELL_PHASE_MAX(cell_bits) ((cell_bits) % 32 == 0 ? 0 : ((cell_bits) % 16 == 0 ? 16 : 24))
+#define CELL_SPAN_UINTS(cell_bits) ((CELL_PHASE_MAX(cell_bits) + (cell_bits) + 31) / 32)
+#define G0_CELL_BITS (G0_CHANNELS * G0_BITS)
+#define G1_CELL_BITS (G1_CHANNELS * G1_BITS)
+#define G0_SPAN_UINTS CELL_SPAN_UINTS(G0_CELL_BITS)
+#define G1_SPAN_UINTS CELL_SPAN_UINTS(G1_CELL_BITS)
+
 #define PI 3.14159265359
 
 float D_GGX(float NoH, float a)
@@ -111,18 +153,18 @@ int FeatureLevelForLod(int lod)
   return 4;
 }
 
-// Spread packed 4x2 bits (in the bottom 8 bits of input uint b) to 4 8-bit slots in a uint
-//  They occupy the top 2 bits of each 8-bit slot.
-uint Spread2(uint b)
+// Extract channel k: n contiguous bits from w0, w1, w2 contiguous uints at offset 'phase'.
+uint ExtractCellChannel(uint w0, uint w1, uint w2, uint phase, int k, uint n)
 {
-  return ((b & 0x03u) <<  6) | ((b & 0x0Cu) << 12) |
-         ((b & 0x30u) << 18) | ((b & 0xC0u) << 24);
+  uint bit = phase + (uint)k * n;
+  uint w = bit < 32u ? w0 : (bit < 64u ? w1 : w2);
+  return (w >> (bit & 31u)) & ((1u << n) - 1u);
 }
 
 #ifdef COOP_SUPPORT
-void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out vector<uint, 64 / 4> o_feat)
+void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out vector<uint, FEAT_UINTS> o_feat)
 #else
-void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out uint o_feat[64 / 4])
+void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out uint o_feat[FEAT_UINTS])
 #endif
 {
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
@@ -150,6 +192,10 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count - 1));
   int lod = int(round(lodab_clamped));
 #endif
+  [unroll]
+  for (int z = 0; z < FEAT_UINTS; z++)
+    o_feat[z] = 0u;
+
   int feature_level = FeatureLevelForLod(lod);
 
   int fli = (feature_level / 4);
@@ -160,7 +206,7 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
   float ign1 = frac(52.9829189 * frac(0.06711056 * (pos_screen.x + 61.0) + 0.00583715 * (pos_screen.y + 37.0)));
   float2 uv_jittered = uv + (texels_along_major_axis / NTCCBV.dim) * (ign1 - 0.5);
 
-  // G0: 8ch x 2b = 16b per cell
+  // G0: G0_CHANNELS x G0_BITS bits per cell (8ch x 2b = 16b for BPP_0_2)
   int2 g0_xy = int2(floor(uv_jittered * g0_dim - 0.5));
   int g0_x[2];
   g0_x[0] = max(g0_xy.x, 0);
@@ -180,25 +226,28 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     {
       int ij = i * 2 + j;
 
-      // Cell is the index of the 16-bit segment (inside the grid level)
+      // Cell is the index of the G0_CELL_BITS-wide segment (inside the grid level)
       //  containing all data for one feature grid point
       uint cell = (uint)(g0_y[i] * g0_dim + g0_x[j]);
 
-      // Word is the contents of the 32-bit segment containing the cell in the combined 
-      //  feature grid levels. 1 word contains 2 cells
-      uint word = g0.Load(g0_off + (cell / 2u));
+      uint bitpos = cell * G0_CELL_BITS;
+      uint base = g0_off + bitpos / 32u;
+      uint w0 = g0.Load(base);
+      uint w1 = (G0_SPAN_UINTS > 1) ? g0.Load(base + 1u) : 0u;
+      uint w2 = (G0_SPAN_UINTS > 2) ? g0.Load(base + 2u) : 0u;
+      uint phase = bitpos & 31u;
 
-      // c16 is the contents of the cell above
-      uint c16 = (word >> ((cell & 1u) * 16u)) & 0xFFFFu;
-      
-      // Unpack 2-bit integers to 8-bit by placing each in the upper 2-bits of a 8-bit slot
-      //  and xoring each 8-bit slot with 0x80. (Corresponds to (k << 6) - 128)
-      o_feat[ij * 2 + 0] = Spread2(c16 & 0xFFu) ^ 0x80808080u;
-      o_feat[ij * 2 + 1] = Spread2(c16 >> 8u) ^ 0x80808080u;
+      [unroll]
+      for (int k = 0; k < G0_CHANNELS; k++)
+      {
+        uint v = ExtractCellChannel(w0, w1, w2, phase, k, G0_BITS);
+        // xor with 0x80 is just subtracting 128 on a 8-bit uint without underflow
+        PUT_FEAT_SLOT(o_feat, G0_FEAT_BASE_SLOT + ij * G0_CHANNELS + k, (v << (8u - G0_BITS)) ^ 0x80u);
+      }
     }
   }
 
-  // G1: 12ch x 4b = 48b per cell
+  // G1: G1_CHANNELS x G1_BITS bits per cell
   int2 g1_xy = int2(floor(uv_jittered * g1_dim - 0.5));
   int g1_x[2];
   g1_x[0] = max(g1_xy.x, 0);
@@ -222,38 +271,35 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     {
       float m = mult[i * 2 + j];
 
-      // Cell is the index of the 48-bit segment (inside the grid level)
+      // Cell is the index of the G1_CELL_BITS-wide segment (inside the grid level)
       //  containing all data for one feature grid point
       uint cell = (uint)(g1_y[i] * g1_dim + g1_x[j]);
 
       // Bitpos is the index of the first bit inside the grid level for this segment
-      uint bitpos = cell * 48u;
+      uint bitpos = cell * G1_CELL_BITS;
+      uint base = g1_off + bitpos / 32u;
+      uint w0 = g1.Load(base);
+      uint w1 = (G1_SPAN_UINTS > 1) ? g1.Load(base + 1u) : 0u;
+      uint w2 = (G1_SPAN_UINTS > 2) ? g1.Load(base + 2u) : 0u;
+      uint phase = bitpos & 31u;
 
-      // Word0/1 are the two 32-bit values that contain the 48-bit segment 
-      uint word0 = g1.Load(g1_off + (bitpos / 32u));
-      uint word1 = g1.Load(g1_off + (bitpos / 32u) + 1u);
-
-      // Each segment starts at 0 or 16, alternating
-      uint shift = bitpos & 31u;
+      const float half_range = (float)(1u << (G1_BITS - 1));
       [unroll]
       for (int k = 0; k < G1_CHANNELS; k++)
       {
-        uint bit = shift + (uint)k * 4u;
-        uint nib = ((bit < 32u ? word0 : word1) >> (bit & 31u)) & 0xFu;
+        uint v = ExtractCellChannel(w0, w1, w2, phase, k, G1_BITS);
 
-        // Remap 4 bit integers to [-1, 1) floats
-        g1_blend[k] += m * (((float)nib - 8.0f) / 8.0f);
+        // Remap G1_BITS-wide integers to [-1, 1) floats
+        g1_blend[k] += m * (((float)v - half_range) / half_range);
       }
     }
   }
 
   [unroll]
-  for (int q = 0; q < 3; q++)
+  for (int k = 0; k < G1_CHANNELS; k++)
   {
     // Remap [-1, 1) floats to 8-bit signed integers
-    o_feat[8 + q] = pack_clamp_s8(int4(round(float4(
-      g1_blend[q * 4 + 0], g1_blend[q * 4 + 1],
-      g1_blend[q * 4 + 2], g1_blend[q * 4 + 3]) * 128.0f)));
+    PUT_FEAT_SLOT(o_feat, G1_FEAT_BASE_SLOT + k, ClampS8(g1_blend[k] * 128.0f));
   }
 
   // 12 triangular waves
@@ -279,19 +325,16 @@ void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, 
     }
   }
   [unroll]
-  for (int q = 0; q < 3; q++)
+  for (int k = 0; k < POS_ENC_DIM; k++)
   {
-    o_feat[11 + q] = pack_clamp_s8(int4(round(float4(
-      pe[q * 4 + 0], pe[q * 4 + 1], pe[q * 4 + 2], pe[q * 4 + 3]) * 128.0f)));
+    PUT_FEAT_SLOT(o_feat, POSENC_FEAT_BASE_SLOT + k, ClampS8(pe[k] * 128.0f));
   }
 
-  // Zero pad slots 57 - 63
-  o_feat[14] = pack_clamp_s8(int4(int(round(lod / float(NTCCBV.mip_count - 1) * 128.0f)), 0, 0, 0));
-  o_feat[15] = 0u;
+  PUT_FEAT_SLOT(o_feat, LOD_FEAT_SLOT, ClampS8(lod / float(NTCCBV.mip_count - 1) * 128.0f));
 }
 
 #ifdef COOP_SUPPORT
-vector<float, 64> hardgelu_coop(vector<float, 64> x)
+vector<float, HIDDEN_DIM> hardgelu_coop(vector<float, HIDDEN_DIM> x)
 {
   return select(x < -1.5f, 0.0, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
 }
@@ -304,47 +347,47 @@ void PerformNTCInference(
   ByteAddressBuffer W1_scale,
   ByteAddressBuffer Wout_scale,
   NTC NTCCBV,
-  vector<uint, 64 / 4> feat,
-  out vector<float, 12> o_Woutx)
+  vector<uint, FEAT_UINTS> feat,
+  out vector<float, OUT_DIM_PADDED> o_Woutx)
 {
   using namespace dx::linalg;
 
-  vector<uint, 64 / 4> W0x;
-  vector<uint, 64 / 4> W1x;
-  const vector<int32_t, 64> zero64 = (vector<int32_t, 64>)0;
-  const vector<int32_t, 12> zero12 = (vector<int32_t, 12>)0;
+  vector<uint, HIDDEN_UINTS> W0x;
+  vector<uint, HIDDEN_UINTS> W1x;
+  const vector<int32_t, HIDDEN_DIM> zero_hidden = (vector<int32_t, HIDDEN_DIM>)0;
+  const vector<int32_t, OUT_DIM_PADDED> zero_out = (vector<int32_t, OUT_DIM_PADDED>)0;
 
-  // Coop multiplication
-  typedef Matrix<ComponentType::I8, 64, 64, MatrixUse::A, MatrixScope::Thread> W0_t;
-  W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(W0, 0, 64);
-  InterpretedVector<uint, 64 / 4, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(feat);
-  vector<int32_t, 64> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero64);
-  vector<float, 64> W0_scale_coop = W0_scale.Load< vector<float, 64> >(0);
-  vector<float, 64> W0x_facc = vector<float, 64>(W0x_acc) * W0_scale_coop;
+  // Coop multiplication.
+  typedef Matrix<ComponentType::I8, HIDDEN_DIM, FEATURE_DIM_PADDED, MatrixUse::A, MatrixScope::Thread> W0_t;
+  W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(W0, 0, FEATURE_DIM_PADDED);
+  InterpretedVector<uint, FEAT_UINTS, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(feat);
+  vector<int32_t, HIDDEN_DIM> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero_hidden);
+  vector<float, HIDDEN_DIM> W0_scale_coop = W0_scale.Load< vector<float, HIDDEN_DIM> >(0);
+  vector<float, HIDDEN_DIM> W0x_facc = vector<float, HIDDEN_DIM>(W0x_acc) * W0_scale_coop;
   W0x_facc = hardgelu_coop(W0x_facc) * NTCCBV.rcp_s_a1;
-  vector<int32_t, 64> W0x_unpacked = vector<int32_t, 64>(round(W0x_facc));
+  vector<int32_t, HIDDEN_DIM> W0x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W0x_facc));
   [unroll]
-  for (int i = 0 ; i < 64; i+=4)
+  for (int i = 0 ; i < HIDDEN_DIM; i+=4)
     W0x[i / 4] = pack_clamp_s8(int4(W0x_unpacked[i], W0x_unpacked[i + 1], W0x_unpacked[i + 2], W0x_unpacked[i + 3]));
 
-  typedef Matrix<ComponentType::I8, 64, 64, MatrixUse::A, MatrixScope::Thread> W1_t;
-  W1_t W1_coop = W1_t::Load<MatrixLayout::RowMajor>(W1, 0, 64);
-  InterpretedVector<uint, 64 / 4, ComponentType::I8> W0x_coop = MakeInterpretedVector<ComponentType::I8>(W0x);
-  vector<int32_t, 64> W1x_acc = MultiplyAdd<int32_t>(W1_coop, W0x_coop, zero64);
-  vector<float, 64> W1_scale_coop = W1_scale.Load< vector<float, 64> >(0);
-  vector<float, 64> W1x_facc = vector<float, 64>(W1x_acc) * W1_scale_coop;
+  typedef Matrix<ComponentType::I8, HIDDEN_DIM, HIDDEN_DIM, MatrixUse::A, MatrixScope::Thread> W1_t;
+  W1_t W1_coop = W1_t::Load<MatrixLayout::RowMajor>(W1, 0, HIDDEN_DIM);
+  InterpretedVector<uint, HIDDEN_UINTS, ComponentType::I8> W0x_coop = MakeInterpretedVector<ComponentType::I8>(W0x);
+  vector<int32_t, HIDDEN_DIM> W1x_acc = MultiplyAdd<int32_t>(W1_coop, W0x_coop, zero_hidden);
+  vector<float, HIDDEN_DIM> W1_scale_coop = W1_scale.Load< vector<float, HIDDEN_DIM> >(0);
+  vector<float, HIDDEN_DIM> W1x_facc = vector<float, HIDDEN_DIM>(W1x_acc) * W1_scale_coop;
   W1x_facc = hardgelu_coop(W1x_facc) * NTCCBV.rcp_s_a2;
-  vector<int32_t, 64> W1x_unpacked = vector<int32_t, 64>(round(W1x_facc));
+  vector<int32_t, HIDDEN_DIM> W1x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W1x_facc));
   [unroll]
-  for (int i = 0 ; i < 64; i+=4)
+  for (int i = 0 ; i < HIDDEN_DIM; i+=4)
     W1x[i / 4] = pack_clamp_s8(int4(W1x_unpacked[i], W1x_unpacked[i + 1], W1x_unpacked[i + 2], W1x_unpacked[i + 3]));
 
-  typedef Matrix<ComponentType::I8, 12, 64, MatrixUse::A, MatrixScope::Thread> Wout_t;
-  Wout_t Wout_coop = Wout_t::Load<MatrixLayout::RowMajor>(Wout, 0, 64);
-  InterpretedVector<uint, 64 / 4, ComponentType::I8> W1x_coop = MakeInterpretedVector<ComponentType::I8>(W1x);
-  vector<int32_t, 12> Woutx_acc = MultiplyAdd<int32_t>(Wout_coop, W1x_coop, zero12);
-  vector<float, 12> Wout_scale_coop = Wout_scale.Load< vector<float, 12> >(0);
-  o_Woutx = vector<float, 12>(Woutx_acc) * Wout_scale_coop;
+  typedef Matrix<ComponentType::I8, OUT_DIM_PADDED, HIDDEN_DIM, MatrixUse::A, MatrixScope::Thread> Wout_t;
+  Wout_t Wout_coop = Wout_t::Load<MatrixLayout::RowMajor>(Wout, 0, HIDDEN_DIM);
+  InterpretedVector<uint, HIDDEN_UINTS, ComponentType::I8> W1x_coop = MakeInterpretedVector<ComponentType::I8>(W1x);
+  vector<int32_t, OUT_DIM_PADDED> Woutx_acc = MultiplyAdd<int32_t>(Wout_coop, W1x_coop, zero_out);
+  vector<float, OUT_DIM_PADDED> Wout_scale_coop = Wout_scale.Load< vector<float, OUT_DIM_PADDED> >(0);
+  o_Woutx = vector<float, OUT_DIM_PADDED>(Woutx_acc) * Wout_scale_coop;
 }
 
 #else
@@ -367,23 +410,24 @@ void PerformNTCInference(
   ByteAddressBuffer W1_scale,
   ByteAddressBuffer Wout_scale,
   NTC NTCCBV,
-  uint feat[64 / 4],
-  out float o_Woutx[12])
+  uint feat[FEAT_UINTS],
+  out float o_Woutx[OUT_DIM_PADDED])
 {
-  uint W0x[64 / 4];
-  uint W1x[64 / 4];
+  uint W0x[HIDDEN_UINTS];
+  uint W1x[HIDDEN_UINTS];
 
+  // Layer 1
   [loop]
-  for (int i = 0; i < 64; i += 4)
+  for (int i = 0; i < HIDDEN_DIM; i += 4)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 64 / 4; j += 4)
+    for (int j = 0; j < FEAT_UINTS; j += 4)
     {
-      uint4 W0vx = W0.Load<uint4>((i + 0) * (64) + (j * 4));
-      uint4 W0vy = W0.Load<uint4>((i + 1) * (64) + (j * 4));
-      uint4 W0vz = W0.Load<uint4>((i + 2) * (64) + (j * 4));
-      uint4 W0vw = W0.Load<uint4>((i + 3) * (64) + (j * 4));
+      uint4 W0vx = W0.Load<uint4>((i + 0) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vy = W0.Load<uint4>((i + 1) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vz = W0.Load<uint4>((i + 2) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vw = W0.Load<uint4>((i + 3) * (FEATURE_DIM_PADDED) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -398,17 +442,18 @@ void PerformNTCInference(
     int4 unpacked = int4(round(facc));
     W0x[i / 4] = PackS8(unpacked);
   }
+  // Layer 2
   [loop]
-  for (int i = 0; i < 64; i += 4)
+  for (int i = 0; i < HIDDEN_DIM; i += 4)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 64 / 4; j += 4)
+    for (int j = 0; j < HIDDEN_UINTS; j += 4)
     {
-      uint4 W1vx = W1.Load<uint4>((i + 0) * (64) + (j * 4));
-      uint4 W1vy = W1.Load<uint4>((i + 1) * (64) + (j * 4));
-      uint4 W1vz = W1.Load<uint4>((i + 2) * (64) + (j * 4));
-      uint4 W1vw = W1.Load<uint4>((i + 3) * (64) + (j * 4));
+      uint4 W1vx = W1.Load<uint4>((i + 0) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vy = W1.Load<uint4>((i + 1) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vz = W1.Load<uint4>((i + 2) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vw = W1.Load<uint4>((i + 3) * (HIDDEN_DIM) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -423,17 +468,18 @@ void PerformNTCInference(
     int4 unpacked = int4(round(facc));
     W1x[i / 4] = PackS8(unpacked);
   }
+  // Output layer
   [loop]
-  for (int i = 0; i < 9; i += 4)
+  for (int i = 0; i < OUT_DIM; i += 4)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
-    for (int j = 0; j < 64 / 4; j += 4)
+    for (int j = 0; j < HIDDEN_UINTS; j += 4)
     {
-      uint4 Woutvx = Wout.Load<uint4>((i + 0) * (64) + (j * 4));
-      uint4 Woutvy = Wout.Load<uint4>((i + 1) * (64) + (j * 4));
-      uint4 Woutvz = Wout.Load<uint4>((i + 2) * (64) + (j * 4));
-      uint4 Woutvw = Wout.Load<uint4>((i + 3) * (64) + (j * 4));
+      uint4 Woutvx = Wout.Load<uint4>((i + 0) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvy = Wout.Load<uint4>((i + 1) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvz = Wout.Load<uint4>((i + 2) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvw = Wout.Load<uint4>((i + 3) * (HIDDEN_DIM) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {

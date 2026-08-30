@@ -269,16 +269,33 @@ static int RoundUpToNearestK(int n, int k)
 
 Result Context::Init(const ContextInitInfo& init_info)
 {
-  assert(init_info.profile == Profile::Bpp_0_2);
+  assert(!initialized_);
+  if (initialized_)
+    return Result::InvalidState;
 
   // Profile constants
 
-  g0_bits_per_channel_ = 2;
-  g1_bits_per_channel_ = 4;
+  profile_ = init_info.profile;
+  switch (init_info.profile)
+  {
+  case Profile::Bpp_0_2:
+    g0_bits_per_channel_ = 2;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 8;
+    g1_channels_ = 12;
+    break;
+  case Profile::Bpp_0_5:
+    g0_bits_per_channel_ = 4;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 12;
+    g1_channels_ = 20;
+    break;
+  default:
+    assert(false);
+    return Result::InvalidState;
+  }
   g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
-  g0_channels_ = 8;
-  g1_channels_ = 12;
   
   feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   feature_dim_padded_ = RoundUpToNearestK(feature_dim_, 16);
@@ -687,7 +704,7 @@ TrainProgress Context::Train(int32_t batch_count)
 
     for (int i = 0; i < hidden_dim_; i++)
     {
-      memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, 57 * sizeof(float));
+      memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, feature_dim_ * sizeof(float));
     }
     QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_host_, W0_scale_);
     QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1, W1_host_, W1_scale_);
@@ -901,6 +918,7 @@ CompressedData Context::GetCompressedData()
     data.g0_grid_dim_[i] = g0_grid_dim_[i];
     data.g1_grid_dim_[i] = g1_grid_dim_[i];
   }
+  data.profile_ = profile_;
   data.g0_bits_per_channel_ = g0_bits_per_channel_;
   data.g1_bits_per_channel_ = g1_bits_per_channel_;
   data.g0_channels_ = g0_channels_;
@@ -1277,6 +1295,9 @@ TextureData Context::GetTextureData()
 
 void Context::Destroy()
 {
+  if (!initialized_)
+    return;
+
   if (manifest_loaded_)
   {
     UnloadManifest();
@@ -1314,7 +1335,9 @@ void Context::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
   
+  cublasDestroy(handle_);
   cudaFree(rstate_);
+  rstate_ = nullptr;
 
   delete[] W0_host_;
   delete[] W1_host_;
@@ -1322,6 +1345,8 @@ void Context::Destroy()
   delete[] W0_scale_;
   delete[] W1_scale_;
   delete[] Wout_scale_;
+
+  initialized_ = false;
 }
 
 int32_t Context::GetMipDim(int mip) const
@@ -1339,6 +1364,33 @@ struct Blob
   void* data;
 };
 
+static const char* ProfileToString(Profile p)
+{
+  switch (p)
+  {
+    case Profile::Bpp_0_2:
+      return "bpp_0_2";
+    case Profile::Bpp_0_5:
+      return "bpp_0_5";
+  }
+  return "unknown";
+}
+
+static bool ProfileFromString(const std::string& s, Profile& o_profile)
+{
+  if (s == "bpp_0_2")
+  {
+    o_profile = Profile::Bpp_0_2;
+    return true;
+  }
+  else if (s == "bpp_0_5")
+  {
+    o_profile = Profile::Bpp_0_5;
+    return true;
+  }
+  return false;
+}
+
 Result Context::Dump(const std::string& path, const CompressedData& data)
 {
   std::vector<Blob> blobs;
@@ -1354,7 +1406,8 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
   blobs.push_back({"Wout_scale", data.Wout_scale_size_, data.Wout_scale_});
 
   nlohmann::json j;
-  j["source"] = {{"generator", "openntc"}, {"version", 3}};
+  j["source"] = {{"generator", "openntc"}, {"version", 4}};
+  j["profile"] = ProfileToString(data.profile_);
   j["dim"] = data.dim_;
   j["mip_count"] = data.mip_count_;
   j["level_count"] = data.level_count_;
@@ -1385,7 +1438,7 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
 
   std::string js = j.dump();
   // 4 byte magic word: ONTC = 0x43544E4F
-  uint32_t header[4] = {0x43544E4F, 3, (uint32_t)js.size(), (uint32_t)off};
+  uint32_t header[4] = {0x43544E4F, 4, (uint32_t)js.size(), (uint32_t)off};
 
   std::ofstream f(path, std::ios::binary);
   if (!f) return Result::FileNotFound;
@@ -1475,7 +1528,7 @@ Result Context::Load(const std::string& path, FileData& o_data)
   if (raw_size < 16)
     return Result::InvalidFile;
   uint32_t* header = (uint32_t*)o_data.raw_;
-  if (header[0] != 0x43544E4F || header[1] != 3)
+  if (header[0] != 0x43544E4F || header[1] != 4)
     return Result::InvalidFile;
 
   // Validate json
@@ -1512,6 +1565,10 @@ Result Context::Load(const std::string& path, FileData& o_data)
   success &= TryGet(*jcal, "max_abs_a2", o_data.data_.caldata_.max_abs_a2);
   success &= TryGet(*jcal, "s_a2", o_data.data_.caldata_.s_a2);
   if (!success)
+    return Result::InvalidFile;
+
+  std::string profile_name;
+  if (!TryGet(j, "profile", profile_name) || !ProfileFromString(profile_name, o_data.data_.profile_))
     return Result::InvalidFile;
 
   if (o_data.data_.level_count_ < 1 ||
