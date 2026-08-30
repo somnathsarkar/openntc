@@ -269,6 +269,10 @@ static int RoundUpToNearestK(int n, int k)
 
 Result Context::Init(const ContextInitInfo& init_info)
 {
+  assert(!initialized_);
+  if (initialized_)
+    return Result::InvalidState;
+
   // Profile constants
 
   profile_ = init_info.profile;
@@ -288,6 +292,7 @@ Result Context::Init(const ContextInitInfo& init_info)
     break;
   default:
     assert(false);
+    return Result::InvalidState;
   }
   g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
@@ -699,7 +704,7 @@ TrainProgress Context::Train(int32_t batch_count)
 
     for (int i = 0; i < hidden_dim_; i++)
     {
-      memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, 57 * sizeof(float));
+      memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, feature_dim_ * sizeof(float));
     }
     QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_host_, W0_scale_);
     QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1, W1_host_, W1_scale_);
@@ -1290,6 +1295,9 @@ TextureData Context::GetTextureData()
 
 void Context::Destroy()
 {
+  if (!initialized_)
+    return;
+
   if (manifest_loaded_)
   {
     UnloadManifest();
@@ -1327,7 +1335,9 @@ void Context::Destroy()
   grid_draws_.Destroy();
   x_.Destroy();
   
+  cublasDestroy(handle_);
   cudaFree(rstate_);
+  rstate_ = nullptr;
 
   delete[] W0_host_;
   delete[] W1_host_;
@@ -1335,6 +1345,8 @@ void Context::Destroy()
   delete[] W0_scale_;
   delete[] W1_scale_;
   delete[] Wout_scale_;
+
+  initialized_ = false;
 }
 
 int32_t Context::GetMipDim(int mip) const
