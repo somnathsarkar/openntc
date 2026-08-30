@@ -128,7 +128,8 @@ __global__ void draw_features(
     int g1yc = clamp_int(g1y0 + k, 0, g1_dim - 1);
     for (int i1 = 0; i1 < g1_channels; i1++)
     {
-      g1feat[i1] += g1w[i0] * (g1[(g1yc * g1_dim + g1xc) * g1_channels + i1] + g1_noise[(g1yc * g1_dim + g1xc) * g1_channels + i1]);
+      float mult = g1[(g1yc * g1_dim + g1xc) * g1_channels + i1] + g1_noise[(g1yc * g1_dim + g1xc) * g1_channels + i1];
+      g1feat[i1] += g1w[i0] * mult;
     }
   }
   for (int i1 = 0; i1 < g1_channels; i1++)
@@ -151,17 +152,22 @@ __global__ void draw_features(
         float t = (c + 0.5f + phase) / P;
         float s = t - floorf(t);
         float o = 1 - 4.0f * fabsf(s - 0.5f);
-        out_features[(4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy]
-         = o;
+        int idx = (4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim +
+                    batch_i * grid_dim * grid_dim + xy;
+        out_features[idx] = o;
         pos_off++;
       }
     }
   }
-  out_features[(4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = norm_lod;
+  int idx = (4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim +
+              batch_i * grid_dim * grid_dim + xy;
+  out_features[idx] = norm_lod;
   pos_off++;
   while ((4 * g0_channels + g1_channels + pos_off) < feature_dim)
   {
-    out_features[(4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = 0.0f;
+    int idx = (4 * g0_channels + g1_channels + pos_off) * grid_dim * grid_dim * batch_dim +
+                batch_i * grid_dim * grid_dim + xy;
+    out_features[idx] = 0.0f;
     pos_off++;
   }
 }
@@ -185,10 +191,32 @@ void launch_draw_features(
 {
   int thread_count = batch_dim * grid_dim * grid_dim;
   int block_count = (thread_count + 1023) / 1024;
-  draw_features<<<block_count, 1024>>>(batch_dim, grid_dim, feature_dim, mip_dim, g0_dim, g1_dim, g0_channels, g1_channels, norm_lod, grid_draws, g0_noise, g1_noise, g0, g1, out_features);
+  draw_features<<<block_count, 1024>>>(
+    batch_dim,
+    grid_dim,
+    feature_dim,
+    mip_dim,
+    g0_dim,
+    g1_dim,
+    g0_channels,
+    g1_channels,
+    norm_lod,
+    grid_draws,
+    g0_noise,
+    g1_noise,
+    g0,
+    g1,
+    out_features);
 }
 
-__global__ void draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets)
+__global__ void draw_targets(
+  int batch_dim,
+  int grid_dim,
+  int mip_dim,
+  int pred_dim,
+  int* grid_draws,
+  uint8_t* mip,
+  float* out_targets)
 {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= batch_dim * grid_dim * grid_dim) return;
@@ -198,15 +226,30 @@ __global__ void draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_
   int y = xy / grid_dim + grid_draws[batch_i + batch_i + 1];
   for (int i = 0; i < pred_dim; i++)
   {
-    out_targets[i * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] = mip[(y * mip_dim * pred_dim) + x * pred_dim + i] / 255.0f;
+    out_targets[i * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] =
+      mip[(y * mip_dim * pred_dim) + x * pred_dim + i] / 255.0f;
   }
 }
 
-void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets)
+void launch_draw_targets(
+  int batch_dim,
+  int grid_dim,
+  int mip_dim,
+  int pred_dim,
+  int* grid_draws,
+  uint8_t* mip,
+  float* out_targets)
 {
   int thread_count = batch_dim * grid_dim * grid_dim;
   int block_count = (thread_count + 1023) / 1024;
-  draw_targets<<<block_count, 1024>>>(batch_dim, grid_dim, mip_dim, pred_dim, grid_draws, mip, out_targets);
+  draw_targets<<<block_count, 1024>>>(
+    batch_dim,
+    grid_dim,
+    mip_dim,
+    pred_dim,
+    grid_draws,
+    mip,
+    out_targets);
 }
 
 __device__ void mask_aggregate_atomic_increment(float* loc, int pos, float val)
@@ -254,9 +297,7 @@ __global__ void accumulate_grid_gradients(
   float g0y = v * g0_dim - 0.5f;
   float g1x = u * g1_dim - 0.5f;
   float g1y = v * g1_dim - 0.5f;
-  // floorf, not (int) truncation: coords go negative in the first
-  // half-grid-texel border band, where truncation would pick the wrong
-  // corners (and disagree with the fractions below).
+
   int g0x0 = (int)floorf(g0x);
   int g0y0 = (int)floorf(g0y);
   int g1x0 = (int)floorf(g1x);
@@ -284,7 +325,8 @@ __global__ void accumulate_grid_gradients(
     for (int i1 = 0; i1 < g1_channels; i1++)
     {
       int pos = (g1yc * g1_dim + g1xc) * g1_channels + i1;
-      float val = g1w[i0] * dLdx[(4 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy];
+      float mult = dLdx[(4 * g0_channels + i1) * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy];
+      float val = g1w[i0] * mult;
       mask_aggregate_atomic_increment(o_dLdG1, pos, val);
     }
   }
@@ -480,7 +522,14 @@ void launch_max_abs(int n, float* data, float* result)
   max_abs<<<block_count, 1024>>>(n, data, result);
 }
 
-__global__ void prepare_tex(int w, int h, int c, int cmap_count, PrepareTexInput pt, uint8_t *tex, uint8_t *o_mip0)
+__global__ void prepare_tex(
+  int w,
+  int h,
+  int c,
+  int cmap_count,
+  PrepareTexInput pt,
+  uint8_t *tex,
+  uint8_t *o_mip0)
 {
   int tidx = blockDim.x * blockIdx.x + threadIdx.x;
   int tidy = blockDim.y * blockIdx.y + threadIdx.y;
@@ -587,8 +636,22 @@ void launch_filter_lanczos(int dim_src, int c, int a, uint8_t* mip_src, float* t
   dim3 launch_dims_1 = {block_dim_small, block_dim_small, 1u};
   dim3 block_size = {32u, 32u, 1u};
 
-  filter_lanczos<<<launch_dims_0, block_size>>>(dim_src, dim_src, c, a, false, (void*)mip_src, (void*)tmp);
-  filter_lanczos<<<launch_dims_1, block_size>>>(dim_src / 2, dim_src, c, a, true, (void*)tmp, (void*)mip_dst);
+  filter_lanczos<<<launch_dims_0, block_size>>>(
+    dim_src,
+    dim_src,
+    c,
+    a,
+    false,
+    (void*)mip_src,
+    (void*)tmp);
+  filter_lanczos<<<launch_dims_1, block_size>>>(
+    dim_src / 2,
+    dim_src,
+    c,
+    a,
+    true,
+    (void*)tmp,
+    (void*)mip_dst);
 }
 
 __global__ void package_tex(int dim, int c, PackageTexInput pt, uint8_t* o_package)

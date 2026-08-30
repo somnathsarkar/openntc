@@ -2,7 +2,11 @@
 #include <curand_kernel.h>
 
 void launch_forward_hardgelu(int n, float* input, float* o_output);
-void launch_backward_hardgelu(int n, float* inputs, float* incoming_gradients, float* o_outgoing_gradients);
+void launch_backward_hardgelu(
+  int n,
+  float* inputs,
+  float* incoming_gradients,
+  float* o_outgoing_gradients);
 void launch_scalar_product(int n, float a, float* inputs, float* o_outputs);
 void launch_draw_features(
   int batch_dim,
@@ -20,7 +24,14 @@ void launch_draw_features(
   float* g0,
   float* g1,
   float* out_features);
-void launch_draw_targets(int batch_dim, int grid_dim, int mip_dim, int pred_dim, int* grid_draws, uint8_t* mip, float* out_targets);
+void launch_draw_targets(
+  int batch_dim,
+  int grid_dim,
+  int mip_dim,
+  int pred_dim,
+  int* grid_draws,
+  uint8_t* mip,
+  float* out_targets);
 void launch_accumulate_grid_gradients(
   int batch_dim,
   int grid_dim,
