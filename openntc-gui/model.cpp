@@ -43,16 +43,28 @@ struct CubeFace
 };
 
 static const CubeFace kCubeFaces[6] = {
-  { {-1.0f,  1.0f, -1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f, -2.0f,  0.0f}, { 0.0f,  0.0f, -1.0f}, { 1.0f, 0.0f,  0.0f} }, // front  (z = -1)
-  { { 1.0f,  1.0f,  1.0f}, {-2.0f, 0.0f,  0.0f}, {0.0f, -2.0f,  0.0f}, { 0.0f,  0.0f,  1.0f}, {-1.0f, 0.0f,  0.0f} }, // back   (z = +1)
-  { {-1.0f,  1.0f,  1.0f}, { 0.0f, 0.0f, -2.0f}, {0.0f, -2.0f,  0.0f}, {-1.0f,  0.0f,  0.0f}, { 0.0f, 0.0f, -1.0f} }, // left   (x = -1)
-  { { 1.0f,  1.0f, -1.0f}, { 0.0f, 0.0f,  2.0f}, {0.0f, -2.0f,  0.0f}, { 1.0f,  0.0f,  0.0f}, { 0.0f, 0.0f,  1.0f} }, // right  (x = +1)
-  { {-1.0f,  1.0f,  1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f,  0.0f, -2.0f}, { 0.0f,  1.0f,  0.0f}, { 1.0f, 0.0f,  0.0f} }, // top    (y = +1)
-  { {-1.0f, -1.0f, -1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f,  0.0f,  2.0f}, { 0.0f, -1.0f,  0.0f}, { 1.0f, 0.0f,  0.0f} }, // bottom (y = -1)
+  // front  (z = -1)
+  {{-1.0f,  1.0f, -1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f, -2.0f,  0.0f}, { 0.0f,  0.0f, -1.0f}, { 1.0f, 0.0f,  0.0f}},
+  // back   (z = +1)
+  {{ 1.0f,  1.0f,  1.0f}, {-2.0f, 0.0f,  0.0f}, {0.0f, -2.0f,  0.0f}, { 0.0f,  0.0f,  1.0f}, {-1.0f, 0.0f,  0.0f}},
+  // left   (x = -1)
+  {{-1.0f,  1.0f,  1.0f}, { 0.0f, 0.0f, -2.0f}, {0.0f, -2.0f,  0.0f}, {-1.0f,  0.0f,  0.0f}, { 0.0f, 0.0f, -1.0f}},
+  // right  (x = +1)
+  {{ 1.0f,  1.0f, -1.0f}, { 0.0f, 0.0f,  2.0f}, {0.0f, -2.0f,  0.0f}, { 1.0f,  0.0f,  0.0f}, { 0.0f, 0.0f,  1.0f}},
+  // top    (y = +1)
+  {{-1.0f,  1.0f,  1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f,  0.0f, -2.0f}, { 0.0f,  1.0f,  0.0f}, { 1.0f, 0.0f,  0.0f}},
+  // bottom (y = -1)
+  {{-1.0f, -1.0f, -1.0f}, { 2.0f, 0.0f,  0.0f}, {0.0f,  0.0f,  2.0f}, { 0.0f, -1.0f,  0.0f}, { 1.0f, 0.0f,  0.0f}},
 };
 
-static void BuildPatchGrid(const CubeFace& face, uint32_t n, VertexDescriptor* vertices, uint32_t* indices,
-                           uint32_t base_vertex, uint32_t& vert_i, uint32_t& idx_i)
+static void BuildPatchGrid(
+  const CubeFace& face,
+  uint32_t n,
+  VertexDescriptor* vertices,
+  uint32_t* indices,
+  uint32_t base_vertex,
+  uint32_t& vert_i,
+  uint32_t& idx_i)
 {
   for (uint32_t j = 0; j <= n; j++)
   {
@@ -102,7 +114,14 @@ void Model::InitCube(uint32_t detail, Model& o_model)
   uint32_t vert_i = 0;
   uint32_t idx_i = 0;
   for (uint32_t face_i = 0; face_i < 6; face_i++)
-    BuildPatchGrid(kCubeFaces[face_i], n, o_model.vertices_, o_model.indices_, face_i * face_vertex_count, vert_i, idx_i);
+    BuildPatchGrid(
+      kCubeFaces[face_i],
+      n,
+      o_model.vertices_,
+      o_model.indices_,
+      face_i * face_vertex_count,
+      vert_i,
+      idx_i);
 }
 
 // Simple UV sphere

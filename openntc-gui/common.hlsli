@@ -133,7 +133,8 @@ float3 IrradianceSh(LightingParams LightingParamsCBV, float3 n)
 // ACES tonemapping code based on Stephen Hill's (@self_shadow) snippet in BakingLab
 
 static const float3x3 ACESInput = { 0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777 };
-static const float3x3 ACESOutput = { 1.60475, -0.53108, -0.07367, -0.10208,  1.10813, -0.00605, -0.00327, -0.07276, 1.07602 };
+static const float3x3 ACESOutput =
+  { 1.60475, -0.53108, -0.07367, -0.10208, 1.10813, -0.00605, -0.00327, -0.07276, 1.07602 };
 
 float3 RRTAndODTFit(float3 v)
 {
@@ -162,9 +163,21 @@ uint ExtractCellChannel(uint w0, uint w1, uint w2, uint phase, int k, uint n)
 }
 
 #ifdef COOP_SUPPORT
-void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out vector<uint, FEAT_UINTS> o_feat)
+void GetFeaturesPacked(
+  Buffer<uint> g0,
+  Buffer<uint> g1,
+  NTC NTCCBV,
+  float2 uv,
+  float2 pos_screen,
+  out vector<uint, FEAT_UINTS> o_feat)
 #else
-void GetFeaturesPacked(Buffer<uint> g0, Buffer<uint> g1, NTC NTCCBV, float2 uv, float2 pos_screen, out uint o_feat[FEAT_UINTS])
+void GetFeaturesPacked(
+  Buffer<uint> g0,
+  Buffer<uint> g1,
+  NTC NTCCBV,
+  float2 uv,
+  float2 pos_screen,
+  out uint o_feat[FEAT_UINTS])
 #endif
 {
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL

@@ -392,7 +392,10 @@ static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
   return ((a + b - 1) / b) * b;
 }
 
-void ImguiDescriptorSrvAlloc(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE* cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* gpu_handle)
+void ImguiDescriptorSrvAlloc(
+  ImGui_ImplDX12_InitInfo* init_info,
+  D3D12_CPU_DESCRIPTOR_HANDLE* cpu_handle,
+  D3D12_GPU_DESCRIPTOR_HANDLE* gpu_handle)
 {
   UINT slot = g_imgui_available_srv_slots.back();
   g_imgui_available_srv_slots.pop_back();
@@ -401,7 +404,10 @@ void ImguiDescriptorSrvAlloc(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCR
   *gpu_handle = dhandle.gpu;
 }
 
-void ImguiDescriptorSrvFree(ImGui_ImplDX12_InitInfo* init_info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
+void ImguiDescriptorSrvFree(
+  ImGui_ImplDX12_InitInfo* init_info,
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
 {
   UINT slot = g_dalloc_srv.SlotForHandle(cpu_handle);
   g_imgui_available_srv_slots.push_back(slot);
@@ -414,7 +420,11 @@ uint64_t SignalFence(ComPtr<ID3D12CommandQueue> command_queue, ComPtr<ID3D12Fenc
   return *fenceval;
 }
 
-void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceval, HANDLE fenceevent, std::chrono::milliseconds duration_ms = std::chrono::milliseconds::max())
+void WaitForFenceValue(
+  ComPtr<ID3D12Fence> fence,
+  uint64_t fenceval,
+  HANDLE fenceevent,
+  std::chrono::milliseconds duration_ms = std::chrono::milliseconds::max())
 {
   if (fence->GetCompletedValue() < fenceval)
   {
@@ -423,7 +433,11 @@ void WaitForFenceValue(ComPtr<ID3D12Fence> fence, uint64_t fenceval, HANDLE fenc
   }
 }
 
-void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES initial_state, D3D12_RESOURCE_STATES final_state)
+void TransitionResource(
+  ComPtr<ID3D12GraphicsCommandList10> command_list,
+  ComPtr<ID3D12Resource> res,
+  D3D12_RESOURCE_STATES initial_state,
+  D3D12_RESOURCE_STATES final_state)
 {
   D3D12_RESOURCE_BARRIER barrier = {};
   barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -435,7 +449,11 @@ void TransitionResource(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr
   command_list->ResourceBarrier(1, &barrier);
 }
 
-void TransitionIfRequired(ComPtr<ID3D12GraphicsCommandList10> command_list, ComPtr<ID3D12Resource> res, D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES final_state)
+void TransitionIfRequired(
+  ComPtr<ID3D12GraphicsCommandList10> command_list,
+  ComPtr<ID3D12Resource> res,
+  D3D12_RESOURCE_STATES& state,
+  D3D12_RESOURCE_STATES final_state)
 {
   if (state == final_state)
     return;
@@ -445,23 +463,44 @@ void TransitionIfRequired(ComPtr<ID3D12GraphicsCommandList10> command_list, ComP
 
 void CreateTaaResources()
 {
-  g_tex_frame = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
-                                DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, g_clear_color);
+  g_tex_frame = CreateTexture2D(
+    g_device.Get(),
+    D3D12_HEAP_TYPE_DEFAULT,
+    g_width,
+    g_height,
+    1,
+    1,
+    DXGI_FORMAT_R8G8B8A8_UNORM,
+    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    g_clear_color);
   g_device->CreateRenderTargetView(g_tex_frame.Get(), nullptr, g_dhandle_frame_rtv.cpu);
   g_device->CreateShaderResourceView(g_tex_frame.Get(), nullptr, g_dhandle_frame_srv.cpu);
   g_frame_state = D3D12_RESOURCE_STATE_COMMON;
 
   for (int i = 0; i < 2; i++)
   {
-    g_tex_taa_accum[i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
-                                         DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    g_tex_taa_accum[i] = CreateTexture2D(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_DEFAULT,
+      g_width,
+      g_height,
+      1,
+      1,
+      DXGI_FORMAT_R8G8B8A8_UNORM,
+      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     g_device->CreateRenderTargetView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_rtv[i].cpu);
     g_device->CreateShaderResourceView(g_tex_taa_accum[i].Get(), nullptr, g_dhandle_taa_srv[i].cpu);
     g_taa_accum_state[i] = D3D12_RESOURCE_STATE_COMMON;
   }
 
-  g_tex_depth_prev = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_DEFAULT, g_width, g_height, 1, 1,
-                                     DXGI_FORMAT_R32_FLOAT);
+  g_tex_depth_prev = CreateTexture2D(
+    g_device.Get(),
+    D3D12_HEAP_TYPE_DEFAULT,
+    g_width,
+    g_height,
+    1,
+    1,
+    DXGI_FORMAT_R32_FLOAT);
   g_device->CreateShaderResourceView(g_tex_depth_prev.Get(), nullptr, g_dhandle_depth_prev_srv.cpu);
   g_depth_prev_state = D3D12_RESOURCE_STATE_COMMON;
 
@@ -530,7 +569,13 @@ void ResizeDepthBuffer(uint32_t width, uint32_t height)
   optimized_clear_val.DepthStencil.Depth = 1.0f;
   optimized_clear_val.DepthStencil.Stencil = 0;
 
-  VERIFY(g_device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &res_desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &optimized_clear_val, IID_PPV_ARGS(&g_depthbuffer)));
+  VERIFY(g_device->CreateCommittedResource(
+    &heap_props,
+    D3D12_HEAP_FLAG_NONE,
+    &res_desc,
+    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+    &optimized_clear_val,
+    IID_PPV_ARGS(&g_depthbuffer)));
 
   D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc = {};
   dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
@@ -559,7 +604,14 @@ static void RebuildTextureResources(SharedContext::Access& access)
                         DXGI_FORMAT_R8_UNORM :
                         DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    g_tex[tex_i] = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, access.ctx_.GetMipDim(0), access.ctx_.GetMipDim(0), 1, tex_data.mip_count_, g_formats[tex_i]);
+    g_tex[tex_i] = CreateTexture2D(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      access.ctx_.GetMipDim(0),
+      access.ctx_.GetMipDim(0),
+      1,
+      tex_data.mip_count_,
+      g_formats[tex_i]);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = g_formats[tex_i];
@@ -568,7 +620,7 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Texture2D.MostDetailedMip = 0;
     srv_desc.Texture2D.PlaneSlice = 0;
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu);
   }
@@ -601,7 +653,10 @@ static void RebuildTextureResources(SharedContext::Access& access)
       if (channels_padded == 1)
       {
         for (int y = 0; y < mip_dim; y++)
-          memcpy(static_cast<char*>(mapped) + y * mip_row_padded + mip_off, tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i], mip_row);
+          memcpy(
+            static_cast<char*>(mapped) + y * mip_row_padded + mip_off,
+            tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i],
+            mip_row);
       }
       else
       {
@@ -611,7 +666,8 @@ static void RebuildTextureResources(SharedContext::Access& access)
           {
             memcpy(
               static_cast<char*>(mapped) + y * mip_row_padded + mip_off + x * channels_padded,
-              tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i] + x * tex_data.channels_[tex_i], 3 * sizeof(uint8_t));
+              tex_data.mips_[tex_i][mip_i] + y * mip_dim * tex_data.channels_[tex_i] + x * tex_data.channels_[tex_i],
+              3 * sizeof(uint8_t));
             static_cast<char*>(mapped)[y * mip_row_padded + mip_off + x * channels_padded + 3] = 255;
           }
         }
@@ -641,7 +697,8 @@ static void RebuildTextureResources(SharedContext::Access& access)
     rbar.Transition.pResource = g_tex[tex_i].Get();
     rbar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     rbar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    rbar.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    rbar.Transition.StateAfter =
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     rbar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     g_commandlist->ResourceBarrier(1, &rbar);
 
@@ -681,7 +738,14 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/specular_cube.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_ibl = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 6, 5, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_ibl = CreateTexture2D(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      256,
+      256,
+      6,
+      5,
+      DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -689,7 +753,7 @@ static void LoadIBL()
     srv_desc.TextureCube.MipLevels = 5;
     srv_desc.TextureCube.MostDetailedMip = 0;
     srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_tex_specular_ibl.Get(), &srv_desc, g_dhandle_ibl[0].cpu);
 
@@ -698,7 +762,12 @@ static void LoadIBL()
       for (int mip_i = 0; mip_i < 5; mip_i++)
       {
         const Image* subimg = img.GetImage(mip_i, face_i, 0);
-        VERIFY(g_tex_specular_ibl->WriteToSubresource(face_i * 5 + mip_i, nullptr, subimg->pixels, (UINT)subimg->rowPitch, (UINT)subimg->slicePitch));
+        VERIFY(g_tex_specular_ibl->WriteToSubresource(
+          face_i * 5 + mip_i,
+          nullptr,
+          subimg->pixels,
+          (UINT)subimg->rowPitch,
+          (UINT)subimg->slicePitch));
       }
     }
   }
@@ -707,7 +776,14 @@ static void LoadIBL()
     ScratchImage img;
     LoadFromDDSFile(L"C:/Code/openntc/img/ibl/baked/dfg.dds", DDS_FLAGS_NONE, nullptr, img);
 
-    g_tex_specular_dfg = CreateTexture2D(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, 256, 256, 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    g_tex_specular_dfg = CreateTexture2D(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      256,
+      256,
+      1,
+      1,
+      DXGI_FORMAT_R16G16B16A16_FLOAT);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -716,7 +792,7 @@ static void LoadIBL()
     srv_desc.Texture2D.MostDetailedMip = 0;
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
     srv_desc.Texture2D.PlaneSlice = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_tex_specular_dfg.Get(), &srv_desc, g_dhandle_ibl[1].cpu);
 
@@ -751,8 +827,18 @@ void LoadContent()
     Model model;
     InitModel(static_cast<ModelType>(i), 200, model);
     g_map_model_to_index_count[i] = model.GetIndexCount();
-    g_vertex_buffer[i] = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(VertexDescriptor) * model.GetVertexCount(), sizeof(VertexDescriptor) * model.GetVertexCount(), model.GetVertices());
-    g_index_buffer[i] = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, sizeof(uint32_t) * model.GetIndexCount(), sizeof(uint32_t) * model.GetIndexCount(), model.GetIndices());
+    g_vertex_buffer[i] = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      sizeof(VertexDescriptor) * model.GetVertexCount(),
+      sizeof(VertexDescriptor) * model.GetVertexCount(),
+      model.GetVertices());
+    g_index_buffer[i] = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      sizeof(uint32_t) * model.GetIndexCount(),
+      sizeof(uint32_t) * model.GetIndexCount(),
+      model.GetIndices());
     g_vbv[i].BufferLocation = g_vertex_buffer[i]->GetGPUVirtualAddress();
     g_vbv[i].SizeInBytes = sizeof(VertexDescriptor) * model.GetVertexCount();
     g_vbv[i].StrideInBytes = sizeof(VertexDescriptor);
@@ -765,10 +851,14 @@ void LoadContent()
 
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
@@ -780,7 +870,11 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(XMMATRIX) / 4, D3D12_SHADER_VISIBILITY_VERTEX)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_PIXEL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_flat = rsb.Build(g_device.Get());
 
@@ -798,10 +892,14 @@ void LoadContent()
 
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
@@ -819,8 +917,16 @@ void LoadContent()
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(5, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(
+          2,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+          D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL);
     g_rootsignature_ggx = rsb.Build(g_device.Get());
     
@@ -838,10 +944,14 @@ void LoadContent()
 
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
@@ -854,9 +964,21 @@ void LoadContent()
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(
+          1 + 1 + 3 + 3,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_ALL)
+        .Range(
+          2,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+          D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
     
@@ -885,10 +1007,14 @@ void LoadContent()
 
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
-      { "SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"SV_Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
@@ -901,9 +1027,21 @@ void LoadContent()
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(1 + 1 + 3 + 3, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
-        .Range(2, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL)
+        .Range(
+          1 + 1 + 3 + 3,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_ALL)
+        .Range(
+          2,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+          D3D12_SHADER_VISIBILITY_ALL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
@@ -940,8 +1078,16 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(CubemapTransforms) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
+          D3D12_SHADER_VISIBILITY_PIXEL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_cubemap = rsb.Build(g_device.Get());
 
@@ -963,11 +1109,30 @@ void LoadContent()
 
     RootSignatureBuilder rsb;
     rsb.RootConstants(sizeof(TaaConstants) / 4, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
-        .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, D3D12_SHADER_VISIBILITY_PIXEL)
-        .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_SHADER_VISIBILITY_PIXEL);
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .Range(
+          1,
+          D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
+          D3D12_SHADER_VISIBILITY_PIXEL)
+        .StaticSampler(
+          D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+          D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_taa = rsb.Build(g_device.Get());
 
     GraphicsPipelineBuilder gpb;
@@ -1025,7 +1190,12 @@ void UploadCompressedData(openntc::CompressedData& cdata)
 
     uint64_t cbv_size = RoundUpTo(sizeof(NTCInfo), 256);
 
-    g_buffer_ntc_info = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cbv_size, sizeof(NTCInfo), &ntc_info);
+    g_buffer_ntc_info = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cbv_size,
+      sizeof(NTCInfo),
+      &ntc_info);
     
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
     cbv_desc.BufferLocation = g_buffer_ntc_info->GetGPUVirtualAddress();
@@ -1051,7 +1221,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     srv_desc.Buffer.NumElements = g0_size / sizeof(uint32_t);
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_g0.Get(), &srv_desc, g_dhandle_ntc_data[0].cpu);
     
@@ -1073,7 +1243,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     srv_desc.Buffer.NumElements = g1_size / sizeof(uint32_t);
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_g1.Get(), &srv_desc, g_dhandle_ntc_data[1].cpu);
     
@@ -1086,7 +1256,12 @@ void UploadCompressedData(openntc::CompressedData& cdata)
   }
 
   {
-    g_buffer_W0 = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.W0_size_, cdata.W0_size_, cdata.W0_);
+    g_buffer_W0 = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.W0_size_,
+      cdata.W0_size_,
+      cdata.W0_);
     
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1095,13 +1270,18 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.W0_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu);
   }
 
   {
-    g_buffer_W1 = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.W1_size_, cdata.W1_size_, cdata.W1_);
+    g_buffer_W1 = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.W1_size_,
+      cdata.W1_size_,
+      cdata.W1_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1110,13 +1290,18 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.W1_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, g_dhandle_ntc_data[3].cpu);
   }
 
   {
-    g_buffer_Wout = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.Wout_size_, cdata.Wout_size_, cdata.Wout_);
+    g_buffer_Wout = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.Wout_size_,
+      cdata.Wout_size_,
+      cdata.Wout_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1125,13 +1310,18 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.Wout_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, g_dhandle_ntc_data[4].cpu);
   }
 
   {
-    g_buffer_W0_scale = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.W0_scale_size_, cdata.W0_scale_size_, cdata.W0_scale_);
+    g_buffer_W0_scale = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.W0_scale_size_,
+      cdata.W0_scale_size_,
+      cdata.W0_scale_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1140,13 +1330,18 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.W0_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, g_dhandle_ntc_data[5].cpu);
   }
 
   {
-    g_buffer_W1_scale = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.W1_scale_size_, cdata.W1_scale_size_, cdata.W1_scale_);
+    g_buffer_W1_scale = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.W1_scale_size_,
+      cdata.W1_scale_size_,
+      cdata.W1_scale_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1155,13 +1350,18 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.W1_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, g_dhandle_ntc_data[6].cpu);
   }
 
   {
-    g_buffer_Wout_scale = CreateBufferWithData(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, cdata.Wout_scale_size_, cdata.Wout_scale_size_, cdata.Wout_scale_);
+    g_buffer_Wout_scale = CreateBufferWithData(
+      g_device.Get(),
+      D3D12_HEAP_TYPE_GPU_UPLOAD,
+      cdata.Wout_scale_size_,
+      cdata.Wout_scale_size_,
+      cdata.Wout_scale_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1170,7 +1370,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     srv_desc.Buffer.NumElements = cdata.Wout_scale_size_ / (sizeof(float));
     srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, g_dhandle_ntc_data[7].cpu);
   }
@@ -1220,13 +1420,22 @@ void LoadCompressedDataFromFile(const std::string& path)
   g_profile = file_profile;
   TransitionGuiState(GuiEvent::CompressedLoaded);
   if (switched_profile)
-    SetStatus("Loaded Compressed Data: %s (switched to profile %s)",
-              path.c_str(), g_map_profile_to_name[static_cast<int32_t>(g_profile)]);
+    SetStatus(
+      "Loaded Compressed Data: %s (switched to profile %s)",
+      path.c_str(),
+      g_map_profile_to_name[static_cast<int32_t>(g_profile)]);
   else if (g_compressed_matches_manifest)
     SetStatus("Loaded Compressed Data: %s", path.c_str());
   else
-    SetStatus("Loaded Compressed Data: %s (Warning: Dimension mismatch! %dx%d/%d mips vs manifest %dx%d/%d mips)",
-              path.c_str(), cdata.dim_, cdata.dim_, cdata.mip_count_, manifest_dim, manifest_dim, manifest_mips);
+    SetStatus(
+      "Loaded Compressed Data: %s (Warning: Dimension mismatch! %dx%d/%d mips vs manifest %dx%d/%d mips)",
+      path.c_str(),
+      cdata.dim_,
+      cdata.dim_,
+      cdata.mip_count_,
+      manifest_dim,
+      manifest_dim,
+      manifest_mips);
 }
 
 static void SetPipelineStateForShader(Shader shader)
@@ -1358,8 +1567,11 @@ static bool ConfirmDiscardUnsaved()
 {
   if (!g_compressed_dirty)
     return true;
-  return MessageBoxA(g_hwnd, "The trained compression has not been saved. Discard it?",
-                     "openntc-gui", MB_YESNO | MB_ICONWARNING) == IDYES;
+  return MessageBoxA(
+    g_hwnd,
+    "The trained compression has not been saved. Discard it?",
+    "openntc-gui",
+    MB_YESNO | MB_ICONWARNING) == IDYES;
 }
 
 void PerformLoadManifest()
@@ -1568,8 +1780,9 @@ void Render()
     PerformLoadManifest();
   }
 
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O, ImGuiInputFlags_RouteGlobal) &&
-      g_app_state != GuiState::Training)
+  if (ImGui::Shortcut(
+    ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_O,
+    ImGuiInputFlags_RouteGlobal) && g_app_state != GuiState::Training)
   {
     PerformLoadCompressed();
   }
@@ -1596,7 +1809,8 @@ void Render()
   if (g_app_state == GuiState::Compressed && !g_compressed_matches_manifest)
   {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
-    ImGui::TextWrapped("Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
+    ImGui::TextWrapped(
+      "Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
     ImGui::PopStyleColor();
   }
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
@@ -1618,8 +1832,11 @@ void Render()
   ImGui::BeginDisabled(!can_train);
   {
     const int32_t prev_profile = g_gui_profile;
-    if (ImGui::Combo("Profile", &g_gui_profile, g_map_profile_to_name, g_kProfileCount) &&
-        g_gui_profile != prev_profile)
+    if (ImGui::Combo(
+      "Profile",
+      &g_gui_profile,
+      g_map_profile_to_name,
+      g_kProfileCount) && g_gui_profile != prev_profile)
     {
       if (!PerformProfileChange(static_cast<openntc::Profile>(g_gui_profile)))
         g_gui_profile = prev_profile;
@@ -1732,7 +1949,11 @@ void Render()
   }
   else if (cmode == CameraMode::Controlled)
   {
-    eye_pos = focus_pos + eye_distance * XMVectorSet(std::cosf(g_pitch) * std::sinf(g_yaw), std::sinf(g_pitch), std::cosf(g_pitch) * std::cosf(g_yaw), 0.0f);
+    eye_pos = focus_pos + eye_distance * XMVectorSet(
+      std::cosf(g_pitch) * std::sinf(g_yaw),
+      std::sinf(g_pitch),
+      std::cosf(g_pitch) * std::cosf(g_yaw),
+      0.0f);
     g_model_mat = XMMatrixIdentity();
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
     g_proj_mat = XMMatrixPerspectiveFovLH(fov_y, aspect_ratio, 0.1f, 100.0f);
@@ -1744,7 +1965,8 @@ void Render()
   if (g_gui_taa)
   {
     static const float kHalton2[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
-    static const float kHalton3[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+    static const float kHalton3[8] = {0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f,
+      0.888889f};
     static uint32_t jitter_frame = 0;
     jitter_frame = (jitter_frame + 1) % 8;
     float jitter_x = (kHalton2[jitter_frame] - 0.5f) * 2.0f / (cw * 0.5f);
@@ -1900,10 +2122,22 @@ void Render()
     }
 
     TransitionIfRequired(g_commandlist, g_tex_frame, g_frame_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    TransitionIfRequired(g_commandlist, g_tex_taa_accum[r], g_taa_accum_state[r], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(
+      g_commandlist,
+      g_tex_taa_accum[r],
+      g_taa_accum_state[r],
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_RENDER_TARGET);
-    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionResource(
+      g_commandlist,
+      g_depthbuffer,
+      D3D12_RESOURCE_STATE_DEPTH_WRITE,
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    TransitionIfRequired(
+      g_commandlist,
+      g_tex_depth_prev,
+      g_depth_prev_state,
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     TaaConstants tc = {};
     tc.proj_to_world_unjittered = XMMatrixInverse(nullptr, view_proj_nojitter);
@@ -1912,7 +2146,7 @@ void Render()
     tc.pane_origin = XMFLOAT2(cx, cy);
     tc.pane_dim = XMFLOAT2(cw / 2.0f, ch);
 
-    D3D12_VIEWPORT viewport_full = { 0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f };
+    D3D12_VIEWPORT viewport_full = {0.0f, 0.0f, static_cast<FLOAT>(g_width), static_cast<FLOAT>(g_height), 0.0f, 1.0f};
     g_commandlist->RSSetViewports(1, &viewport_full);
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &g_dhandle_taa_rtv[w].cpu, FALSE, nullptr);
@@ -1925,10 +2159,18 @@ void Render()
     g_commandlist->SetGraphicsRootDescriptorTable(4, g_dhandle_depth_prev_srv.gpu);
     g_commandlist->DrawInstanced(6, 1, 0, 0);
 
-    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    TransitionResource(
+      g_commandlist,
+      g_depthbuffer,
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+      D3D12_RESOURCE_STATE_COPY_SOURCE);
     TransitionIfRequired(g_commandlist, g_tex_depth_prev, g_depth_prev_state, D3D12_RESOURCE_STATE_COPY_DEST);
     g_commandlist->CopyResource(g_tex_depth_prev.Get(), g_depthbuffer.Get());
-    TransitionResource(g_commandlist, g_depthbuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    TransitionResource(
+      g_commandlist,
+      g_depthbuffer,
+      D3D12_RESOURCE_STATE_COPY_SOURCE,
+      D3D12_RESOURCE_STATE_DEPTH_WRITE);
     g_prev_world_to_proj = view_proj_nojitter;
 
     TransitionIfRequired(g_commandlist, g_tex_taa_accum[w], g_taa_accum_state[w], D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1964,7 +2206,10 @@ void Render()
   }
 }
 
-void UpdateRenderTargetViews(ComPtr<ID3D12Device2> device, ComPtr<IDXGISwapChain4> swapchain, ComPtr<ID3D12DescriptorHeap> descriptor_heap)
+void UpdateRenderTargetViews(
+  ComPtr<ID3D12Device2> device,
+  ComPtr<IDXGISwapChain4> swapchain,
+  ComPtr<ID3D12DescriptorHeap> descriptor_heap)
 {
   auto rtv_descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
@@ -1999,7 +2244,12 @@ void Resize(uint32_t width, uint32_t height)
 
     DXGI_SWAP_CHAIN_DESC swapchain_desc = {};
     VERIFY(g_swapchain->GetDesc(&swapchain_desc));
-    VERIFY(g_swapchain->ResizeBuffers(g_numframes, g_width, g_height, swapchain_desc.BufferDesc.Format, swapchain_desc.Flags));
+    VERIFY(g_swapchain->ResizeBuffers(
+      g_numframes,
+      g_width,
+      g_height,
+      swapchain_desc.BufferDesc.Format,
+      swapchain_desc.Flags));
     g_frame_i = g_swapchain->GetCurrentBackBufferIndex();
     UpdateRenderTargetViews(g_device, g_swapchain, g_dalloc_rtv.GetHeapUnsafe());
     CreateTaaResources();
@@ -2017,7 +2267,8 @@ void SetFullscreen(bool fullscreen)
     if (g_fullscreen)
     {
       ::GetWindowRect(g_hwnd, &g_window_rect);
-      UINT window_style = WS_OVERLAPPEDWINDOW & ~(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+      UINT window_style =
+        WS_OVERLAPPEDWINDOW & ~(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
       ::SetWindowLongA(g_hwnd, GWL_STYLE, window_style);
 
       HMONITOR hmonitor = ::MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
@@ -2026,12 +2277,12 @@ void SetFullscreen(bool fullscreen)
       ::GetMonitorInfoA(hmonitor, &monitor_info);
 
       ::SetWindowPos(
-        g_hwnd, 
-        HWND_TOP, 
-        monitor_info.rcMonitor.left, 
-        monitor_info.rcMonitor.top, 
-        monitor_info.rcMonitor.right - monitor_info.rcMonitor.left, 
-        monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top, 
+        g_hwnd,
+        HWND_TOP,
+        monitor_info.rcMonitor.left,
+        monitor_info.rcMonitor.top,
+        monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+        monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
         SWP_FRAMECHANGED | SWP_NOACTIVATE);
 
       ::ShowWindow(g_hwnd, SW_MAXIMIZE);
@@ -2169,9 +2420,11 @@ ComPtr<IDXGIAdapter4> GetAdapter()
     DXGI_ADAPTER_DESC1 dxgi_adapter_desc1;
     dxgi_adapter1->GetDesc1(&dxgi_adapter_desc1);
 
-    if ((dxgi_adapter_desc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
-        SUCCEEDED(D3D12CreateDevice(dxgi_adapter1.Get(), D3D_FEATURE_LEVEL_12_2, __uuidof(ID3D12Device), nullptr)) &&
-        dxgi_adapter_desc1.DedicatedVideoMemory > max_dedicated_vram)
+    if ((dxgi_adapter_desc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 && SUCCEEDED(D3D12CreateDevice(
+      dxgi_adapter1.Get(),
+      D3D_FEATURE_LEVEL_12_2,
+      __uuidof(ID3D12Device),
+      nullptr)) && dxgi_adapter_desc1.DedicatedVideoMemory > max_dedicated_vram)
     {
       max_dedicated_vram = dxgi_adapter_desc1.DedicatedVideoMemory;
       VERIFY(dxgi_adapter1.As(&dxgi_adapter4));
@@ -2230,7 +2483,10 @@ ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
   op.ThreadVectorMatrixMultiply.MatrixInputType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT8;
   op.ThreadVectorMatrixMultiply.BiasInputType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT32;
   op.ThreadVectorMatrixMultiply.VectorResultType = D3D12_LINEAR_ALGEBRA_DATATYPE_SINT32;
-  VERIFY(device2->CheckFeatureSupport(D3D12_FEATURE_LINEAR_ALGEBRA_LINEAR_ALGEBRA_MATRIX_OPERATION_SUPPORT, &op, sizeof(op)));
+  VERIFY(device2->CheckFeatureSupport(
+    D3D12_FEATURE_LINEAR_ALGEBRA_LINEAR_ALGEBRA_MATRIX_OPERATION_SUPPORT,
+    &op,
+    sizeof(op)));
 
   D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAGS flags = op.ThreadVectorMatrixMultiply.SupportFlags;
   bool native_support = flags & D3D12_LINEAR_ALGEBRA_MULTIPLICATION_SUPPORT_FLAG_SUPPORTED;
@@ -2264,7 +2520,10 @@ bool CheckTearingSupport()
     ComPtr<IDXGIFactory5> factory5;
     if (SUCCEEDED(factory4.As(&factory5)))
     {
-      if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing))))
+      if (FAILED(factory5->CheckFeatureSupport(
+        DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+        &allow_tearing,
+        sizeof(allow_tearing))))
       {
         allow_tearing = FALSE;
       }
@@ -2274,7 +2533,12 @@ bool CheckTearingSupport()
   return (allow_tearing == TRUE);
 }
 
-ComPtr<IDXGISwapChain4> CreateSwapChain(HWND hwnd, ComPtr<ID3D12CommandQueue> command_queue, uint32_t width, uint32_t height, uint32_t buffer_count)
+ComPtr<IDXGISwapChain4> CreateSwapChain(
+  HWND hwnd,
+  ComPtr<ID3D12CommandQueue> command_queue,
+  uint32_t width,
+  uint32_t height,
+  uint32_t buffer_count)
 {
   ComPtr<IDXGISwapChain4> dxgi_swapchain4;
   ComPtr<IDXGIFactory4> dxgi_factory4;
@@ -2298,7 +2562,13 @@ ComPtr<IDXGISwapChain4> CreateSwapChain(HWND hwnd, ComPtr<ID3D12CommandQueue> co
   swapchain_desc.Flags = CheckTearingSupport() ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
   ComPtr<IDXGISwapChain1> swapchain1;
-  VERIFY(dxgi_factory4->CreateSwapChainForHwnd(command_queue.Get(), g_hwnd, &swapchain_desc, nullptr, nullptr, &swapchain1));
+  VERIFY(dxgi_factory4->CreateSwapChainForHwnd(
+    command_queue.Get(),
+    g_hwnd,
+    &swapchain_desc,
+    nullptr,
+    nullptr,
+    &swapchain1));
   VERIFY(dxgi_factory4->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER));
   VERIFY(swapchain1.As(&dxgi_swapchain4));
 
@@ -2313,7 +2583,10 @@ ComPtr<ID3D12CommandAllocator> CreateCommandAllocator(ComPtr<ID3D12Device> devic
   return command_allocator;
 }
 
-ComPtr<ID3D12GraphicsCommandList10> CreateCommandList(ComPtr<ID3D12Device2> device, ComPtr<ID3D12CommandAllocator> command_allocator, D3D12_COMMAND_LIST_TYPE type)
+ComPtr<ID3D12GraphicsCommandList10> CreateCommandList(
+  ComPtr<ID3D12Device2> device,
+  ComPtr<ID3D12CommandAllocator> command_allocator,
+  D3D12_COMMAND_LIST_TYPE type)
 {
   ComPtr<ID3D12GraphicsCommandList> command_list;
   VERIFY(device->CreateCommandList(0, type, command_allocator.Get(), nullptr, IID_PPV_ARGS(&command_list)));

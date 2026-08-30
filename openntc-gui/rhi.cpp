@@ -11,7 +11,11 @@ using namespace Microsoft::WRL;
 #define VERIFY(hr) do { (hr); } while(0)
 #endif
 
-void DescriptorAllocator::Init(ID3D12Device2* device, D3D12_DESCRIPTOR_HEAP_TYPE heap_type, bool shader_visible, uint32_t size)
+void DescriptorAllocator::Init(
+  ID3D12Device2* device,
+  D3D12_DESCRIPTOR_HEAP_TYPE heap_type,
+  bool shader_visible,
+  uint32_t size)
 {
   D3D12_DESCRIPTOR_HEAP_DESC desc = {};
   desc.Flags = shader_visible ? 
@@ -93,12 +97,23 @@ ComPtr<ID3D12Resource> CreateBuffer(ID3D12Device2* device, D3D12_HEAP_TYPE heap_
   desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-  VERIFY(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffer)));
+  VERIFY(device->CreateCommittedResource(
+    &props,
+    D3D12_HEAP_FLAG_NONE,
+    &desc,
+    D3D12_RESOURCE_STATE_COMMON,
+    nullptr,
+    IID_PPV_ARGS(&buffer)));
 
   return buffer;
 }
 
-ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t buffer_size, uint64_t data_size, const void* data)
+ComPtr<ID3D12Resource> CreateBufferWithData(
+  ID3D12Device2* device,
+  D3D12_HEAP_TYPE heap_type,
+  uint64_t buffer_size,
+  uint64_t data_size,
+  const void* data)
 {
   ComPtr<ID3D12Resource> buffer = CreateBuffer(device, heap_type, buffer_size);
 
@@ -111,7 +126,16 @@ ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TY
   return buffer;
 }
 
-ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags, const float* opt_clear_color)
+ComPtr<ID3D12Resource> CreateTexture2D(
+  ID3D12Device2* device,
+  D3D12_HEAP_TYPE heap_type,
+  uint32_t width,
+  uint32_t height,
+  uint32_t depth,
+  uint32_t levels,
+  DXGI_FORMAT format,
+  D3D12_RESOURCE_FLAGS flags,
+  const float* opt_clear_color)
 {
   ComPtr<ID3D12Resource> tex;
 
@@ -140,8 +164,13 @@ ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE he
   heap_props.CreationNodeMask = 1;
   heap_props.VisibleNodeMask = 1;
 
-  VERIFY(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &tex_desc, D3D12_RESOURCE_STATE_COMMON,
-                                         opt_clear_color != nullptr ? &clear_value : nullptr, IID_PPV_ARGS(&tex)));
+  VERIFY(device->CreateCommittedResource(
+    &heap_props,
+    D3D12_HEAP_FLAG_NONE,
+    &tex_desc,
+    D3D12_RESOURCE_STATE_COMMON,
+    opt_clear_color != nullptr ? &clear_value : nullptr,
+    IID_PPV_ARGS(&tex)));
 
   return tex;
 }
@@ -160,7 +189,11 @@ RootSignatureBuilder& RootSignatureBuilder::RootConstants(uint32_t num_32bit_val
   return *this;
 }
 
-RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_DESCRIPTOR_RANGE_FLAGS flags, D3D12_SHADER_VISIBILITY vis)
+RootSignatureBuilder& RootSignatureBuilder::Range(
+  uint32_t num_descriptors,
+  D3D12_DESCRIPTOR_RANGE_TYPE range_type,
+  D3D12_DESCRIPTOR_RANGE_FLAGS flags,
+  D3D12_SHADER_VISIBILITY vis)
 {
   assert(range_type == D3D12_DESCRIPTOR_RANGE_TYPE_CBV || range_type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV);
 
@@ -190,7 +223,10 @@ RootSignatureBuilder& RootSignatureBuilder::Range(uint32_t num_descriptors, D3D1
   return *this;
 }
 
-RootSignatureBuilder& RootSignatureBuilder::StaticSampler(D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address_mode, D3D12_SHADER_VISIBILITY vis)
+RootSignatureBuilder& RootSignatureBuilder::StaticSampler(
+  D3D12_FILTER filter,
+  D3D12_TEXTURE_ADDRESS_MODE address_mode,
+  D3D12_SHADER_VISIBILITY vis)
 {
   D3D12_STATIC_SAMPLER_DESC desc = {};
   desc.Filter = filter;
@@ -243,7 +279,11 @@ ComPtr<ID3D12RootSignature> RootSignatureBuilder::Build(ID3D12Device2* device)
   ComPtr<ID3DBlob> error_blob;
   VERIFY(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
 
-  VERIFY(device->CreateRootSignature(0, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(), IID_PPV_ARGS(&root_signature)));
+  VERIFY(device->CreateRootSignature(
+    0,
+    root_signature_blob->GetBufferPointer(),
+    root_signature_blob->GetBufferSize(),
+    IID_PPV_ARGS(&root_signature)));
   built_ = true;
 
   return root_signature;

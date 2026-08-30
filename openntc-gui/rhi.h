@@ -34,15 +34,36 @@ class DescriptorAllocator
 };
 
 Microsoft::WRL::ComPtr<ID3D12Resource> CreateBuffer(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t size);
-Microsoft::WRL::ComPtr<ID3D12Resource> CreateBufferWithData(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint64_t buffer_size, uint64_t data_size, const void* data);
-Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2D(ID3D12Device2* device, D3D12_HEAP_TYPE heap_type, uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE, const float* opt_clear_color = nullptr);
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateBufferWithData(
+  ID3D12Device2* device,
+  D3D12_HEAP_TYPE heap_type,
+  uint64_t buffer_size,
+  uint64_t data_size,
+  const void* data);
+Microsoft::WRL::ComPtr<ID3D12Resource> CreateTexture2D(
+  ID3D12Device2* device,
+  D3D12_HEAP_TYPE heap_type,
+  uint32_t width,
+  uint32_t height,
+  uint32_t depth,
+  uint32_t levels,
+  DXGI_FORMAT format,
+  D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE,
+  const float* opt_clear_color = nullptr);
 
 class RootSignatureBuilder
 {
   public:
     RootSignatureBuilder& RootConstants(uint32_t num_32bit_values, D3D12_SHADER_VISIBILITY vis);
-    RootSignatureBuilder& Range(uint32_t num_descriptors, D3D12_DESCRIPTOR_RANGE_TYPE range_type, D3D12_DESCRIPTOR_RANGE_FLAGS flags, D3D12_SHADER_VISIBILITY vis);
-    RootSignatureBuilder& StaticSampler(D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address_mode, D3D12_SHADER_VISIBILITY vis);
+    RootSignatureBuilder& Range(
+      uint32_t num_descriptors,
+      D3D12_DESCRIPTOR_RANGE_TYPE range_type,
+      D3D12_DESCRIPTOR_RANGE_FLAGS flags,
+      D3D12_SHADER_VISIBILITY vis);
+    RootSignatureBuilder& StaticSampler(
+      D3D12_FILTER filter,
+      D3D12_TEXTURE_ADDRESS_MODE address_mode,
+      D3D12_SHADER_VISIBILITY vis);
     Microsoft::WRL::ComPtr<ID3D12RootSignature> Build(ID3D12Device2* device);
 
   private:

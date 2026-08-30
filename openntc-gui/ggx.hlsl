@@ -42,7 +42,10 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 {
   VertexShaderOutput v_out;
 
-  float displacement = (tex_displacement.SampleLevel(sampler_trilinear, v_in.uv, 0.0).r - 0.5) * LightingParamsCBV.displacement_scale;
+  float displacement = (tex_displacement.SampleLevel(
+    sampler_trilinear,
+    v_in.uv,
+    0.0).r - 0.5) * LightingParamsCBV.displacement_scale;
   float4 model_pos = float4(v_in.pos + v_in.normal * displacement, 1.0f);
 
   float4 world_pos = mul(ModelViewProjectionCB.model_to_world, model_pos);

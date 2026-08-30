@@ -505,8 +505,18 @@ TrainProgress Context::Train(int32_t batch_count)
     int grid_dim_draw = std::min(mip_dim_[lod], 256);
     if (batch_i_ < lock_i_)
     {
-      launch_generate_noise(g0_grid_dim_[feature_level] * g0_grid_dim_[feature_level] * g0_channels_, rand_dim_, g0_delta_, rstate_, g0_noise_.DevicePtr());
-      launch_generate_noise(g1_grid_dim_[feature_level] * g1_grid_dim_[feature_level] * g1_channels_, rand_dim_, g1_delta_, rstate_, g1_noise_.DevicePtr());
+      launch_generate_noise(
+        g0_grid_dim_[feature_level] * g0_grid_dim_[feature_level] * g0_channels_,
+        rand_dim_,
+        g0_delta_,
+        rstate_,
+        g0_noise_.DevicePtr());
+      launch_generate_noise(
+        g1_grid_dim_[feature_level] * g1_grid_dim_[feature_level] * g1_channels_,
+        rand_dim_,
+        g1_delta_,
+        rstate_,
+        g1_noise_.DevicePtr());
     }
     else if (batch_i_ == lock_i_)
     {
@@ -571,12 +581,30 @@ TrainProgress Context::Train(int32_t batch_count)
     cublasSaxpy(handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
     cublasSdot(handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
     float mse = total_squared_error / ((float) out_dim_ * batch_dim);
-    launch_scalar_product(out_dim_ * batch_dim, -2.0f / ((float)out_dim_ * batch_dim), mse_.DevicePtr(), dLdWoutx_.DevicePtr());
+    launch_scalar_product(
+      out_dim_ * batch_dim,
+      -2.0f / ((float)out_dim_ * batch_dim),
+      mse_.DevicePtr(),
+      dLdWoutx_.DevicePtr());
 
     // Backward pass
 
-    matmulABT(handle_, out_dim_, hidden_dim_, batch_dim, dLdWoutx_.DevicePtr(), W1xa_.DevicePtr(), dLdWout_.DevicePtr());
-    matmulATB(handle_, hidden_dim_, batch_dim, out_dim_, Wout_.DevicePtr(), dLdWoutx_.DevicePtr(), dLdW1xa_.DevicePtr());
+    matmulABT(
+      handle_,
+      out_dim_,
+      hidden_dim_,
+      batch_dim,
+      dLdWoutx_.DevicePtr(),
+      W1xa_.DevicePtr(),
+      dLdWout_.DevicePtr());
+    matmulATB(
+      handle_,
+      hidden_dim_,
+      batch_dim,
+      out_dim_,
+      Wout_.DevicePtr(),
+      dLdWoutx_.DevicePtr(),
+      dLdW1xa_.DevicePtr());
     launch_backward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), dLdW1xa_.DevicePtr(), dLdW1x_.DevicePtr());
     matmulABT(handle_, hidden_dim_, hidden_dim_, batch_dim, dLdW1x_.DevicePtr(), W0xa_.DevicePtr(), dLdW1_.DevicePtr());
     matmulATB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), dLdW1x_.DevicePtr(), dLdW0xa_.DevicePtr());
@@ -611,9 +639,39 @@ TrainProgress Context::Train(int32_t batch_count)
     float lr_grid = cosine_annealing(0.0f, 0.01f, batch_count_, batch_i_);
     float lr_decoder = cosine_annealing(0.0f, 0.005f, batch_count_, batch_i_);
 
-    launch_update_adam(out_dim_ * hidden_dim_, lr_decoder, beta_1, beta_2, bias_1, bias_2, dLdWout_.DevicePtr(), mWout_.DevicePtr(), vWout_.DevicePtr(), Wout_.DevicePtr());
-    launch_update_adam(hidden_dim_ * hidden_dim_, lr_decoder, beta_1, beta_2, bias_1, bias_2, dLdW1_.DevicePtr(), mW1_.DevicePtr(), vW1_.DevicePtr(), W1_.DevicePtr());
-    launch_update_adam(hidden_dim_ * feature_dim_, lr_decoder, beta_1, beta_2, bias_1, bias_2, dLdW0_.DevicePtr(), mW0_.DevicePtr(), vW0_.DevicePtr(), W0_.DevicePtr());
+    launch_update_adam(
+      out_dim_ * hidden_dim_,
+      lr_decoder,
+      beta_1,
+      beta_2,
+      bias_1,
+      bias_2,
+      dLdWout_.DevicePtr(),
+      mWout_.DevicePtr(),
+      vWout_.DevicePtr(),
+      Wout_.DevicePtr());
+    launch_update_adam(
+      hidden_dim_ * hidden_dim_,
+      lr_decoder,
+      beta_1,
+      beta_2,
+      bias_1,
+      bias_2,
+      dLdW1_.DevicePtr(),
+      mW1_.DevicePtr(),
+      vW1_.DevicePtr(),
+      W1_.DevicePtr());
+    launch_update_adam(
+      hidden_dim_ * feature_dim_,
+      lr_decoder,
+      beta_1,
+      beta_2,
+      bias_1,
+      bias_2,
+      dLdW0_.DevicePtr(),
+      mW0_.DevicePtr(),
+      vW0_.DevicePtr(),
+      W0_.DevicePtr());
     if (batch_i_ < lock_i_)
     {
       launch_update_adam(
@@ -671,10 +729,28 @@ TrainProgress Context::Train(int32_t batch_count)
 
     for (int i = 0; i < level_count_; i++)
     {
-      launch_quantize_pack(g0_[i].NumElems(), (g0_[i].NumElems() * g0_bits_per_channel_) / 32, g0_bits_per_channel_, g0_[i].DevicePtr(), g0pack);
-      launch_quantize_pack(g1_[i].NumElems(), (g1_[i].NumElems() * g1_bits_per_channel_) / 32, g1_bits_per_channel_, g1_[i].DevicePtr(), g1pack);
-      cudaMemcpy(g0_host_[i], g0pack, sizeof(uint32_t) * (g0_[i].NumElems() * g0_bits_per_channel_) / 32, cudaMemcpyDeviceToHost);
-      cudaMemcpy(g1_host_[i], g1pack, sizeof(uint32_t) * (g1_[i].NumElems() * g1_bits_per_channel_) / 32, cudaMemcpyDeviceToHost);
+      launch_quantize_pack(
+        g0_[i].NumElems(),
+        (g0_[i].NumElems() * g0_bits_per_channel_) / 32,
+        g0_bits_per_channel_,
+        g0_[i].DevicePtr(),
+        g0pack);
+      launch_quantize_pack(
+        g1_[i].NumElems(),
+        (g1_[i].NumElems() * g1_bits_per_channel_) / 32,
+        g1_bits_per_channel_,
+        g1_[i].DevicePtr(),
+        g1pack);
+      cudaMemcpy(
+        g0_host_[i],
+        g0pack,
+        sizeof(uint32_t) * (g0_[i].NumElems() * g0_bits_per_channel_) / 32,
+        cudaMemcpyDeviceToHost);
+      cudaMemcpy(
+        g1_host_[i],
+        g1pack,
+        sizeof(uint32_t) * (g1_[i].NumElems() * g1_bits_per_channel_) / 32,
+        cudaMemcpyDeviceToHost);
     }
 
     cudaFree(g0pack);
@@ -839,7 +915,14 @@ EvalResults Context::Eval()
         g0_[feature_level].DevicePtr(),
         g1_[feature_level].DevicePtr(),
         x_.DevicePtr());
-      launch_draw_targets(num_batches, grid_dim_draw, mip_dim_[mip_i], out_dim_, grid_draws_.DevicePtr(), package_[mip_i].DevicePtr(), mse_.DevicePtr());
+      launch_draw_targets(
+        num_batches,
+        grid_dim_draw,
+        mip_dim_[mip_i],
+        out_dim_,
+        grid_draws_.DevicePtr(),
+        package_[mip_i].DevicePtr(),
+        mse_.DevicePtr());
       
       // Forward pass
 
@@ -1164,10 +1247,20 @@ Result Context::LoadManifest(const std::string& filepath)
     launch_prepare_tex(manifest_.dim_, desired_channels, prepare_in, tex_prep_.DevicePtr(), mips_[i][0].DevicePtr());
     for (int j = 1; j < mip_count_; j++)
     {
-      launch_filter_lanczos(mip_dim_[j - 1], manifest_.sources_[i].num_channels_, 3, mips_[i][j - 1].DevicePtr(), tex_filter_.DevicePtr(), mips_[i][j].DevicePtr());
+      launch_filter_lanczos(
+        mip_dim_[j - 1],
+        manifest_.sources_[i].num_channels_,
+        3,
+        mips_[i][j - 1].DevicePtr(),
+        tex_filter_.DevicePtr(),
+        mips_[i][j].DevicePtr());
     }
     for (int j = 0; j < mip_count_; j++)
-      cudaMemcpy(mips_host_[i][j], mips_[i][j].DevicePtr(), sizeof(uint8_t) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_, cudaMemcpyDeviceToHost);
+      cudaMemcpy(
+        mips_host_[i][j],
+        mips_[i][j].DevicePtr(),
+        sizeof(uint8_t) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_,
+        cudaMemcpyDeviceToHost);
   }
 
   PackageTexInput package_in = {};
@@ -1395,12 +1488,14 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
   j["mip_count"] = data.mip_count_;
   j["level_count"] = data.level_count_;
   j["g0"] = {
-    {"grid_dims", {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4]}},
+    {"grid_dims",
+      {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4]}},
     {"bits", data.g0_bits_per_channel_},
     {"channels", data.g0_channels_}
   };
   j["g1"] = {
-    {"grid_dims", {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4]}},
+    {"grid_dims",
+      {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4]}},
     {"bits", data.g1_bits_per_channel_},
     {"channels", data.g1_channels_}
   };
@@ -1522,7 +1617,11 @@ Result Context::Load(const std::string& path, FileData& o_data)
   uint64_t blob_off = json_size + header_size;
   if (header_size + json_size > fil_size)
     return Result::InvalidFile;
-  nlohmann::json j = nlohmann::json::parse(o_data.raw_ + header_size, o_data.raw_ + header_size + json_size, nullptr, false);
+  nlohmann::json j = nlohmann::json::parse(
+    o_data.raw_ + header_size,
+    o_data.raw_ + header_size + json_size,
+    nullptr,
+    false);
   if (j.is_discarded())
     return Result::InvalidFile;
 
