@@ -493,13 +493,13 @@ TrainProgress Context::Train(int32_t batch_count)
   {
     bool draw_uniform = dist_batch_type(gen_);
     float U = dist_u(gen_);
-    int lod = int(std::floorf(0.5f * -log2f(U)));
+    int lod = std::min(int(std::floorf(0.5f * -log2f(U))), mip_count_ - 1);
     int lod_uniform = dist_lod(gen_);
     if (draw_uniform)
       lod = lod_uniform;
     int feature_level = FeatureLevelForLod(lod);
     int grid_draws[16];
-    std::uniform_int_distribution<int> dist_grid(0, std::max(mip_dim_[lod] - 256, 0));
+    std::uniform_int_distribution<int> dist_grid(0, mip_dim_[lod] - 1);
     for (int i = 0; i < grids_per_batch_; i++)
     {
       grid_draws[i + i] = dist_grid(gen_);
@@ -812,7 +812,7 @@ CalibrationData Context::Calibrate(float headroom)
   cudaMalloc(&dmax, sizeof(float) * 2);
   cudaMemset(dmax, 0, sizeof(float) * 2);
 
-  for (int mip_i = 0; mip_i <= mip_count_; mip_i++)
+  for (int mip_i = 0; mip_i < mip_count_; mip_i++)
   {
     int grids_per_dim = (mip_dim_[mip_i] + 255) / 256;
     int num_grids = grids_per_dim * grids_per_dim;

@@ -95,6 +95,8 @@ __global__ void draw_features(
   int xy = tid % (grid_dim * grid_dim);
   int x = (xy % grid_dim) + grid_draws[batch_i * 2];
   int y = (xy / grid_dim) + grid_draws[batch_i * 2 + 1];
+  x %= mip_dim;
+  y %= mip_dim;
   float u = (x + 0.5f) / mip_dim;
   float v = (y + 0.5f) / mip_dim;
   float g0x = u * g0_dim - 0.5f;
@@ -226,6 +228,8 @@ __global__ void draw_targets(
   int xy = tid % (grid_dim * grid_dim);
   int x = xy % grid_dim + grid_draws[batch_i + batch_i];
   int y = xy / grid_dim + grid_draws[batch_i + batch_i + 1];
+  x %= mip_dim;
+  y %= mip_dim;
   for (int i = 0; i < pred_dim; i++)
   {
     out_targets[i * grid_dim * grid_dim * batch_dim + batch_i * grid_dim * grid_dim + xy] =
@@ -293,6 +297,8 @@ __global__ void accumulate_grid_gradients(
   int xy = tid % (grid_dim * grid_dim);
   int x = (xy % grid_dim) + grid_draws[batch_i * 2];
   int y = (xy / grid_dim) + grid_draws[batch_i * 2 + 1];
+  x %= mip_dim;
+  y %= mip_dim;
   float u = (x + 0.5f) / mip_dim;
   float v = (y + 0.5f) / mip_dim;
   float g0x = u * g0_dim - 0.5f;
