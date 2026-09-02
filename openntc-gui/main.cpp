@@ -86,7 +86,7 @@ ComPtr<ID3D12RootSignature> g_rootsignature_flat;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr;
 constexpr int32_t g_kProfileCount = static_cast<int32_t>(openntc::Profile::Count);
-const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5", "BPP 1.0" };
+const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5", "BPP 1.0", "BPP 2.25" };
 openntc::Profile g_profile = openntc::Profile::Bpp_0_2;
 std::string g_manifest_path;
 DataPack g_datapack;
@@ -992,8 +992,8 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc = rsb.Build(g_device.Get());
     
-    const char* vs_names[g_kProfileCount] = {"pbr_ntc_vs", "pbr_ntc_bpp05_vs", "pbr_ntc_bpp10_vs"};
-    const char* ps_names[g_kProfileCount] = {"pbr_ntc_ps", "pbr_ntc_bpp05_ps", "pbr_ntc_bpp10_ps"};
+    const char* vs_names[g_kProfileCount] = {"pbr_ntc_vs", "pbr_ntc_bpp05_vs", "pbr_ntc_bpp10_vs", "pbr_ntc_bpp225_vs"};
+    const char* ps_names[g_kProfileCount] = {"pbr_ntc_ps", "pbr_ntc_bpp05_ps", "pbr_ntc_bpp10_ps", "pbr_ntc_bpp225_ps"};
     for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
     {
       GraphicsPipelineBuilder gpb;
@@ -1048,8 +1048,8 @@ void LoadContent()
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_pbr_ntc_coop = rsb.Build(g_device.Get());
 
-    const char* vs_names[g_kProfileCount] = {"pbr_ntc_coop_vs", "pbr_ntc_coop_bpp05_vs", "pbr_ntc_coop_bpp10_vs"};
-    const char* ps_names[g_kProfileCount] = {"pbr_ntc_coop_ps", "pbr_ntc_coop_bpp05_ps", "pbr_ntc_coop_bpp10_ps"};
+    const char* vs_names[g_kProfileCount] = {"pbr_ntc_coop_vs", "pbr_ntc_coop_bpp05_vs", "pbr_ntc_coop_bpp10_vs", "pbr_ntc_coop_bpp225_vs"};
+    const char* ps_names[g_kProfileCount] = {"pbr_ntc_coop_ps", "pbr_ntc_coop_bpp05_ps", "pbr_ntc_coop_bpp10_ps", "pbr_ntc_coop_bpp225_ps"};
     for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
     {
       GraphicsPipelineBuilder gpb;

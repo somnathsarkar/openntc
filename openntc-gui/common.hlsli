@@ -53,6 +53,11 @@ struct NTC
 #define G1_BITS 4
 #define G0_CHANNELS 12
 #define G1_CHANNELS 10
+#elif defined(BPP_2_25)
+#define G0_BITS 4
+#define G1_BITS 4
+#define G0_CHANNELS 16
+#define G1_CHANNELS 12
 #else
 #error Undefined profile
 #endif
