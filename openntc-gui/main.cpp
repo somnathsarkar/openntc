@@ -143,19 +143,14 @@ DescriptorHandle g_dhandle_dsv;
 DescriptorAllocator g_dalloc_srv;
 DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
 DescriptorHandle g_dhandle_ntc_info;
-DescriptorHandle g_dhandle_ntc_data[1 + 1 + 3 + 3];
+DescriptorHandle g_dhandle_ntc_data[1 + 1 + 1];
 DescriptorHandle g_dhandle_lparams;
 DescriptorHandle g_dhandle_ibl[2];
 
 ComPtr<ID3D12Resource> g_buffer_ntc_info;
 ComPtr<ID3D12Resource> g_buffer_g0;
 ComPtr<ID3D12Resource> g_buffer_g1;
-ComPtr<ID3D12Resource> g_buffer_W0;
-ComPtr<ID3D12Resource> g_buffer_W1;
-ComPtr<ID3D12Resource> g_buffer_Wout;
-ComPtr<ID3D12Resource> g_buffer_W0_scale;
-ComPtr<ID3D12Resource> g_buffer_W1_scale;
-ComPtr<ID3D12Resource> g_buffer_Wout_scale;
+ComPtr<ID3D12Resource> g_buffer_decoder;
 ComPtr<ID3D12Resource> g_buffer_lighting_params;
 
 ComPtr<ID3D12Fence> g_fence;
@@ -228,7 +223,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 3 + 3) + 3 + 5;
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 1) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -975,7 +970,7 @@ void LoadContent()
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
         .Range(
-          1 + 1 + 3 + 3,
+          1 + 1 + 1,
           D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
           D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
           D3D12_SHADER_VISIBILITY_ALL)
@@ -1031,7 +1026,7 @@ void LoadContent()
     rsb.RootConstants(sizeof(ModelViewProjection) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(1, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL)
         .Range(
-          1 + 1 + 3 + 3,
+          1 + 1 + 1,
           D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
           D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC,
           D3D12_SHADER_VISIBILITY_ALL)
@@ -1243,123 +1238,23 @@ void UploadCompressedData(openntc::CompressedData& cdata)
   }
 
   {
-    g_buffer_W0 = CreateBufferWithData(
+    g_buffer_decoder = CreateBufferWithData(
       g_device.Get(),
       D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.W0_size_,
-      cdata.W0_size_,
-      cdata.W0_);
-    
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.W0_size_ / (sizeof(uint32_t));
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-    g_device->CreateShaderResourceView(g_buffer_W0.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu_);
-  }
-
-  {
-    g_buffer_W1 = CreateBufferWithData(
-      g_device.Get(),
-      D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.W1_size_,
-      cdata.W1_size_,
-      cdata.W1_);
+      cdata.decoder_size_,
+      cdata.decoder_size_,
+      cdata.decoder_);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srv_desc.Buffer.FirstElement = 0;
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.W1_size_ / (sizeof(uint32_t));
+    srv_desc.Buffer.NumElements = cdata.decoder_size_ / (sizeof(uint32_t));
     srv_desc.Buffer.StructureByteStride = 0;
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
-    g_device->CreateShaderResourceView(g_buffer_W1.Get(), &srv_desc, g_dhandle_ntc_data[3].cpu_);
-  }
-
-  {
-    g_buffer_Wout = CreateBufferWithData(
-      g_device.Get(),
-      D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.Wout_size_,
-      cdata.Wout_size_,
-      cdata.Wout_);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.Wout_size_ / (sizeof(uint32_t));
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-    g_device->CreateShaderResourceView(g_buffer_Wout.Get(), &srv_desc, g_dhandle_ntc_data[4].cpu_);
-  }
-
-  {
-    g_buffer_W0_scale = CreateBufferWithData(
-      g_device.Get(),
-      D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.W0_scale_size_,
-      cdata.W0_scale_size_,
-      cdata.W0_scale_);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.W0_scale_size_ / (sizeof(float));
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-    g_device->CreateShaderResourceView(g_buffer_W0_scale.Get(), &srv_desc, g_dhandle_ntc_data[5].cpu_);
-  }
-
-  {
-    g_buffer_W1_scale = CreateBufferWithData(
-      g_device.Get(),
-      D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.W1_scale_size_,
-      cdata.W1_scale_size_,
-      cdata.W1_scale_);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.W1_scale_size_ / (sizeof(float));
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-    g_device->CreateShaderResourceView(g_buffer_W1_scale.Get(), &srv_desc, g_dhandle_ntc_data[6].cpu_);
-  }
-
-  {
-    g_buffer_Wout_scale = CreateBufferWithData(
-      g_device.Get(),
-      D3D12_HEAP_TYPE_GPU_UPLOAD,
-      cdata.Wout_scale_size_,
-      cdata.Wout_scale_size_,
-      cdata.Wout_scale_);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv_desc.Buffer.FirstElement = 0;
-    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    srv_desc.Buffer.NumElements = cdata.Wout_scale_size_ / (sizeof(float));
-    srv_desc.Buffer.StructureByteStride = 0;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-    g_device->CreateShaderResourceView(g_buffer_Wout_scale.Get(), &srv_desc, g_dhandle_ntc_data[7].cpu_);
+    g_device->CreateShaderResourceView(g_buffer_decoder.Get(), &srv_desc, g_dhandle_ntc_data[2].cpu_);
   }
 }
 
@@ -2671,7 +2566,7 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     for (int tex_i = 0; tex_i < openntc::kMaxSources; tex_i++)
       g_dhandle_tex[tex_i] = g_dalloc_srv.Allocate();
     g_dhandle_ntc_info = g_dalloc_srv.Allocate();
-    for (int i = 0; i < 1 + 1 + 3 + 3; i++)
+    for (int i = 0; i < 1 + 1 + 1; i++)
       g_dhandle_ntc_data[i] = g_dalloc_srv.Allocate();
     for (int i = 0; i < 2; i++)
       g_dhandle_ibl[i] = g_dalloc_srv.Allocate();

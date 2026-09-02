@@ -238,12 +238,9 @@ public:
 
   uint32_t* g0_host_[kMaxLevels];
   uint32_t* g1_host_[kMaxLevels];
-  uint32_t* W0_host_;
-  uint32_t* W1_host_;
-  uint32_t* Wout_host_;
-  float* W0_scale_;
-  float* W1_scale_;
-  float* Wout_scale_;
+
+  uint8_t* decoder_host_;
+  size_t decoder_size_;
   CalibrationData caldata_;
 
   uint8_t* mips_host_[kMaxSources][kMaxMips];
@@ -369,24 +366,13 @@ struct CompressedData
 {
   uint32_t* g0_[Context::kMaxLevels];
   uint32_t* g1_[Context::kMaxLevels];
-  uint32_t* W0_;
-  uint32_t* W1_;
-  uint32_t* Wout_;
-
-  float* W0_scale_;
-  float* W1_scale_;
-  float* Wout_scale_;
+  void* decoder_;
 
   size_t g0_size_[Context::kMaxLevels];
   size_t g1_size_[Context::kMaxLevels];
   size_t g0_offset_[Context::kMaxLevels];
   size_t g1_offset_[Context::kMaxLevels];
-  size_t W0_size_;
-  size_t W1_size_;
-  size_t Wout_size_;
-  size_t W0_scale_size_;
-  size_t W1_scale_size_;
-  size_t Wout_scale_size_;
+  size_t decoder_size_;
   
   int g0_grid_dim_[Context::kMaxLevels];
   int g1_grid_dim_[Context::kMaxLevels];

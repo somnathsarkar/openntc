@@ -71,6 +71,14 @@ struct NTC
 #define FEATURE_DIM_PADDED ((((4 * G0_CHANNELS + G1_CHANNELS + POS_ENC_DIM + 1) + 15) / 16) * 16)
 #define FEAT_UINTS (FEATURE_DIM_PADDED / 4)
 #define HIDDEN_UINTS (HIDDEN_DIM / 4)
+
+#define DEC_W0_OFFSET 0
+#define DEC_W1_OFFSET (DEC_W0_OFFSET + HIDDEN_DIM * FEATURE_DIM_PADDED)
+#define DEC_WOUT_OFFSET (DEC_W1_OFFSET + HIDDEN_DIM * HIDDEN_DIM)
+#define DEC_W0_SCALE_OFFSET (DEC_WOUT_OFFSET + OUT_DIM_PADDED * HIDDEN_DIM)
+#define DEC_W1_SCALE_OFFSET (DEC_W0_SCALE_OFFSET + HIDDEN_DIM * 4)
+#define DEC_WOUT_SCALE_OFFSET (DEC_W1_SCALE_OFFSET + HIDDEN_DIM * 4)
+#define DEC_SIZE (DEC_WOUT_SCALE_OFFSET + OUT_DIM_PADDED * 4)
 #define G0_FEAT_BASE_SLOT 0
 #define G1_FEAT_BASE_SLOT (4 * G0_CHANNELS)
 #define POSENC_FEAT_BASE_SLOT (G1_FEAT_BASE_SLOT + G1_CHANNELS)
@@ -363,12 +371,7 @@ vector<float, HIDDEN_DIM> hardgelu_coop(vector<float, HIDDEN_DIM> x)
 }
 
 void PerformNTCInference(
-  ByteAddressBuffer W0,
-  ByteAddressBuffer W1,
-  ByteAddressBuffer Wout,
-  ByteAddressBuffer W0_scale,
-  ByteAddressBuffer W1_scale,
-  ByteAddressBuffer Wout_scale,
+  ByteAddressBuffer decoder,
   NTC NTCCBV,
   vector<uint, FEAT_UINTS> feat,
   out vector<float, OUT_DIM_PADDED> o_Woutx)
@@ -382,10 +385,10 @@ void PerformNTCInference(
 
   // Coop multiplication.
   typedef Matrix<ComponentType::I8, HIDDEN_DIM, FEATURE_DIM_PADDED, MatrixUse::A, MatrixScope::Thread> W0_t;
-  W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(W0, 0, FEATURE_DIM_PADDED);
+  W0_t W0_coop = W0_t::Load<MatrixLayout::RowMajor>(decoder, DEC_W0_OFFSET, FEATURE_DIM_PADDED);
   InterpretedVector<uint, FEAT_UINTS, ComponentType::I8> feat_coop = MakeInterpretedVector<ComponentType::I8>(feat);
   vector<int32_t, HIDDEN_DIM> W0x_acc = MultiplyAdd<int32_t>(W0_coop, feat_coop, zero_hidden);
-  vector<float, HIDDEN_DIM> W0_scale_coop = W0_scale.Load< vector<float, HIDDEN_DIM> >(0);
+  vector<float, HIDDEN_DIM> W0_scale_coop = decoder.Load< vector<float, HIDDEN_DIM> >(DEC_W0_SCALE_OFFSET);
   vector<float, HIDDEN_DIM> W0x_facc = vector<float, HIDDEN_DIM>(W0x_acc) * W0_scale_coop;
   W0x_facc = hardgelu_coop(W0x_facc) * NTCCBV.rcp_s_a1_;
   vector<int32_t, HIDDEN_DIM> W0x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W0x_facc));
@@ -394,10 +397,10 @@ void PerformNTCInference(
     W0x[i / 4] = pack_clamp_s8(int4(W0x_unpacked[i], W0x_unpacked[i + 1], W0x_unpacked[i + 2], W0x_unpacked[i + 3]));
 
   typedef Matrix<ComponentType::I8, HIDDEN_DIM, HIDDEN_DIM, MatrixUse::A, MatrixScope::Thread> W1_t;
-  W1_t W1_coop = W1_t::Load<MatrixLayout::RowMajor>(W1, 0, HIDDEN_DIM);
+  W1_t W1_coop = W1_t::Load<MatrixLayout::RowMajor>(decoder, DEC_W1_OFFSET, HIDDEN_DIM);
   InterpretedVector<uint, HIDDEN_UINTS, ComponentType::I8> W0x_coop = MakeInterpretedVector<ComponentType::I8>(W0x);
   vector<int32_t, HIDDEN_DIM> W1x_acc = MultiplyAdd<int32_t>(W1_coop, W0x_coop, zero_hidden);
-  vector<float, HIDDEN_DIM> W1_scale_coop = W1_scale.Load< vector<float, HIDDEN_DIM> >(0);
+  vector<float, HIDDEN_DIM> W1_scale_coop = decoder.Load< vector<float, HIDDEN_DIM> >(DEC_W1_SCALE_OFFSET);
   vector<float, HIDDEN_DIM> W1x_facc = vector<float, HIDDEN_DIM>(W1x_acc) * W1_scale_coop;
   W1x_facc = hardgelu_coop(W1x_facc) * NTCCBV.rcp_s_a2_;
   vector<int32_t, HIDDEN_DIM> W1x_unpacked = vector<int32_t, HIDDEN_DIM>(round(W1x_facc));
@@ -406,10 +409,10 @@ void PerformNTCInference(
     W1x[i / 4] = pack_clamp_s8(int4(W1x_unpacked[i], W1x_unpacked[i + 1], W1x_unpacked[i + 2], W1x_unpacked[i + 3]));
 
   typedef Matrix<ComponentType::I8, OUT_DIM_PADDED, HIDDEN_DIM, MatrixUse::A, MatrixScope::Thread> Wout_t;
-  Wout_t Wout_coop = Wout_t::Load<MatrixLayout::RowMajor>(Wout, 0, HIDDEN_DIM);
+  Wout_t Wout_coop = Wout_t::Load<MatrixLayout::RowMajor>(decoder, DEC_WOUT_OFFSET, HIDDEN_DIM);
   InterpretedVector<uint, HIDDEN_UINTS, ComponentType::I8> W1x_coop = MakeInterpretedVector<ComponentType::I8>(W1x);
   vector<int32_t, OUT_DIM_PADDED> Woutx_acc = MultiplyAdd<int32_t>(Wout_coop, W1x_coop, zero_out);
-  vector<float, OUT_DIM_PADDED> Wout_scale_coop = Wout_scale.Load< vector<float, OUT_DIM_PADDED> >(0);
+  vector<float, OUT_DIM_PADDED> Wout_scale_coop = decoder.Load< vector<float, OUT_DIM_PADDED> >(DEC_WOUT_SCALE_OFFSET);
   o_Woutx = vector<float, OUT_DIM_PADDED>(Woutx_acc) * Wout_scale_coop;
 }
 
@@ -426,12 +429,7 @@ int8_t4_packed PackS8(int32_t4 unpacked)
 }
 
 void PerformNTCInference(
-  ByteAddressBuffer W0,
-  ByteAddressBuffer W1,
-  ByteAddressBuffer Wout,
-  ByteAddressBuffer W0_scale,
-  ByteAddressBuffer W1_scale,
-  ByteAddressBuffer Wout_scale,
+  ByteAddressBuffer decoder,
   NTC NTCCBV,
   uint feat[FEAT_UINTS],
   out float o_Woutx[OUT_DIM_PADDED])
@@ -447,10 +445,10 @@ void PerformNTCInference(
     [unroll]
     for (int j = 0; j < FEAT_UINTS; j += 4)
     {
-      uint4 W0vx = W0.Load<uint4>((i + 0) * (FEATURE_DIM_PADDED) + (j * 4));
-      uint4 W0vy = W0.Load<uint4>((i + 1) * (FEATURE_DIM_PADDED) + (j * 4));
-      uint4 W0vz = W0.Load<uint4>((i + 2) * (FEATURE_DIM_PADDED) + (j * 4));
-      uint4 W0vw = W0.Load<uint4>((i + 3) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vx = decoder.Load<uint4>(DEC_W0_OFFSET + (i + 0) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vy = decoder.Load<uint4>(DEC_W0_OFFSET + (i + 1) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vz = decoder.Load<uint4>(DEC_W0_OFFSET + (i + 2) * (FEATURE_DIM_PADDED) + (j * 4));
+      uint4 W0vw = decoder.Load<uint4>(DEC_W0_OFFSET + (i + 3) * (FEATURE_DIM_PADDED) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -460,7 +458,7 @@ void PerformNTCInference(
         acc.w = dot4add_i8packed(W0vw[c], feat[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * W0_scale.Load<float4>(i * 4);
+    float4 facc = float4(acc) * decoder.Load<float4>(DEC_W0_SCALE_OFFSET + i * 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a1_;
     int4 unpacked = int4(round(facc));
     W0x[i / 4] = PackS8(unpacked);
@@ -473,10 +471,10 @@ void PerformNTCInference(
     [unroll]
     for (int j = 0; j < HIDDEN_UINTS; j += 4)
     {
-      uint4 W1vx = W1.Load<uint4>((i + 0) * (HIDDEN_DIM) + (j * 4));
-      uint4 W1vy = W1.Load<uint4>((i + 1) * (HIDDEN_DIM) + (j * 4));
-      uint4 W1vz = W1.Load<uint4>((i + 2) * (HIDDEN_DIM) + (j * 4));
-      uint4 W1vw = W1.Load<uint4>((i + 3) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vx = decoder.Load<uint4>(DEC_W1_OFFSET + (i + 0) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vy = decoder.Load<uint4>(DEC_W1_OFFSET + (i + 1) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vz = decoder.Load<uint4>(DEC_W1_OFFSET + (i + 2) * (HIDDEN_DIM) + (j * 4));
+      uint4 W1vw = decoder.Load<uint4>(DEC_W1_OFFSET + (i + 3) * (HIDDEN_DIM) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -486,7 +484,7 @@ void PerformNTCInference(
         acc.w = dot4add_i8packed(W1vw[c], W0x[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * W1_scale.Load<float4>(i * 4);
+    float4 facc = float4(acc) * decoder.Load<float4>(DEC_W1_SCALE_OFFSET + i * 4);
     facc = hardgelu4(facc) * NTCCBV.rcp_s_a2_;
     int4 unpacked = int4(round(facc));
     W1x[i / 4] = PackS8(unpacked);
@@ -499,10 +497,10 @@ void PerformNTCInference(
     [unroll]
     for (int j = 0; j < HIDDEN_UINTS; j += 4)
     {
-      uint4 Woutvx = Wout.Load<uint4>((i + 0) * (HIDDEN_DIM) + (j * 4));
-      uint4 Woutvy = Wout.Load<uint4>((i + 1) * (HIDDEN_DIM) + (j * 4));
-      uint4 Woutvz = Wout.Load<uint4>((i + 2) * (HIDDEN_DIM) + (j * 4));
-      uint4 Woutvw = Wout.Load<uint4>((i + 3) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvx = decoder.Load<uint4>(DEC_WOUT_OFFSET + (i + 0) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvy = decoder.Load<uint4>(DEC_WOUT_OFFSET + (i + 1) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvz = decoder.Load<uint4>(DEC_WOUT_OFFSET + (i + 2) * (HIDDEN_DIM) + (j * 4));
+      uint4 Woutvw = decoder.Load<uint4>(DEC_WOUT_OFFSET + (i + 3) * (HIDDEN_DIM) + (j * 4));
       [unroll]
       for (int c = 0; c < 4; c++)
       {
@@ -512,7 +510,7 @@ void PerformNTCInference(
         acc.w = dot4add_i8packed(Woutvw[c], W1x[j + c], acc.w);
       }
     }
-    float4 facc = float4(acc) * Wout_scale.Load<float4>(i * 4);
+    float4 facc = float4(acc) * decoder.Load<float4>(DEC_WOUT_SCALE_OFFSET + i * 4);
     o_Woutx[i + 0] = facc.x;
     o_Woutx[i + 1] = facc.y;
     o_Woutx[i + 2] = facc.z;

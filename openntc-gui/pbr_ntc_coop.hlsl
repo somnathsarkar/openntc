@@ -15,14 +15,9 @@ ConstantBuffer<LightingParams> LightingParamsCBV : register(b2, space0);
 
 Buffer<uint> g0 : register(t0, space0);
 Buffer<uint> g1 : register(t1, space0);
-ByteAddressBuffer W0 : register(t2, space0);
-ByteAddressBuffer W1 : register(t3, space0);
-ByteAddressBuffer Wout : register(t4, space0);
-ByteAddressBuffer W0_scale : register(t5, space0);
-ByteAddressBuffer W1_scale : register(t6, space0);
-ByteAddressBuffer Wout_scale : register(t7, space0);
-TextureCube<float4> tex_specular_ibl : register(t8, space0);
-Texture2D<float4> tex_dfg : register(t9, space0);
+ByteAddressBuffer decoder : register(t2, space0);
+TextureCube<float4> tex_specular_ibl : register(t3, space0);
+Texture2D<float4> tex_dfg : register(t4, space0);
 SamplerState sampler_trilinear : register(s0);
 
 struct VertexShaderInput
@@ -50,7 +45,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   vector<uint, FEAT_UINTS> feat;
   vector<float, OUT_DIM_PADDED> Woutx;
   GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv_, v_in.pos_.xy, feat);
-  PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);
+  PerformNTCInference(decoder, NTCCBV, feat, Woutx);
   float displacement = (Woutx[4] - 0.5) * LightingParamsCBV.displacement_scale_;
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
 
@@ -105,7 +100,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   vector<uint, FEAT_UINTS> feat;
   vector<float, OUT_DIM_PADDED> Woutx;
   GetFeaturesPacked(g0, g1, NTCCBV, UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_), p_in.pos_.xy, feat);
-  PerformNTCInference(W0, W1, Wout, W0_scale, W1_scale, Wout_scale, NTCCBV, feat, Woutx);
+  PerformNTCInference(decoder, NTCCBV, feat, Woutx);
 
   float ntc_ao = Woutx[0];
   float3 ntc_albedo = float3(Woutx[1], Woutx[2], Woutx[3]);

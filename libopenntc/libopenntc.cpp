@@ -370,12 +370,14 @@ Result Context::Init(const ContextInitInfo& init_info)
   cudaMalloc(&rstate_, sizeof(curandState) * rand_dim_);
   launch_initialize_rand(rand_dim_, rstate_);
 
-  W0_host_ = new uint32_t[(hidden_dim_ * feature_dim_padded_) / 4];
-  W1_host_ = new uint32_t[W1_.NumElems() / 4];
-  Wout_host_ = new uint32_t[(out_dim_padded_ * hidden_dim_) / 4];
-  W0_scale_ = new float[hidden_dim_];
-  W1_scale_ = new float[hidden_dim_];
-  Wout_scale_ = new float[out_dim_padded_];
+  size_t W0_size = hidden_dim_ * feature_dim_padded_;
+  size_t W1_size = hidden_dim_ * hidden_dim_;
+  size_t Wout_size = out_dim_padded_ * hidden_dim_;
+  size_t W0_scale_size = hidden_dim_ * sizeof(float);
+  size_t W1_scale_size = hidden_dim_ * sizeof(float);
+  size_t Wout_scale_size = out_dim_padded_ * sizeof(float);
+  decoder_size_ = W0_size + W1_size + Wout_size + W0_scale_size + W1_scale_size + Wout_scale_size;
+  decoder_host_ = new uint8_t[decoder_size_];
 
   initialized_ = true;
   return Result::Success;
@@ -797,10 +799,24 @@ TrainProgress Context::Train(int32_t batch_count)
     {
       memcpy(W0_unpack + i * feature_dim_padded_, W0_unpack_unpadded + i * feature_dim_, feature_dim_ * sizeof(float));
     }
-    QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_host_, W0_scale_);
-    QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1_, W1_host_, W1_scale_);
-    QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2_, Wout_host_, Wout_scale_);
-    for (int i = out_dim_; i < out_dim_padded_; i++) Wout_scale_[i] = 0.0f;
+    // Section views into the decoder blob; layout mirrors DEC_*_OFFSET in common.hlsli
+    uint8_t* dec = decoder_host_;
+    uint32_t* W0_out = (uint32_t*)(dec);
+    dec += hidden_dim_ * feature_dim_padded_;
+    uint32_t* W1_out = (uint32_t*)(dec);
+    dec += hidden_dim_ * hidden_dim_;
+    uint32_t* Wout_out = (uint32_t*)(dec);
+    dec += out_dim_padded_ * hidden_dim_;
+    float* W0_scale_out = (float*)(dec);
+    dec += hidden_dim_ * sizeof(float);
+    float* W1_scale_out = (float*)(dec);
+    dec += hidden_dim_ * sizeof(float);
+    float* Wout_scale_out = (float*)(dec);
+
+    QuantizeWeights(W0_unpack, hidden_dim_, feature_dim_padded_, 1.0f / 128.0f, W0_out, W0_scale_out);
+    QuantizeWeights(W1_unpack, hidden_dim_, hidden_dim_, caldata_.s_a1_, W1_out, W1_scale_out);
+    QuantizeWeights(Wout_unpack, out_dim_, hidden_dim_, caldata_.s_a2_, Wout_out, Wout_scale_out);
+    for (int i = out_dim_; i < out_dim_padded_; i++) Wout_scale_out[i] = 0.0f;
 
     delete[] W0_unpack;
     delete[] W1_unpack;
@@ -989,19 +1005,8 @@ CompressedData Context::GetCompressedData()
     data.g0_offset_[i] = data.g0_offset_[i - 1] + data.g0_size_[i - 1];
     data.g1_offset_[i] = data.g1_offset_[i - 1] + data.g1_size_[i - 1];
   }
-  data.W0_ = W0_host_;
-  data.W0_size_ = ((hidden_dim_ * feature_dim_padded_) / 4) * sizeof(uint32_t);
-  data.W1_ = W1_host_;
-  data.W1_size_ = W1_.SizeBytes() / 4;
-  data.Wout_ = Wout_host_;
-  data.Wout_size_ = ((out_dim_padded_ * hidden_dim_) / 4) * sizeof(uint32_t);
-
-  data.W0_scale_ = W0_scale_;
-  data.W0_scale_size_ = hidden_dim_ * sizeof(float);
-  data.W1_scale_ = W1_scale_;
-  data.W1_scale_size_ = hidden_dim_ * sizeof(float);
-  data.Wout_scale_ = Wout_scale_;
-  data.Wout_scale_size_ = out_dim_padded_ * sizeof(float);
+  data.decoder_ = decoder_host_;
+  data.decoder_size_ = decoder_size_;
 
   for (int i = 0; i < level_count_; i++)
   {
@@ -1439,12 +1444,8 @@ void Context::Destroy()
   cudaFree(rstate_);
   rstate_ = nullptr;
 
-  delete[] W0_host_;
-  delete[] W1_host_;
-  delete[] Wout_host_;
-  delete[] W0_scale_;
-  delete[] W1_scale_;
-  delete[] Wout_scale_;
+  delete[] decoder_host_;
+  decoder_host_ = nullptr;
 
   initialized_ = false;
 }
@@ -1512,28 +1513,23 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
     blobs.push_back({std::format("g0_{}", i), data.g0_size_[i], data.g0_[i]});
   for (int i = 0; i < data.level_count_; i++)
     blobs.push_back({std::format("g1_{}", i), data.g1_size_[i], data.g1_[i]});
-  blobs.push_back({"W0", data.W0_size_, data.W0_});
-  blobs.push_back({"W1", data.W1_size_, data.W1_});
-  blobs.push_back({"Wout", data.Wout_size_, data.Wout_});
-  blobs.push_back({"W0_scale", data.W0_scale_size_, data.W0_scale_});
-  blobs.push_back({"W1_scale", data.W1_scale_size_, data.W1_scale_});
-  blobs.push_back({"Wout_scale", data.Wout_scale_size_, data.Wout_scale_});
+  blobs.push_back({"decoder", data.decoder_size_, data.decoder_});
 
   nlohmann::json j;
-  j["source"] = {{"generator", "openntc"}, {"version", 4}};
+  j["source"] = {{"generator", "openntc"}, {"version", 5}};
   j["profile"] = ProfileToString(data.profile_);
   j["dim"] = data.dim_;
   j["mip_count"] = data.mip_count_;
   j["level_count"] = data.level_count_;
   j["g0"] = {
     {"grid_dims",
-      {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4]}},
+      {data.g0_grid_dim_[0], data.g0_grid_dim_[1], data.g0_grid_dim_[2], data.g0_grid_dim_[3], data.g0_grid_dim_[4], data.g0_grid_dim_[5]}},
     {"bits", data.g0_bits_per_channel_},
     {"channels", data.g0_channels_}
   };
   j["g1"] = {
     {"grid_dims",
-      {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4]}},
+      {data.g1_grid_dim_[0], data.g1_grid_dim_[1], data.g1_grid_dim_[2], data.g1_grid_dim_[3], data.g1_grid_dim_[4], data.g1_grid_dim_[5]}},
     {"bits", data.g1_bits_per_channel_},
     {"channels", data.g1_channels_}
   };
@@ -1704,12 +1700,7 @@ Result Context::Load(const std::string& path, FileData& o_data)
     slots.push_back({std::format("g0_{}", i), (void**)&o_data.data_.g0_[i], &o_data.data_.g0_size_[i], false});
   for (int i = 0; i < o_data.data_.level_count_; i++)
     slots.push_back({std::format("g1_{}", i), (void**)&o_data.data_.g1_[i], &o_data.data_.g1_size_[i], false});
-  slots.push_back({"W0", (void**)&o_data.data_.W0_, &o_data.data_.W0_size_, false});
-  slots.push_back({"W1", (void**)&o_data.data_.W1_, &o_data.data_.W1_size_, false});
-  slots.push_back({"Wout", (void**)&o_data.data_.Wout_, &o_data.data_.Wout_size_, false});
-  slots.push_back({"W0_scale", (void**)&o_data.data_.W0_scale_, &o_data.data_.W0_scale_size_, false});
-  slots.push_back({"W1_scale", (void**)&o_data.data_.W1_scale_, &o_data.data_.W1_scale_size_, false});
-  slots.push_back({"Wout_scale", (void**)&o_data.data_.Wout_scale_, &o_data.data_.Wout_scale_size_, false});
+  slots.push_back({"decoder", (void**)&o_data.data_.decoder_, &o_data.data_.decoder_size_, false});
   
   const nlohmann::json* jblobs = nullptr;
   {
