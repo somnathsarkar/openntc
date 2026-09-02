@@ -92,7 +92,7 @@ function(add_hlsl_variant COMPILER SRC_BASE OUT_BASE PROFILE_VS PROFILE_PS)
       COMMAND ${COMPILER} -T ${profile} -E ${stage}_main ${ARGN}
               "$<$<CONFIG:Debug,RelWithDebInfo>:-Zi;-Qembed_debug>"
               -Fo ${out} ${SHADER_DIR}/${SRC_BASE}.hlsl
-      DEPENDS ${SHADER_DIR}/${SRC_BASE}.hlsl ${SHADER_DIR}/common.hlsli
+      DEPENDS ${SHADER_DIR}/${SRC_BASE}.hlsl ${SHADER_DIR}/common.hlsli ${SHADER_DIR}/ntc_decode.hlsli
       COMMENT "dxc (${profile}) ${SRC_BASE}.hlsl -> ${out}"
       COMMAND_EXPAND_LISTS
       VERBATIM)
