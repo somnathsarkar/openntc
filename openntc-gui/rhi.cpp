@@ -3,6 +3,9 @@
 #include <cassert>
 #include <d3dcompiler.h>
 
+// NOTE: This is far away from a full RHI, currently just a list of helper functions.
+//  Need to split out further functionality from main before Vulkan implementation.
+
 using namespace Microsoft::WRL;
 
 #if defined(_DEBUG)
