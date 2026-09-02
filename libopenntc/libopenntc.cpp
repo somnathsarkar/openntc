@@ -1506,6 +1506,26 @@ static bool ProfileFromString(const std::string& s, Profile& o_profile)
   return false;
 }
 
+void FillNTCConstants(const CompressedData& data, NTCConstants& o_constants)
+{
+  o_constants = {};
+  for (int i = 0; i < data.level_count_; i++)
+  {
+    o_constants.g0_grid_dim_[i] = data.g0_grid_dim_[i];
+    o_constants.g1_grid_dim_[i] = data.g1_grid_dim_[i];
+    o_constants.g0_offset_[i] = static_cast<uint32_t>(data.g0_offset_[i]);
+    o_constants.g1_offset_[i] = static_cast<uint32_t>(data.g1_offset_[i]);
+  }
+  o_constants.g0_bits_per_channel_ = data.g0_bits_per_channel_;
+  o_constants.g1_bits_per_channel_ = data.g1_bits_per_channel_;
+  o_constants.g0_channels_ = data.g0_channels_;
+  o_constants.g1_channels_ = data.g1_channels_;
+  o_constants.dim_ = data.dim_;
+  o_constants.mip_count_ = data.mip_count_;
+  o_constants.rcp_s_a1_ = 1.0f / data.caldata_.s_a1_;
+  o_constants.rcp_s_a2_ = 1.0f / data.caldata_.s_a2_;
+}
+
 Result Context::Dump(const std::string& path, const CompressedData& data)
 {
   std::vector<Blob> blobs;

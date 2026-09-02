@@ -169,22 +169,6 @@ struct ModelViewProjection
   XMMATRIX view_to_proj_;
 };
 
-struct NTCInfo
-{
-  int g0_grid_dim_[8];
-  int g1_grid_dim_[8];
-  uint32_t g0_offset_[8];
-  uint32_t g1_offset_[8];
-  int g0_bits_per_channel_;
-  int g1_bits_per_channel_;
-  int g0_channels_;
-  int g1_channels_;
-  int dim_;
-  int mip_count_;
-  float rcp_s_a1_;
-  float rcp_s_a2_;
-};
-
 struct CubemapTransforms
 {
   XMMATRIX proj_to_view_;
@@ -1152,31 +1136,16 @@ void UploadCompressedData(openntc::CompressedData& cdata)
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
 
   {
-    NTCInfo ntc_info = {};
-    for (int i = 0; i < cdata.level_count_; i++)
-    {
-      ntc_info.g0_grid_dim_[i] = cdata.g0_grid_dim_[i];
-      ntc_info.g1_grid_dim_[i] = cdata.g1_grid_dim_[i];
-      ntc_info.g0_offset_[i] = static_cast<uint32_t>(cdata.g0_offset_[i]);
-      ntc_info.g1_offset_[i] = static_cast<uint32_t>(cdata.g1_offset_[i]);
-    }
+    openntc::NTCConstants ntc_info;
+    openntc::FillNTCConstants(cdata, ntc_info);
 
-    ntc_info.g0_bits_per_channel_ = cdata.g0_bits_per_channel_;
-    ntc_info.g1_bits_per_channel_ = cdata.g1_bits_per_channel_;
-    ntc_info.g0_channels_ = cdata.g0_channels_;
-    ntc_info.g1_channels_ = cdata.g1_channels_;
-    ntc_info.dim_ = cdata.dim_;
-    ntc_info.mip_count_ = cdata.mip_count_;
-    ntc_info.rcp_s_a1_ = 1.0f / cdata.caldata_.s_a1_;
-    ntc_info.rcp_s_a2_ = 1.0f / cdata.caldata_.s_a2_;
-
-    uint64_t cbv_size = RoundUpTo(sizeof(NTCInfo), 256);
+    uint64_t cbv_size = RoundUpTo(sizeof(openntc::NTCConstants), 256);
 
     g_buffer_ntc_info = CreateBufferWithData(
       g_device.Get(),
       D3D12_HEAP_TYPE_GPU_UPLOAD,
       cbv_size,
-      sizeof(NTCInfo),
+      sizeof(openntc::NTCConstants),
       &ntc_info);
     
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};

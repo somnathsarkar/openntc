@@ -362,6 +362,22 @@ struct TextureData
   uint8_t* mips_[kMaxSources][Context::kMaxMips];
 };
 
+struct NTCConstants
+{
+  int32_t g0_grid_dim_[8];
+  int32_t g1_grid_dim_[8];
+  uint32_t g0_offset_[8];
+  uint32_t g1_offset_[8];
+  int32_t g0_bits_per_channel_;
+  int32_t g1_bits_per_channel_;
+  int32_t g0_channels_;
+  int32_t g1_channels_;
+  int32_t dim_;
+  int32_t mip_count_;
+  float rcp_s_a1_;
+  float rcp_s_a2_;
+};
+
 struct CompressedData
 {
   uint32_t* g0_[Context::kMaxLevels];
@@ -389,6 +405,8 @@ struct CompressedData
 
   CalibrationData caldata_;
 };
+
+void FillNTCConstants(const CompressedData& data, NTCConstants& o_constants);
 
 class FileData
 {
