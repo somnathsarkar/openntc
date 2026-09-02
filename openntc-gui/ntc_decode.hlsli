@@ -106,13 +106,58 @@ uint ExtractCellChannel(uint w0, uint w1, uint w2, uint phase, int k, uint n)
   return (w >> (bit & 31u)) & ((1u << n) - 1u);
 }
 
+// Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
+float NTCInterleavedGradientNoise(float2 pos_screen)
+{
+  return frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
+}
+
+// For a uv sample in the pixel shader, computes the LOD using screen-space derivatives.
+//  For anisotropic filtering, use the minor axis to compute LOD, then save the UV space
+//  spanned by the major axis
+float NTCComputeLod(NTC NTCCBV, float2 uv, out float2 o_footprint)
+{
+#if __SHADER_TARGET_STAGE != __SHADER_STAGE_PIXEL
+  o_footprint = 0.0.xx;
+  return 0.0;
+#else
+  float2 dUvdX = ddx(uv) * NTCCBV.dim_;
+  float2 dUvdY = ddy(uv) * NTCCBV.dim_;
+  float gUvdX = dot(dUvdX, dUvdX);
+  float gUvdY = dot(dUvdY, dUvdY);
+  o_footprint = ((gUvdX > gUvdY) ? dUvdX : dUvdY) / NTCCBV.dim_;
+  float minor_axis = sqrt(min(gUvdX, gUvdY));
+  float major_axis = sqrt(max(gUvdX, gUvdY));
+  float max_aniso = 8.0f;
+  minor_axis = max(minor_axis, major_axis / max_aniso);
+  return clamp(log2(minor_axis), 0.0, float(NTCCBV.mip_count_ - 1));
+#endif
+}
+
+// NTCs can only sample from integral filter levels efficiently.
+// For a float lod a with frac(lod) = p, select floor(a) with probability 1 - p
+// and ceil(a) with probability p
+int NTCStochasticFilterLod(float lod, float2 pos_screen)
+{
+  float ign = NTCInterleavedGradientNoise(pos_screen);
+  return int(lod) + (ign < frac(lod) ? 1 : 0);
+}
+
+// Stochastic anisotropic filtering: Jitter the uv at random in the uv space spanned
+// by it along its major axis (Computed in NTCComputeLod)
+float2 NTCStochasticFilterUv(float2 uv, float2 footprint, float2 pos_screen)
+{
+  float ign = NTCInterleavedGradientNoise(pos_screen + float2(61.0, 37.0));
+  return uv + footprint * (ign - 0.5);
+}
+
 #ifdef COOP_SUPPORT
 void GetFeaturesPacked(
   Buffer<uint> g0,
   Buffer<uint> g1,
   NTC NTCCBV,
   float2 uv,
-  float2 pos_screen,
+  int lod,
   out vector<uint, FEAT_UINTS> o_feat)
 #else
 void GetFeaturesPacked(
@@ -120,35 +165,11 @@ void GetFeaturesPacked(
   Buffer<uint> g1,
   NTC NTCCBV,
   float2 uv,
-  float2 pos_screen,
+  int lod,
   out uint o_feat[FEAT_UINTS])
 #endif
 {
-#if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
-  float2 dUvdX = ddx(uv) * NTCCBV.dim_;
-  float2 dUvdY = ddy(uv) * NTCCBV.dim_;
-  float gUvdX = dot(dUvdX, dUvdX);
-  float gUvdY = dot(dUvdY, dUvdY);
-  float2 texels_along_major_axis = (gUvdX > gUvdY) ? dUvdX : dUvdY;
-  float minor_axis = sqrt(min(gUvdX, gUvdY));
-  float major_axis = sqrt(max(gUvdX, gUvdY));
-  float max_aniso = 8.0f;
-  minor_axis = max(minor_axis, major_axis / max_aniso);
-
-  float lodab = log2(minor_axis);
-  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count_ - 1));
-  // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
-  float ign0 = frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
-  int lod = int(lodab_clamped) + (ign0 < frac(lodab_clamped) ? 1 : 0);
-#else
-  // No stochastic filtering in vertex shader
-
-  float2 texels_along_major_axis = 0.0.xx;
-  float texels_per_vertex_step = NTCCBV.dim_ / 200.0f;
-  float lodab = max(0.0f, log2(texels_per_vertex_step));
-  float lodab_clamped = clamp(lodab, 0.0, float(NTCCBV.mip_count_ - 1));
-  int lod = int(round(lodab_clamped));
-#endif
+  lod = clamp(lod, 0, NTCCBV.mip_count_ - 1);
   [unroll]
   for (int z = 0; z < FEAT_UINTS; z++)
     o_feat[z] = 0u;
@@ -160,11 +181,8 @@ void GetFeaturesPacked(
   int g0_dim = NTCCBV.g0_grid_dim_[fli][flj];
   int g1_dim = NTCCBV.g1_grid_dim_[fli][flj];
 
-  float ign1 = frac(52.9829189 * frac(0.06711056 * (pos_screen.x + 61.0) + 0.00583715 * (pos_screen.y + 37.0)));
-  float2 uv_jittered = uv + (texels_along_major_axis / NTCCBV.dim_) * (ign1 - 0.5);
-
   // G0: G0_CHANNELS x G0_BITS bits per cell (8ch x 2b = 16b for BPP_0_2)
-  int2 g0_xy = int2(floor(uv_jittered * g0_dim - 0.5));
+  int2 g0_xy = int2(floor(uv * g0_dim - 0.5));
   int g0_x[2];
   g0_x[0] = max(g0_xy.x, 0);
   g0_x[1] = min(g0_xy.x + 1, g0_dim - 1);
@@ -205,14 +223,14 @@ void GetFeaturesPacked(
   }
 
   // G1: G1_CHANNELS x G1_BITS bits per cell
-  int2 g1_xy = int2(floor(uv_jittered * g1_dim - 0.5));
+  int2 g1_xy = int2(floor(uv * g1_dim - 0.5));
   int g1_x[2];
   g1_x[0] = max(g1_xy.x, 0);
   g1_x[1] = min(g1_xy.x + 1, g1_dim - 1);
   int g1_y[2];
   g1_y[0] = max(g1_xy.y, 0);
   g1_y[1] = min(g1_xy.y + 1, g1_dim - 1);
-  float2 fr = frac(uv_jittered * g1_dim - 0.5);
+  float2 fr = frac(uv * g1_dim - 0.5);
   float mult[4] = {(1 - fr.x) * (1 - fr.y), fr.x * (1 - fr.y), (1 - fr.x) * fr.y, fr.x * fr.y};
 
   float g1_blend[G1_CHANNELS];
@@ -261,7 +279,7 @@ void GetFeaturesPacked(
 
   // 12 triangular waves
   // Compare against training code, this should probably be part of a shared header
-  float2 cpos = uv_jittered * float(NTCCBV.dim_ >> lod);
+  float2 cpos = uv * float(NTCCBV.dim_ >> lod);
   float pe[12];
   int periods[3] = {8, 4, 2};
   [unroll]

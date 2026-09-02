@@ -42,7 +42,10 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
   uint feat[FEAT_UINTS];
   float Woutx[OUT_DIM_PADDED];
-  GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv_, v_in.pos_.xy, feat);
+  // NOTE: This heuristic LOD is exclusively for the models shipped with the UI
+  //  No stochastic filtering for displacement.
+  float lod = clamp(max(0.0f, log2(NTCCBV.dim_ / 200.0f)), 0.0, float(NTCCBV.mip_count_ - 1));
+  GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv_, int(round(lod)), feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);
   float displacement = (Woutx[4] - 0.5) * LightingParamsCBV.displacement_scale_;
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
@@ -99,7 +102,11 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   uint feat[FEAT_UINTS];
   float Woutx[OUT_DIM_PADDED];
-  GetFeaturesPacked(g0, g1, NTCCBV, UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_), p_in.pos_.xy, feat);
+  float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
+  float2 footprint;
+  float lodab = NTCComputeLod(NTCCBV, uv, footprint);
+  int lod = NTCStochasticFilterLod(lodab, p_in.pos_.xy);
+  GetFeaturesPacked(g0, g1, NTCCBV, NTCStochasticFilterUv(uv, footprint, p_in.pos_.xy), lod, feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);  
 
   float ntc_ao = Woutx[0];
