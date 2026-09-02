@@ -113,9 +113,11 @@ add_hlsl(${DXC} taa vs_6_6 ps_6_6 -D BPP_0_2)
 
 add_hlsl(${DXC} pbr_ntc vs_6_6 ps_6_6 -D BPP_0_2)
 add_hlsl_variant(${DXC} pbr_ntc pbr_ntc_bpp05 vs_6_6 ps_6_6 -D BPP_0_5)
+add_hlsl_variant(${DXC} pbr_ntc pbr_ntc_bpp10 vs_6_6 ps_6_6 -D BPP_1_0)
 if(OPENNTC_COOP)
   add_hlsl(${DXC_PREVIEW} pbr_ntc_coop vs_6_10 ps_6_10 -I ${OPENNTC_DXC_PREVIEW_INCLUDE} -D BPP_0_2)
   add_hlsl_variant(${DXC_PREVIEW} pbr_ntc_coop pbr_ntc_coop_bpp05 vs_6_10 ps_6_10 -I ${OPENNTC_DXC_PREVIEW_INCLUDE} -D BPP_0_5)
+  add_hlsl_variant(${DXC_PREVIEW} pbr_ntc_coop pbr_ntc_coop_bpp10 vs_6_10 ps_6_10 -I ${OPENNTC_DXC_PREVIEW_INCLUDE} -D BPP_1_0)
 endif()
 
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})

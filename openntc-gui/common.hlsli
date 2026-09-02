@@ -48,11 +48,16 @@ struct NTC
 #define G1_BITS 4
 #define G0_CHANNELS 12
 #define G1_CHANNELS 20
+#elif defined(BPP_1_0)
+#define G0_BITS 2
+#define G1_BITS 4
+#define G0_CHANNELS 12
+#define G1_CHANNELS 10
 #else
 #error Undefined profile
 #endif
 
-#define MAX_LEVELS 5
+#define MAX_LEVELS 6
 
 #define HIDDEN_DIM 64
 #define OUT_DIM 9
