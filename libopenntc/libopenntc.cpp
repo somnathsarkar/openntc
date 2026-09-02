@@ -298,11 +298,26 @@ Result Context::Init(const ContextInitInfo& init_info)
     g0_channels_ = 12;
     g1_channels_ = 10;
     break;
+  case Profile::Bpp_2_25:
+    g0_bits_per_channel_ = 4;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 16;
+    g1_channels_ = 12;
+    break;
   default:
     assert(false);
     return Result::InvalidState;
   }
-  g0_scale_ = (init_info.profile_ == Profile::Bpp_1_0) ? 2 : 4;
+  switch (init_info.profile_)
+  {
+  case Profile::Bpp_1_0:
+  case Profile::Bpp_2_25:
+    g0_scale_ = 2;
+    break;
+  default:
+    g0_scale_ = 4;
+    break;
+  }
   g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
   
@@ -1459,6 +1474,8 @@ static const char* ProfileToString(Profile p)
       return "bpp_0_5";
     case Profile::Bpp_1_0:
       return "bpp_1_0";
+    case Profile::Bpp_2_25:
+      return "bpp_2_25";
   }
   return "unknown";
 }
@@ -1478,6 +1495,11 @@ static bool ProfileFromString(const std::string& s, Profile& o_profile)
   else if (s == "bpp_1_0")
   {
     o_profile = Profile::Bpp_1_0;
+    return true;
+  }
+  else if (s == "bpp_2_25")
+  {
+    o_profile = Profile::Bpp_2_25;
     return true;
   }
   return false;

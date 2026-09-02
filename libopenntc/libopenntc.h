@@ -8,6 +8,7 @@ enum class Profile
   Bpp_0_2,
   Bpp_0_5,
   Bpp_1_0,
+  Bpp_2_25,
   
   Count
 };
