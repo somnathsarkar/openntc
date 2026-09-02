@@ -292,10 +292,17 @@ Result Context::Init(const ContextInitInfo& init_info)
     g0_channels_ = 12;
     g1_channels_ = 20;
     break;
+  case Profile::Bpp_1_0:
+    g0_bits_per_channel_ = 2;
+    g1_bits_per_channel_ = 4;
+    g0_channels_ = 12;
+    g1_channels_ = 10;
+    break;
   default:
     assert(false);
     return Result::InvalidState;
   }
+  g0_scale_ = (init_info.profile_ == Profile::Bpp_1_0) ? 2 : 4;
   g0_delta_ = 2.0f / powf(2.0f, (float) g0_bits_per_channel_);
   g1_delta_ = 2.0f / powf(2.0f, (float) g1_bits_per_channel_);
   
@@ -790,16 +797,14 @@ TrainProgress Context::Train(int32_t batch_count)
 
 int32_t Context::FeatureLevelForLod(int32_t lod) const
 {
-  lod = std::clamp(lod, 0, 8);
-  if (lod <= 3)
+  // First few lods are handled by the highest-resolution feature level,
+  //  then each successive level handles two each.
+  
+  int lods_for_first_level = (int)log2f(g0_scale_) + 2;
+  if (lod < lods_for_first_level)
     return 0;
-  else if (lod <= 5)
-    return 1;
-  else if (lod <= 7)
-    return 2;
-  else if (lod <= 9)
-    return 3;
-  return 4;
+  int level = 1 + (lod - lods_for_first_level) / 2;
+  return std::min(level, level_count_ - 1);
 }
 
 CalibrationData Context::Calibrate(float headroom)
@@ -1161,7 +1166,7 @@ Result Context::LoadManifest(const std::string& filepath)
   mip_count_++;
 
   level_count_ = 0;
-  g0_grid_dim_[0] = mip_dim_[0] / 4;
+  g0_grid_dim_[0] = mip_dim_[0] / g0_scale_;
   g1_grid_dim_[0] = g0_grid_dim_[0] / 2;
   while (g0_grid_dim_[level_count_] / 4 >= 4)
   {
@@ -1452,6 +1457,8 @@ static const char* ProfileToString(Profile p)
       return "bpp_0_2";
     case Profile::Bpp_0_5:
       return "bpp_0_5";
+    case Profile::Bpp_1_0:
+      return "bpp_1_0";
   }
   return "unknown";
 }
@@ -1466,6 +1473,11 @@ static bool ProfileFromString(const std::string& s, Profile& o_profile)
   else if (s == "bpp_0_5")
   {
     o_profile = Profile::Bpp_0_5;
+    return true;
+  }
+  else if (s == "bpp_1_0")
+  {
+    o_profile = Profile::Bpp_1_0;
     return true;
   }
   return false;

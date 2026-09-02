@@ -7,6 +7,7 @@ enum class Profile
 {
   Bpp_0_2,
   Bpp_0_5,
+  Bpp_1_0,
   
   Count
 };
@@ -207,7 +208,7 @@ public:
   static const int kMaxDimension = 8192;
   static const int kMaxMips = 12;
   static const int kMaxChannels = 16;
-  static const int kMaxLevels = 5;
+  static const int kMaxLevels = 6;
 
   Context();
   ~Context();
@@ -255,6 +256,7 @@ private:
   int g1_bits_per_channel_;
   float g0_delta_;
   float g1_delta_;
+  int g0_scale_;
   int g0_channels_;
   int g1_channels_;
   int mip_count_;
