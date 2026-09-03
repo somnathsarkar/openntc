@@ -492,4 +492,99 @@ void PerformNTCInference(
 }
 #endif
 
+// Material parameters from NTC decoder output. Semantics that are not part of
+//  the input manifest are given default values. present_ is a bitmask that has
+//  ith bit set if sematic index i is part of the manifest.
+struct NTCMaterialParams
+{
+  float3 albedo_;
+  float alpha_;
+  float displacement_;
+  float emissive_;
+  float gloss_;
+  float metallic_;
+  float3 normal_;
+  float ao_;
+  float roughness_;
+  float3 specular_;
+  float transmission_;
+  uint present_;
+};
+
+// Distribute vector output of decoder to material struct params, based on channel-to-semantic mapping
+#ifdef COOP_SUPPORT
+NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, vector<float, OUT_DIM_PADDED> Woutx)
+#else
+NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
+#endif
+{
+  NTCMaterialParams mat;
+  mat.albedo_ = 0.5.xxx;
+  mat.alpha_ = 1.0;
+  mat.displacement_ = 0.5;
+  mat.emissive_ = 0.0;
+  mat.gloss_ = 0.0;
+  mat.metallic_ = 0.0;
+  mat.normal_ = float3(0.5, 0.5, 1.0);
+  mat.ao_ = 1.0;
+  mat.roughness_ = 1.0;
+  mat.specular_ = 0.5.xxx;
+  mat.transmission_ = 0.0;
+  mat.present_ = 0u;
+
+  uint prev_sem = NTC_SEM_NONE;
+  int comp = 0;
+  [unroll]
+  for (int i = 0; i < OUT_DIM; i++)
+  {
+    if (i >= NTCCBV.channel_count_)
+      break;
+    uint sem = NTCChannelSemantic(NTCCBV, i);
+    comp = (sem == prev_sem) ? comp + 1 : 0;
+    prev_sem = sem;
+    mat.present_ |= 1u << sem;
+    float v = saturate(Woutx[i]);
+    switch (sem)
+    {
+      case NTC_SEM_ALBEDO:
+        mat.albedo_[comp] = v;
+        break;
+      case NTC_SEM_ALPHA:
+        mat.alpha_ = v;
+        break;
+      case NTC_SEM_DISPLACEMENT:
+        mat.displacement_ = v;
+        break;
+      case NTC_SEM_EMISSIVE:
+        mat.emissive_ = v;
+        break;
+      case NTC_SEM_GLOSS:
+        mat.gloss_ = v;
+        break;
+      case NTC_SEM_METALLIC:
+        mat.metallic_ = v;
+        break;
+      case NTC_SEM_NORMAL:
+        mat.normal_[comp] = v;
+        break;
+      case NTC_SEM_AO:
+        mat.ao_ = v;
+        break;
+      case NTC_SEM_ROUGHNESS:
+        mat.roughness_ = v;
+        break;
+      case NTC_SEM_SPECULAR:
+        mat.specular_[comp] = v;
+        break;
+      case NTC_SEM_TRANSMISSION:
+        mat.transmission_ = v;
+        break;
+      default:
+        break;
+    }
+  }
+  return mat;
+}
+
+
 #endif  // __NTC_DECODE_HLSLI__
