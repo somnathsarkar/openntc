@@ -104,6 +104,9 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   NTCMaterialParams mat =
     NTCSampleMaterial(g0, g1, decoder, NTCCBV, NTCStochasticFilterUv(uv, footprint, pos_noise), lod);
 
+  // Alpha cutout
+  clip(mat.alpha_ - 0.5);
+
   float3 normal;
   if (mat.present_ & (1u << NTC_SEM_NORMAL))
   {
@@ -118,8 +121,17 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   {
     normal = normalize(p_in.normal_view_.xyz);
   }
-  float perceptual_roughness = mat.roughness_;
+  // Apply one of gloss or roughness
+  float perceptual_roughness = (!(mat.present_ & (1u << NTC_SEM_ROUGHNESS)) && (mat.present_ & (1u << NTC_SEM_GLOSS)))
+    ? 1.0 - mat.gloss_
+    : mat.roughness_;
   float3 albedo = pow(mat.albedo_, 2.2);
+
+  // Specular
+  if (mat.present_ & (1u << NTC_SEM_SPECULAR))
+    f0 = pow(mat.specular_, 2.2);
+  f0 = lerp(f0, albedo, mat.metallic_);
+  albedo *= 1.0 - mat.metallic_;
 
   float3 view_dir = -normalize(p_in.pos_view_.xyz / p_in.pos_view_.w);
   float3 reflect_dir = reflect(-view_dir, normal);
@@ -138,6 +150,8 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float so = SpecularOcclusion(NoV, mat.ao_, perceptual_roughness);
 
   float3 radiance = diffuse_ibl * albedo * mat.ao_ + specular_color * specular_ibl * so;
+  // Emissive
+  radiance += mat.emissive_ * pow(mat.albedo_, 2.2);
   
   // Tonemapping
 
