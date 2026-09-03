@@ -5,7 +5,7 @@ struct LightingParams
   float exposure_;
   float displacement_scale_;
   float normal_scale_;
-  float pad0_;
+  float noise_frame_;
   float2 jitter_px_;
   float2 pad1_;
   float3 diffuse_sh_[9];

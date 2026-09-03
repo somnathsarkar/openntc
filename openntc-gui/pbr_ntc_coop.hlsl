@@ -105,8 +105,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
   float2 footprint;
   float lodab = NTCComputeLod(NTCCBV, uv, footprint);
-  int lod = NTCStochasticFilterLod(lodab, p_in.pos_.xy);
-  GetFeaturesPacked(g0, g1, NTCCBV, NTCStochasticFilterUv(uv, footprint, p_in.pos_.xy), lod, feat);
+  // Incorporate temporal noise
+  float2 pos_noise = p_in.pos_.xy + 5.588238f * LightingParamsCBV.noise_frame_;
+  int lod = NTCStochasticFilterLod(lodab, pos_noise);
+  GetFeaturesPacked(g0, g1, NTCCBV, NTCStochasticFilterUv(uv, footprint, pos_noise), lod, feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);
 
   float ntc_ao = Woutx[0];

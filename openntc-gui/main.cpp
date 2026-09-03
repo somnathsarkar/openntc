@@ -190,7 +190,7 @@ struct LightingParams
   float exposure_;
   float displacement_scale_;
   float normal_scale_;
-  float pad0_;
+  float noise_frame_;
   XMFLOAT2 jitter_px_;
   XMFLOAT2 pad1_;
   XMFLOAT3A diffuse_sh_[9];
@@ -1929,6 +1929,12 @@ void Render()
     lp.displacement_scale_ = g_gui_displacement_scale;
     lp.normal_scale_ = g_gui_normal_scale;
     lp.jitter_px_ = taa_jitter_px;
+
+    // Using temporal noise without TAA results in jitter. Turn it off when TAA is off.
+    static uint32_t noise_frame = 0;
+    if (g_gui_taa)
+      noise_frame = (noise_frame + 1) % 64;
+    lp.noise_frame_ = static_cast<float>(noise_frame);
     for (int i = 0; i < 9; i++)
       lp.diffuse_sh_[i] = g_diffuse_sh[i];
     void* mapped = 0;
