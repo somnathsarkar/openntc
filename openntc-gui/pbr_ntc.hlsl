@@ -47,7 +47,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   float lod = clamp(max(0.0f, log2(NTCCBV.dim_ / 200.0f)), 0.0, float(NTCCBV.mip_count_ - 1));
   GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv_, int(round(lod)), feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);
-  float displacement = (saturate(Woutx[4]) - 0.5) * LightingParamsCBV.displacement_scale_;
+  float displacement = (saturate(Woutx[3]) - 0.5) * LightingParamsCBV.displacement_scale_;
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
 
   float4 world_pos = mul(ModelViewProjectionCB.model_to_world_, model_pos);
@@ -109,10 +109,11 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   GetFeaturesPacked(g0, g1, NTCCBV, NTCStochasticFilterUv(uv, footprint, pos_noise), lod, feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);  
 
-  float ntc_ao = saturate(Woutx[0]);
-  float3 ntc_albedo = saturate(float3(Woutx[1], Woutx[2], Woutx[3]));
-  float ntc_displacement = saturate(Woutx[4]);
-  float3 ntc_normal = saturate(float3(Woutx[5], Woutx[6], Woutx[7]));
+  // TODO: Rework hardcoded channel semantic order
+  float3 ntc_albedo = saturate(float3(Woutx[0], Woutx[1], Woutx[2]));
+  float ntc_displacement = saturate(Woutx[3]);
+  float3 ntc_normal = saturate(float3(Woutx[4], Woutx[5], Woutx[6]));
+  float ntc_ao = saturate(Woutx[7]);
   float ntc_roughness = saturate(Woutx[8]);
 
   float4 bitangent_view = float4(cross(p_in.normal_view_.xyz, p_in.tangent_view_.xyz), 0.0);

@@ -399,6 +399,8 @@ struct CompressedData
   int dim_;
   int mip_count_;
   int level_count_;
+  int channel_count_;
+  Semantic channel_semantics_[Context::kMaxChannels];
 
   // Compression profile this data was produced with
   Profile profile_;
