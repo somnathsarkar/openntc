@@ -87,48 +87,27 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 {
   PixelShaderOutput p_out;
 
-  // Constants
-
-  float3 f0 = float3(0.04, 0.04, 0.04);
-  float3 f90 = float3(1.0, 1.0, 1.0);
-
   // Samples
 
-  float4 bitangent_view = float4(cross(p_in.normal_view_.xyz, p_in.tangent_view_.xyz), 0.0);
-  matrix tbn_view = transpose(matrix(p_in.tangent_view_, bitangent_view, p_in.normal_view_, float4(0.0, 0.0, 0.0, 1.0)));
   float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
-  float4 surface_normal = float4(tex_normal.Sample(sampler_trilinear, uv).rgb * 2.0 - 1.0, 0.0);
-  float4 view_normal = mul(tbn_view, surface_normal);
-  float3 normal_scaled = normalize(float3(view_normal.xy * LightingParamsCBV.normal_scale_, view_normal.z));
-  float3 normal = normal_scaled;
-  float perceptual_roughness = tex_roughness.Sample(sampler_trilinear, uv).r;
-  float3 albedo = pow(tex_albedo.Sample(sampler_trilinear, uv).rgb, 2.2);
-  float ao = tex_ao.Sample(sampler_trilinear, uv).r;
+  NTCMaterialParams mat = NTCDefaultMaterialParams();
+  mat.albedo_ = tex_albedo.Sample(sampler_trilinear, uv).rgb;
+  mat.normal_ = tex_normal.Sample(sampler_trilinear, uv).rgb;
+  mat.ao_ = tex_ao.Sample(sampler_trilinear, uv).r;
+  mat.roughness_ = tex_roughness.Sample(sampler_trilinear, uv).r;
+  mat.present_ =
+    (1u << NTC_SEM_ALBEDO) | (1u << NTC_SEM_NORMAL) | (1u << NTC_SEM_AO) | (1u << NTC_SEM_ROUGHNESS);
 
-  float3 view_dir = -normalize(p_in.pos_view_.xyz / p_in.pos_view_.w);
-  float3 reflect_dir = reflect(-view_dir, normal);
-
-  float NoV = abs(dot(normal, view_dir));
-
-  float roughness = perceptual_roughness * perceptual_roughness;
-
-  float3 reflect_world = mul(float4(reflect_dir, 0.0), ModelViewProjectionCB.world_to_view_).xyz;
-  float3 normal_world = mul(float4(normal, 0.0), ModelViewProjectionCB.world_to_view_).xyz;
-  float lod_ibl = perceptual_roughness * 4.0;
-  float3 specular_ibl = tex_specular_ibl.SampleLevel(sampler_trilinear, reflect_world, lod_ibl).rgb;
-  float2 specular_dfg = tex_dfg.Sample(sampler_trilinear, float2(NoV, 1.0 - perceptual_roughness)).rg;
-  float3 specular_color = f0 * specular_dfg.x + f90 * specular_dfg.y;
-  float3 diffuse_ibl = max(IrradianceSh(LightingParamsCBV, normal_world), 0.0);
-  float so = SpecularOcclusion(NoV, ao, perceptual_roughness);
-
-  float3 radiance = diffuse_ibl * albedo * ao + specular_color * specular_ibl * so;
-  
-  // Tonemapping
-
-  radiance *= LightingParamsCBV.exposure_;
-  radiance = saturate(mul(ACESOutput, RRTAndODTFit(mul(ACESInput, radiance))));
-
-  p_out.color_ = float4(pow(radiance, 1.0f / 2.2f), 1.0);
+  p_out.color_ = ShadeMaterial(
+    mat,
+    p_in.pos_view_,
+    p_in.normal_view_,
+    p_in.tangent_view_,
+    ModelViewProjectionCB.world_to_view_,
+    LightingParamsCBV,
+    tex_specular_ibl,
+    tex_dfg,
+    sampler_trilinear);
 
   return p_out;
 }

@@ -511,12 +511,7 @@ struct NTCMaterialParams
   uint present_;
 };
 
-// Distribute vector output of decoder to material struct params, based on channel-to-semantic mapping
-#ifdef COOP_SUPPORT
-NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, vector<float, OUT_DIM_PADDED> Woutx)
-#else
-NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
-#endif
+NTCMaterialParams NTCDefaultMaterialParams()
 {
   NTCMaterialParams mat;
   mat.albedo_ = 0.5.xxx;
@@ -531,6 +526,17 @@ NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
   mat.specular_ = 0.5.xxx;
   mat.transmission_ = 0.0;
   mat.present_ = 0u;
+  return mat;
+}
+
+// Distribute vector output of decoder to material struct params, based on channel-to-semantic mapping
+#ifdef COOP_SUPPORT
+NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, vector<float, OUT_DIM_PADDED> Woutx)
+#else
+NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
+#endif
+{
+  NTCMaterialParams mat = NTCDefaultMaterialParams();
 
   uint prev_sem = NTC_SEM_NONE;
   int comp = 0;
