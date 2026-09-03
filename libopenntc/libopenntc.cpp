@@ -1,5 +1,6 @@
 #include <libopenntc/libopenntc.h>
 
+#include <algorithm>
 #include <cassert>
 #include <bit>
 #include <fstream>
@@ -1023,8 +1024,45 @@ CompressedData Context::GetCompressedData()
   data.level_count_ = level_count_;
 
   data.caldata_ = caldata_;
+  data.channel_count_ = 0;
+  for (int i = 0; i < manifest_.source_count_; i++)
+  {
+    for (int c = 0; c < manifest_.sources_[i].num_channels_; c++)
+      data.channel_semantics_[data.channel_count_++] = manifest_.sources_[i].semantic_;
+  }
 
   return data;
+}
+
+static const char* SemanticToString(Semantic sem)
+{
+  switch (sem)
+  {
+    case Semantic::Albedo:
+      return "Albedo";
+    case Semantic::Alpha:
+      return "Alpha";
+    case Semantic::Displacement:
+      return "Displacement";
+    case Semantic::Emissive:
+      return "Emissive";
+    case Semantic::Gloss:
+      return "Gloss";
+    case Semantic::Metallic:
+      return "Metallic";
+    case Semantic::Normal:
+      return "Normal";
+    case Semantic::AO:
+      return "AO";
+    case Semantic::Roughness:
+      return "Roughness";
+    case Semantic::Specular:
+      return "Specular";
+    case Semantic::Transmission:
+      return "Transmission";
+    default:
+      return "None";
+  }
 }
 
 static Semantic SemanticFromName(const std::string& s)
@@ -1167,6 +1205,12 @@ Result Context::LoadManifest(const std::string& filepath)
     }
   }
   manifest_.source_count_ = source_count;
+
+  // Order channels by semantic index
+  auto semantic_cmp = [](const TextureSource& a, const TextureSource& b) {
+    return (int32_t)a.semantic_ < (int32_t)b.semantic_;
+  };
+  std::stable_sort(manifest_.sources_, manifest_.sources_ + source_count, semantic_cmp);
   manifest_.dim_ = dim;
 
   if (manifest_.dim_ < Context::kMinDimension ||
@@ -1524,6 +1568,9 @@ void FillNTCConstants(const CompressedData& data, NTCConstants& o_constants)
   o_constants.mip_count_ = data.mip_count_;
   o_constants.rcp_s_a1_ = 1.0f / data.caldata_.s_a1_;
   o_constants.rcp_s_a2_ = 1.0f / data.caldata_.s_a2_;
+  o_constants.channel_count_ = data.channel_count_;
+  for (int i = 0; i < data.channel_count_; i++)
+    o_constants.channel_semantics_[i] = (uint32_t)data.channel_semantics_[i];
 }
 
 Result Context::Dump(const std::string& path, const CompressedData& data)
@@ -1538,6 +1585,12 @@ Result Context::Dump(const std::string& path, const CompressedData& data)
   nlohmann::json j;
   j["source"] = {{"generator", "openntc"}, {"version", 5}};
   j["profile"] = ProfileToString(data.profile_);
+  {
+    nlohmann::json jchannels = nlohmann::json::array();
+    for (int i = 0; i < data.channel_count_; i++)
+      jchannels.push_back(SemanticToString(data.channel_semantics_[i]));
+    j["channel_semantics"] = jchannels;
+  }
   j["dim"] = data.dim_;
   j["mip_count"] = data.mip_count_;
   j["level_count"] = data.level_count_;
@@ -1706,6 +1759,22 @@ Result Context::Load(const std::string& path, FileData& o_data)
   std::string profile_name;
   if (!TryGet(j, "profile", profile_name) || !ProfileFromString(profile_name, o_data.data_.profile_))
     return Result::InvalidFile;
+
+  {
+    auto it = j.find("channel_semantics");
+    if (it == j.end() || !it->is_array() || (int)it->size() > Context::kMaxChannels)
+      return Result::InvalidFile;
+    o_data.data_.channel_count_ = (int)it->size();
+    for (int i = 0; i < o_data.data_.channel_count_; i++)
+    {
+      if (!(*it)[i].is_string())
+        return Result::InvalidFile;
+      Semantic sem = SemanticFromName((*it)[i].get<std::string>());
+      if (sem == Semantic::None)
+        return Result::InvalidFile;
+      o_data.data_.channel_semantics_[i] = sem;
+    }
+  }
 
   if (o_data.data_.level_count_ < 1 ||
       o_data.data_.level_count_ > Context::kMaxLevels ||
