@@ -49,7 +49,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   float lod = clamp(max(0.0f, log2(NTCCBV.dim_ / 200.0f)), 0.0, float(NTCCBV.mip_count_ - 1));
   GetFeaturesPacked(g0, g1, NTCCBV, v_in.uv_, int(round(lod)), feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);
-  float displacement = (Woutx[4] - 0.5) * LightingParamsCBV.displacement_scale_;
+  float displacement = (saturate(Woutx[4]) - 0.5) * LightingParamsCBV.displacement_scale_;
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
 
   float4 world_pos = mul(ModelViewProjectionCB.model_to_world_, model_pos);
@@ -110,7 +110,8 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   int lod = NTCStochasticFilterLod(lodab, pos_noise);
   GetFeaturesPacked(g0, g1, NTCCBV, NTCStochasticFilterUv(uv, footprint, pos_noise), lod, feat);
   PerformNTCInference(decoder, NTCCBV, feat, Woutx);
-
+  
+  Woutx = saturate(Woutx);
   float ntc_ao = Woutx[0];
   float3 ntc_albedo = float3(Woutx[1], Woutx[2], Woutx[3]);
   float ntc_displacement = Woutx[4];
@@ -121,7 +122,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   matrix tbn_view = transpose(matrix(p_in.tangent_view_, bitangent_view, p_in.normal_view_, float4(0.0, 0.0, 0.0, 1.0)));
   float4 surface_normal = float4(ntc_normal * 2.0 - 1.0, 0.0);
   float4 view_normal = mul(tbn_view, surface_normal);
-  float3 normal = view_normal.rgb;
+  float3 normal = normalize(float3(view_normal.xy * LightingParamsCBV.normal_scale_, view_normal.z));
   float perceptual_roughness = ntc_roughness;
   float3 albedo = pow(ntc_albedo, 2.2f);
 
