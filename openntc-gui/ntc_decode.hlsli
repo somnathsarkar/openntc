@@ -84,8 +84,7 @@ uint SemanticBit(Semantic sem)
 #define MAX_LEVELS 6
 
 #define HIDDEN_DIM 64
-#define OUT_DIM 9
-#define OUT_DIM_PADDED 12
+#define OUT_DIM_PADDED 16
 #define POS_ENC_DIM 12
 #define FEATURE_DIM_PADDED ((((4 * G0_CHANNELS + G1_CHANNELS + POS_ENC_DIM + 1) + 15) / 16) * 16)
 #define FEAT_UINTS (FEATURE_DIM_PADDED / 4)
@@ -477,7 +476,7 @@ void PerformInference(
 
   // Output layer
   [loop]
-  for (int i = 0; i < OUT_DIM; i += 4)
+  for (int i = 0; i < OUT_DIM_PADDED; i += 4)
   {
     int4 acc = int4(0, 0, 0, 0);
     [unroll]
@@ -554,7 +553,7 @@ MaterialParams DecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
   Semantic prev_sem = Semantic::None;
   int comp = 0;
   [unroll]
-  for (int i = 0; i < OUT_DIM; i++)
+  for (int i = 0; i < OUT_DIM_PADDED; i++)
   {
     if (i >= NTCCBV.channel_count_)
       break;

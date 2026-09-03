@@ -324,22 +324,22 @@ Result Context::Init(const ContextInitInfo& init_info)
   
   feature_dim_ = RoundUpToNearestK(4 * g0_channels_ + g1_channels_ + 12 + 1, 4);
   feature_dim_padded_ = RoundUpToNearestK(feature_dim_, 16);
-  out_dim_ = 9;
-  out_dim_padded_ = RoundUpToNearestK(out_dim_, 4);
+  out_dim_ = 0;
+  out_dim_padded_ = kMaxChannels;
   max_batch_ = 8;
   max_batch_dim_ = max_batch_ * 256 * 256;
   hidden_dim_ = 64;
 
   W0_.Init(hidden_dim_, feature_dim_);
   W1_.Init(hidden_dim_, hidden_dim_);
-  Wout_.Init(out_dim_, hidden_dim_);
+  Wout_.Init(out_dim_padded_, hidden_dim_);
 
   x_.Init(feature_dim_, max_batch_dim_);
   W0x_.Init(hidden_dim_, max_batch_dim_);
   W0xa_.Init(hidden_dim_, max_batch_dim_);
   W1x_.Init(hidden_dim_, max_batch_dim_);
   W1xa_.Init(hidden_dim_, max_batch_dim_);
-  Woutx_.Init(out_dim_, max_batch_dim_);
+  Woutx_.Init(out_dim_padded_, max_batch_dim_);
 
   dLdWoutx_.InitLike(Woutx_);
   dLdWout_.InitLike(Wout_);
@@ -351,7 +351,7 @@ Result Context::Init(const ContextInitInfo& init_info)
   dLdW0_.InitLike(W0_);
   dLdx_.InitLike(x_);
 
-  mse_.Init(out_dim_, max_batch_dim_);
+  mse_.Init(out_dim_padded_, max_batch_dim_);
 
   mW0_.InitLike(W0_);
   vW0_.InitLike(W0_);
@@ -379,6 +379,7 @@ Result Context::Init(const ContextInitInfo& init_info)
   size_t Wout_scale_size = out_dim_padded_ * sizeof(float);
   decoder_size_ = W0_size + W1_size + Wout_size + W0_scale_size + W1_scale_size + Wout_scale_size;
   decoder_host_ = new uint8_t[decoder_size_];
+  memset(decoder_host_, 0, decoder_size_);
 
   initialized_ = true;
   return Result::Success;
@@ -1205,6 +1206,13 @@ Result Context::LoadManifest(const std::string& filepath)
     }
   }
   manifest_.source_count_ = source_count;
+
+  int total_channels = 0;
+  for (int i = 0; i < source_count; i++)
+    total_channels += manifest_.sources_[i].num_channels_;
+  if (total_channels < 1 || total_channels > Context::kMaxChannels)
+    return Result::InvalidManifest;
+  out_dim_ = total_channels;
 
   // Order channels by semantic index
   auto semantic_cmp = [](const TextureSource& a, const TextureSource& b) {
