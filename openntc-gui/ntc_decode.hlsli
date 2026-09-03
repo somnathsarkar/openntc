@@ -586,5 +586,25 @@ NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
   return mat;
 }
 
+NTCMaterialParams NTCSampleMaterial(
+  Buffer<uint> g0,
+  Buffer<uint> g1,
+  ByteAddressBuffer decoder,
+  NTC NTCCBV,
+  float2 uv,
+  int lod)
+{
+#ifdef COOP_SUPPORT
+  vector<uint, FEAT_UINTS> feat;
+  vector<float, OUT_DIM_PADDED> Woutx;
+#else
+  uint feat[FEAT_UINTS];
+  float Woutx[OUT_DIM_PADDED];
+#endif
+  GetFeaturesPacked(g0, g1, NTCCBV, uv, lod, feat);
+  PerformNTCInference(decoder, NTCCBV, feat, Woutx);
+  return NTCDecodeMaterial(NTCCBV, Woutx);
+}
+
 
 #endif  // __NTC_DECODE_HLSLI__
