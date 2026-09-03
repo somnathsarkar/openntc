@@ -90,13 +90,13 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   // Samples
 
   float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
-  NTCMaterialParams mat = NTCDefaultMaterialParams();
+  MaterialParams mat = DefaultMaterialParams();
   mat.albedo_ = tex_albedo.Sample(sampler_trilinear, uv).rgb;
   mat.normal_ = tex_normal.Sample(sampler_trilinear, uv).rgb;
   mat.ao_ = tex_ao.Sample(sampler_trilinear, uv).r;
   mat.roughness_ = tex_roughness.Sample(sampler_trilinear, uv).r;
   mat.present_ =
-    (1u << NTC_SEM_ALBEDO) | (1u << NTC_SEM_NORMAL) | (1u << NTC_SEM_AO) | (1u << NTC_SEM_ROUGHNESS);
+    SemanticBit(Semantic::Albedo) | SemanticBit(Semantic::Normal) | SemanticBit(Semantic::AO) | SemanticBit(Semantic::Roughness);
 
   p_out.color_ = ShadeMaterial(
     mat,

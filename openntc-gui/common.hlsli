@@ -1,4 +1,5 @@
 #include "ntc_decode.hlsli"
+using namespace openntc;
 
 struct LightingParams
 {
@@ -50,7 +51,7 @@ float3 RRTAndODTFit(float3 v)
 
 // Helper function for PBR using an IBL light source
 float4 ShadeMaterial(
-  NTCMaterialParams mat,
+  MaterialParams mat,
   float4 pos_view,
   float4 normal_view,
   float4 tangent_view,
@@ -68,7 +69,7 @@ float4 ShadeMaterial(
 
   // Normal mapping
   float3 normal;
-  if (mat.present_ & (1u << NTC_SEM_NORMAL))
+  if (mat.present_ & SemanticBit(Semantic::Normal))
   {
     float4 bitangent_view = float4(cross(normal_view.xyz, tangent_view.xyz), 0.0);
     matrix tbn_view = transpose(matrix(tangent_view, bitangent_view, normal_view, float4(0.0, 0.0, 0.0, 1.0)));
@@ -82,13 +83,13 @@ float4 ShadeMaterial(
   }
 
   // Apply one of gloss or roughness
-  float perceptual_roughness = (!(mat.present_ & (1u << NTC_SEM_ROUGHNESS)) && (mat.present_ & (1u << NTC_SEM_GLOSS)))
+  float perceptual_roughness = (!(mat.present_ & SemanticBit(Semantic::Roughness)) && (mat.present_ & SemanticBit(Semantic::Gloss)))
     ? 1.0 - mat.gloss_
     : mat.roughness_;
   float3 albedo = pow(mat.albedo_, 2.2);
 
   // Specular
-  if (mat.present_ & (1u << NTC_SEM_SPECULAR))
+  if (mat.present_ & SemanticBit(Semantic::Specular))
     f0 = pow(mat.specular_, 2.2);
   f0 = lerp(f0, albedo, mat.metallic_);
   albedo *= 1.0 - mat.metallic_;

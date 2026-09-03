@@ -45,7 +45,7 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
   // NOTE: This heuristic LOD is exclusively for the models shipped with the UI
   //  No stochastic filtering for displacement.
   float lod = clamp(max(0.0f, log2(NTCCBV.dim_ / 200.0f)), 0.0, float(NTCCBV.mip_count_ - 1));
-  NTCMaterialParams vs_mat = NTCSampleMaterial(g0, g1, decoder, NTCCBV, v_in.uv_, int(round(lod)));
+  MaterialParams vs_mat = SampleMaterial(g0, g1, decoder, NTCCBV, v_in.uv_, int(round(lod)));
   float displacement = (vs_mat.displacement_ - 0.5) * LightingParamsCBV.displacement_scale_;
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
 
@@ -92,12 +92,12 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
   float2 footprint;
-  float lodab = NTCComputeLod(NTCCBV, uv, footprint);
+  float lodab = ComputeLod(NTCCBV, uv, footprint);
   // Incorporate temporal noise
   float2 pos_noise = p_in.pos_.xy + 5.588238f * LightingParamsCBV.noise_frame_;
-  int lod = NTCStochasticFilterLod(lodab, pos_noise);
-  NTCMaterialParams mat =
-    NTCSampleMaterial(g0, g1, decoder, NTCCBV, NTCStochasticFilterUv(uv, footprint, pos_noise), lod);
+  int lod = StochasticFilterLod(lodab, pos_noise);
+  MaterialParams mat =
+    SampleMaterial(g0, g1, decoder, NTCCBV, StochasticFilterUv(uv, footprint, pos_noise), lod);
 
   p_out.color_ = ShadeMaterial(
     mat,

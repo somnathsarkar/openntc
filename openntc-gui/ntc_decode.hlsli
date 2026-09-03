@@ -5,6 +5,9 @@
 #include <dx/linalg.h>
 #endif
 
+namespace openntc
+{
+
 struct NTC
 {
   int4 g0_grid_dim_[2];
@@ -24,24 +27,34 @@ struct NTC
   uint4 channel_semantics_[4];
 };
 
-// NOTE: Match this against openntc::Semantic
-#define NTC_SEM_NONE 0
-#define NTC_SEM_ALBEDO 1
-#define NTC_SEM_ALPHA 2
-#define NTC_SEM_DISPLACEMENT 3
-#define NTC_SEM_EMISSIVE 4
-#define NTC_SEM_GLOSS 5
-#define NTC_SEM_METALLIC 6
-#define NTC_SEM_NORMAL 7
-#define NTC_SEM_AO 8
-#define NTC_SEM_ROUGHNESS 9
-#define NTC_SEM_SPECULAR 10
-#define NTC_SEM_TRANSMISSION 11
+// NOTE: Match this against openntc::Semantic in libopenntc.h
+enum class Semantic
+{
+  None = 0,
+
+  Albedo = 1,
+  Alpha = 2,
+  Displacement = 3,
+  Emissive = 4,
+  Gloss = 5,
+  Metallic = 6,
+  Normal = 7,
+  AO = 8,
+  Roughness = 9,
+  Specular = 10,
+  Transmission = 11,
+};
 
 // Map channel to semantic
-uint NTCChannelSemantic(NTC NTCCBV, int i)
+Semantic ChannelSemantic(NTC NTCCBV, int i)
 {
-  return NTCCBV.channel_semantics_[i / 4][i % 4];
+  return (Semantic)NTCCBV.channel_semantics_[i / 4][i % 4];
+}
+
+// Semantic to bit in Materal::present_
+uint SemanticBit(Semantic sem)
+{
+  return 1u << (uint)sem;
 }
 
 #if defined(BPP_0_2)
@@ -130,7 +143,7 @@ uint ExtractCellChannel(uint w0, uint w1, uint w2, uint phase, int k, uint n)
 }
 
 // Interleaved Gradient Noise - "Next Generation Post-Processing in Call of Duty Advanced Warfare"
-float NTCInterleavedGradientNoise(float2 pos_screen)
+float InterleavedGradientNoise(float2 pos_screen)
 {
   return frac(52.9829189 * frac(0.06711056 * pos_screen.x + 0.00583715 * pos_screen.y));
 }
@@ -138,7 +151,7 @@ float NTCInterleavedGradientNoise(float2 pos_screen)
 // For a uv sample in the pixel shader, computes the LOD using screen-space derivatives.
 //  For anisotropic filtering, use the minor axis to compute LOD, then save the UV space
 //  spanned by the major axis
-float NTCComputeLod(NTC NTCCBV, float2 uv, out float2 o_footprint)
+float ComputeLod(NTC NTCCBV, float2 uv, out float2 o_footprint)
 {
 #if __SHADER_TARGET_STAGE != __SHADER_STAGE_PIXEL
   o_footprint = 0.0.xx;
@@ -160,17 +173,17 @@ float NTCComputeLod(NTC NTCCBV, float2 uv, out float2 o_footprint)
 // NTCs can only sample from integral filter levels efficiently.
 // For a float lod a with frac(lod) = p, select floor(a) with probability 1 - p
 // and ceil(a) with probability p
-int NTCStochasticFilterLod(float lod, float2 pos_screen)
+int StochasticFilterLod(float lod, float2 pos_screen)
 {
-  float ign = NTCInterleavedGradientNoise(pos_screen);
+  float ign = InterleavedGradientNoise(pos_screen);
   return int(lod) + (ign < frac(lod) ? 1 : 0);
 }
 
 // Stochastic anisotropic filtering: Jitter the uv at random in the uv space spanned
-// by it along its major axis (Computed in NTCComputeLod)
-float2 NTCStochasticFilterUv(float2 uv, float2 footprint, float2 pos_screen)
+// by it along its major axis (Computed in ComputeLod)
+float2 StochasticFilterUv(float2 uv, float2 footprint, float2 pos_screen)
 {
-  float ign = NTCInterleavedGradientNoise(pos_screen + float2(61.0, 37.0));
+  float ign = InterleavedGradientNoise(pos_screen + float2(61.0, 37.0));
   return uv + footprint * (ign - 0.5);
 }
 
@@ -337,7 +350,7 @@ vector<float, HIDDEN_DIM> hardgelu_coop(vector<float, HIDDEN_DIM> x)
   return select(x < -1.5f, 0.0, select(x < 1.5f, (x / 3.0f) * (x + 1.5f), x));
 }
 
-void PerformNTCInference(
+void PerformInference(
   ByteAddressBuffer decoder,
   NTC NTCCBV,
   vector<uint, FEAT_UINTS> feat,
@@ -397,7 +410,7 @@ int8_t4_packed PackS8(int32_t4 unpacked)
   return pack_clamp_s8(unpacked);
 }
 
-void PerformNTCInference(
+void PerformInference(
   ByteAddressBuffer decoder,
   NTC NTCCBV,
   uint feat[FEAT_UINTS],
@@ -495,7 +508,7 @@ void PerformNTCInference(
 // Material parameters from NTC decoder output. Semantics that are not part of
 //  the input manifest are given default values. present_ is a bitmask that has
 //  ith bit set if sematic index i is part of the manifest.
-struct NTCMaterialParams
+struct MaterialParams
 {
   float3 albedo_;
   float alpha_;
@@ -511,9 +524,9 @@ struct NTCMaterialParams
   uint present_;
 };
 
-NTCMaterialParams NTCDefaultMaterialParams()
+MaterialParams DefaultMaterialParams()
 {
-  NTCMaterialParams mat;
+  MaterialParams mat;
   mat.albedo_ = 0.5.xxx;
   mat.alpha_ = 1.0;
   mat.displacement_ = 0.5;
@@ -531,58 +544,58 @@ NTCMaterialParams NTCDefaultMaterialParams()
 
 // Distribute vector output of decoder to material struct params, based on channel-to-semantic mapping
 #ifdef COOP_SUPPORT
-NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, vector<float, OUT_DIM_PADDED> Woutx)
+MaterialParams DecodeMaterial(NTC NTCCBV, vector<float, OUT_DIM_PADDED> Woutx)
 #else
-NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
+MaterialParams DecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
 #endif
 {
-  NTCMaterialParams mat = NTCDefaultMaterialParams();
+  MaterialParams mat = DefaultMaterialParams();
 
-  uint prev_sem = NTC_SEM_NONE;
+  Semantic prev_sem = Semantic::None;
   int comp = 0;
   [unroll]
   for (int i = 0; i < OUT_DIM; i++)
   {
     if (i >= NTCCBV.channel_count_)
       break;
-    uint sem = NTCChannelSemantic(NTCCBV, i);
+    Semantic sem = ChannelSemantic(NTCCBV, i);
     comp = (sem == prev_sem) ? comp + 1 : 0;
     prev_sem = sem;
-    mat.present_ |= 1u << sem;
+    mat.present_ |= SemanticBit(sem);
     float v = saturate(Woutx[i]);
     switch (sem)
     {
-      case NTC_SEM_ALBEDO:
+      case Semantic::Albedo:
         mat.albedo_[comp] = v;
         break;
-      case NTC_SEM_ALPHA:
+      case Semantic::Alpha:
         mat.alpha_ = v;
         break;
-      case NTC_SEM_DISPLACEMENT:
+      case Semantic::Displacement:
         mat.displacement_ = v;
         break;
-      case NTC_SEM_EMISSIVE:
+      case Semantic::Emissive:
         mat.emissive_ = v;
         break;
-      case NTC_SEM_GLOSS:
+      case Semantic::Gloss:
         mat.gloss_ = v;
         break;
-      case NTC_SEM_METALLIC:
+      case Semantic::Metallic:
         mat.metallic_ = v;
         break;
-      case NTC_SEM_NORMAL:
+      case Semantic::Normal:
         mat.normal_[comp] = v;
         break;
-      case NTC_SEM_AO:
+      case Semantic::AO:
         mat.ao_ = v;
         break;
-      case NTC_SEM_ROUGHNESS:
+      case Semantic::Roughness:
         mat.roughness_ = v;
         break;
-      case NTC_SEM_SPECULAR:
+      case Semantic::Specular:
         mat.specular_[comp] = v;
         break;
-      case NTC_SEM_TRANSMISSION:
+      case Semantic::Transmission:
         mat.transmission_ = v;
         break;
       default:
@@ -592,7 +605,7 @@ NTCMaterialParams NTCDecodeMaterial(NTC NTCCBV, float Woutx[OUT_DIM_PADDED])
   return mat;
 }
 
-NTCMaterialParams NTCSampleMaterial(
+MaterialParams SampleMaterial(
   Buffer<uint> g0,
   Buffer<uint> g1,
   ByteAddressBuffer decoder,
@@ -608,9 +621,11 @@ NTCMaterialParams NTCSampleMaterial(
   float Woutx[OUT_DIM_PADDED];
 #endif
   GetFeaturesPacked(g0, g1, NTCCBV, uv, lod, feat);
-  PerformNTCInference(decoder, NTCCBV, feat, Woutx);
-  return NTCDecodeMaterial(NTCCBV, Woutx);
+  PerformInference(decoder, NTCCBV, feat, Woutx);
+  return DecodeMaterial(NTCCBV, Woutx);
 }
 
+
+}  // namespace openntc
 
 #endif  // __NTC_DECODE_HLSLI__
