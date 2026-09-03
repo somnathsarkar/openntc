@@ -89,8 +89,6 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   // Constants
 
-  float3 directional_light = float3(0.0, 0.0, 1.0);
-  float3 light_color = float3(0.0, 0.0, 0.0);
   float3 f0 = float3(0.04, 0.04, 0.04);
   float3 f90 = float3(1.0, 1.0, 1.0);
 
@@ -108,26 +106,11 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float ao = tex_ao.Sample(sampler_trilinear, uv).r;
 
   float3 view_dir = -normalize(p_in.pos_view_.xyz / p_in.pos_view_.w);
-  float3 light_dir = -normalize(directional_light);
-  float3 half_dir = normalize((view_dir + light_dir) / 2.0);
   float3 reflect_dir = reflect(-view_dir, normal);
 
   float NoV = abs(dot(normal, view_dir));
-  float NoL = clamp(dot(normal, light_dir), 0.0, 1.0);
-  float NoH = clamp(dot(normal, half_dir), 0.0, 1.0);
-  float LoH = clamp(dot(light_dir, half_dir), 0.0, 1.0);
 
   float roughness = perceptual_roughness * perceptual_roughness;
-
-  float D = D_GGX(NoH, roughness);
-  float3 F = F_Schlick(LoH, f0);
-  float V = V_SmithGGXCorrelated(NoV, NoL, roughness);
-
-  float3 Fr = (D * V) * F;
-
-  float3 Fd = albedo * Fd_Lambert();
-
-  float3 radiance = (Fd + Fr) * light_color * NoL;
 
   float3 reflect_world = mul(float4(reflect_dir, 0.0), ModelViewProjectionCB.world_to_view_).xyz;
   float3 normal_world = mul(float4(normal, 0.0), ModelViewProjectionCB.world_to_view_).xyz;
@@ -138,7 +121,7 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
   float3 diffuse_ibl = max(IrradianceSh(LightingParamsCBV, normal_world), 0.0);
   float so = SpecularOcclusion(NoV, ao, perceptual_roughness);
 
-  radiance += diffuse_ibl * albedo * ao + specular_color * specular_ibl * so;
+  float3 radiance = diffuse_ibl * albedo * ao + specular_color * specular_ibl * so;
   
   // Tonemapping
 
