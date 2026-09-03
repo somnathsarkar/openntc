@@ -19,7 +19,30 @@ struct NTC
   int mip_count_;
   float rcp_s_a1_;
   float rcp_s_a2_;
+  int channel_count_;
+  int3 pad0_;
+  uint4 channel_semantics_[4];
 };
+
+// NOTE: Match this against openntc::Semantic
+#define NTC_SEM_NONE 0
+#define NTC_SEM_ALBEDO 1
+#define NTC_SEM_ALPHA 2
+#define NTC_SEM_DISPLACEMENT 3
+#define NTC_SEM_EMISSIVE 4
+#define NTC_SEM_GLOSS 5
+#define NTC_SEM_METALLIC 6
+#define NTC_SEM_NORMAL 7
+#define NTC_SEM_AO 8
+#define NTC_SEM_ROUGHNESS 9
+#define NTC_SEM_SPECULAR 10
+#define NTC_SEM_TRANSMISSION 11
+
+// Map channel to semantic
+uint NTCChannelSemantic(NTC NTCCBV, int i)
+{
+  return NTCCBV.channel_semantics_[i / 4][i % 4];
+}
 
 #if defined(BPP_0_2)
 #define G0_BITS 2

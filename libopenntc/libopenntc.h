@@ -376,7 +376,13 @@ struct NTCConstants
   int32_t mip_count_;
   float rcp_s_a1_;
   float rcp_s_a2_;
+  int32_t channel_count_;
+  int32_t pad0_[3];
+  uint32_t channel_semantics_[16];
 };
+
+// Update reminder: Change matching struct in ntc_decode.hlsli
+static_assert(sizeof(NTCConstants) == 240);
 
 struct CompressedData
 {

@@ -1568,6 +1568,9 @@ void FillNTCConstants(const CompressedData& data, NTCConstants& o_constants)
   o_constants.mip_count_ = data.mip_count_;
   o_constants.rcp_s_a1_ = 1.0f / data.caldata_.s_a1_;
   o_constants.rcp_s_a2_ = 1.0f / data.caldata_.s_a2_;
+  o_constants.channel_count_ = data.channel_count_;
+  for (int i = 0; i < data.channel_count_; i++)
+    o_constants.channel_semantics_[i] = (uint32_t)data.channel_semantics_[i];
 }
 
 Result Context::Dump(const std::string& path, const CompressedData& data)
