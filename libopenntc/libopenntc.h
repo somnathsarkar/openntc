@@ -1,34 +1,13 @@
+#include <libopenntc/openntc_runtime.h>
+
 #include <random>
 #include <atomic>
 
 namespace openntc
 {
-enum class Profile
-{
-  Bpp_0_2,
-  Bpp_0_5,
-  Bpp_1_0,
-  Bpp_2_25,
-  
-  Count
-};
-
 struct ContextInitInfo
 {
   Profile profile_;
-};
-
-enum class Result
-{
-  Success,
-
-  InvalidDimension,
-  AllocationFailure,
-  InvalidManifest,
-  FileNotFound,
-  InvalidFile,
-  FileWriteFailure,
-  InvalidState,
 };
 
 class Tensor2d
@@ -117,14 +96,6 @@ struct EvalResults
   double psnr_;
 };
 
-struct CalibrationData
-{
-  float max_abs_a1_;
-  float max_abs_a2_;
-  float s_a1_;
-  float s_a2_;
-};
-
 enum TrainPhase : int32_t
 {
   ManifestLoaded = 0,
@@ -140,25 +111,6 @@ struct TrainProgress
   Result result_;
   int batches_complete_;
   int total_batches_;
-};
-
-enum class Semantic : int32_t
-{
-  None = 0,
-
-  Albedo = 1,
-  Alpha = 2,
-  Displacement = 3,
-  Emissive = 4,
-  Gloss = 5,
-  Metallic = 6,
-  Normal = 7,
-  AO = 8,
-  Roughness = 9,
-  Specular = 10,
-  Transmission = 11,
-
-  Count = 12,
 };
 
 enum class Channel : int32_t
@@ -199,7 +151,6 @@ struct TrainInfo
 };
 
 class CompressedData;
-class FileData;
 struct TextureData;
 
 class Context
@@ -207,9 +158,9 @@ class Context
 public:
   static const int kMinDimension = 1024;
   static const int kMaxDimension = 8192;
-  static const int kMaxMips = 12;
-  static const int kMaxChannels = 16;
-  static const int kMaxLevels = 6;
+  static const int kMaxMips = openntc::kMaxMips;
+  static const int kMaxChannels = openntc::kMaxChannels;
+  static const int kMaxLevels = openntc::kMaxLevels;
 
   Context();
   ~Context();
@@ -230,9 +181,6 @@ public:
   TextureData GetTextureData();
   int32_t GetMipDim(int mip) const;
   int32_t FeatureLevelForLod(int32_t mip) const;
-
-  static Result Dump(const std::string& path, const CompressedData& data);
-  static Result Load(const std::string& path, FileData& data);
 
   // Host-side parameters after training
 
@@ -362,76 +310,4 @@ struct TextureData
   uint8_t* mips_[kMaxSources][Context::kMaxMips];
 };
 
-struct NTCConstants
-{
-  int32_t g0_grid_dim_[8];
-  int32_t g1_grid_dim_[8];
-  uint32_t g0_offset_[8];
-  uint32_t g1_offset_[8];
-  int32_t g0_bits_per_channel_;
-  int32_t g1_bits_per_channel_;
-  int32_t g0_channels_;
-  int32_t g1_channels_;
-  int32_t dim_;
-  int32_t mip_count_;
-  float rcp_s_a1_;
-  float rcp_s_a2_;
-  int32_t channel_count_;
-  int32_t pad0_[3];
-  uint32_t channel_semantics_[16];
-};
-
-// Update reminder: Change matching struct in ntc_decode.hlsli
-static_assert(sizeof(NTCConstants) == 240);
-
-struct CompressedData
-{
-  uint32_t* g0_[Context::kMaxLevels];
-  uint32_t* g1_[Context::kMaxLevels];
-  void* decoder_;
-
-  size_t g0_size_[Context::kMaxLevels];
-  size_t g1_size_[Context::kMaxLevels];
-  size_t g0_offset_[Context::kMaxLevels];
-  size_t g1_offset_[Context::kMaxLevels];
-  size_t decoder_size_;
-  
-  int g0_grid_dim_[Context::kMaxLevels];
-  int g1_grid_dim_[Context::kMaxLevels];
-  int g0_bits_per_channel_;
-  int g1_bits_per_channel_;
-  int g0_channels_;
-  int g1_channels_;
-  int dim_;
-  int mip_count_;
-  int level_count_;
-  int channel_count_;
-  Semantic channel_semantics_[Context::kMaxChannels];
-
-  // Compression profile this data was produced with
-  Profile profile_;
-
-  CalibrationData caldata_;
-};
-
-void FillNTCConstants(const CompressedData& data, NTCConstants& o_constants);
-
-class FileData
-{
-  friend Result Context::Load(const std::string& path, FileData& o_data);
-
-public:
-  FileData();
-  ~FileData();
-
-  // Uncopyable
-  FileData(const FileData& cd) = delete;
-  FileData& operator=(const FileData& cd) = delete;
-
-  const CompressedData& Data();
-
-private:
-  CompressedData data_;
-  uint8_t* raw_;
-};
 } // namespace openntc

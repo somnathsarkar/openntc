@@ -8,8 +8,13 @@ if(NOT CMAKE_CUDA_FLAGS_RELWITHDEBINFO MATCHES "-lineinfo")
     set(CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_RELWITHDEBINFO} -lineinfo")
 endif()
 
+add_library(openntc-runtime STATIC libopenntc/openntc_runtime.cpp)
+target_include_directories(openntc-runtime PUBLIC ${CMAKE_SOURCE_DIR})
+target_compile_features(openntc-runtime PUBLIC cxx_std_20)
+
 add_library(libopenntc STATIC libopenntc/libopenntc.cpp
   libopenntc/ntc_kernel.cu)
+target_link_libraries(libopenntc PUBLIC openntc-runtime)
 set_target_properties(libopenntc PROPERTIES LINK_FLAGS "/NODEFAULTLIB:libcmt.lib")
 set_target_properties(libopenntc PROPERTIES CUDA_ARCHITECTURES native)
 target_include_directories(libopenntc PRIVATE ${CMAKE_SOURCE_DIR})

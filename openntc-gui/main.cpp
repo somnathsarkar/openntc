@@ -1239,7 +1239,7 @@ void LoadCompressedDataFromContext(SharedContext::Access& access)
 
 void LoadCompressedDataFromFile(const std::string& path)
 {
-  openntc::Result res = openntc::Context::Load(path, g_fil_data);
+  openntc::Result res = openntc::Load(path, g_fil_data);
   if (res != openntc::Result::Success)
   {
     SetStatus("Compressed load failed (Error Code %d): %s", static_cast<int>(res), path.c_str());
@@ -1549,11 +1549,11 @@ void PerformSaveCompressed()
       SetStatus("Context busy: Save Failed");
       return;
     }
-    res = openntc::Context::Dump(path, oaccess.value().ctx_.GetCompressedData());
+    res = openntc::Dump(path, oaccess.value().ctx_.GetCompressedData());
   }
   else
   {
-    res = openntc::Context::Dump(path, g_fil_data.Data());
+    res = openntc::Dump(path, g_fil_data.Data());
   }
 
   if (res != openntc::Result::Success)
