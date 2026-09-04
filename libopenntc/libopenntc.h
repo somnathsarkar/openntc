@@ -174,6 +174,8 @@ public:
   TrainProgress Train(int32_t num_batches);
   TrainProgress TrainUntilComplete();
   EvalResults Eval();
+
+  Result GetLastError() const;
   CalibrationData Calibrate(float headroom = 1.1f);
   CompressedData GetCompressedData();
   Result LoadManifest(const std::string& filepath);
@@ -197,6 +199,11 @@ private:
 
   bool initialized_;
   bool manifest_loaded_;
+  Result last_error_ = Result::Success;
+
+  TrainProgress ErrorProgress();
+  CalibrationData FailCalibration();
+  EvalResults FailEval();
   Profile profile_;
   int g0_bits_per_channel_;
   int g1_bits_per_channel_;

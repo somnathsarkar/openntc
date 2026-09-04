@@ -229,6 +229,8 @@ Result Dump(const std::string& path, const CompressedData& data)
   uint32_t header[4] = {0x43544E4F, 4, (uint32_t)js.size(), (uint32_t)off};
 
   std::ofstream f(path, std::ios::binary);
+  if (!f)
+    return Result::FileWriteFailure;
   if (!f) return Result::FileNotFound;
   f.write((const char*)header, sizeof(header));
   f.write(js.data(), js.length());

@@ -26,6 +26,7 @@ enum class Result
   InvalidFile,
   FileWriteFailure,
   InvalidState,
+  CudaFailure,
 };
 
 enum class Semantic : int32_t

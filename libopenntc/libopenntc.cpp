@@ -14,6 +14,21 @@
 #include <libopenntc/ntc_kernel.cuh>
 #include <libopenntc/json.hpp>
 
+#define OPENNTC_CUDA_CHECK(expr, ret) \
+  do \
+  { \
+    cudaError_t e_ = (expr); \
+    if (e_ != cudaSuccess) \
+      return ret; \
+  } while (0)
+
+#define OPENNTC_CUBLAS_CHECK(expr, ret) \
+  do \
+  { \
+    if ((expr) != CUBLAS_STATUS_SUCCESS) \
+      return ret; \
+  } while (0)
+
 namespace openntc
 {
 Tensor2d::Tensor2d() : initialized_(false), dev_(nullptr) {}
@@ -27,9 +42,7 @@ Result Tensor2d::Init(int x, int y)
 {
   shape_[0] = x;
   shape_[1] = y;
-  cudaMalloc(&dev_, sizeof(float) * x * y);
-  if (dev_ == nullptr)
-    return Result::AllocationFailure;
+  OPENNTC_CUDA_CHECK(cudaMalloc(&dev_, sizeof(float) * x * y), Result::AllocationFailure);
   initialized_ = true;
   return Result::Success;
 }
@@ -101,9 +114,7 @@ Result Tensor3d::Init(int x, int y, int z)
   shape_[0] = x;
   shape_[1] = y;
   shape_[2] = z;
-  cudaMalloc(&dev_, sizeof(float) * x * y * z);
-  if (dev_ == nullptr)
-    return Result::AllocationFailure;
+  OPENNTC_CUDA_CHECK(cudaMalloc(&dev_, sizeof(float) * x * y * z), Result::AllocationFailure);
   initialized_ = true;
   return Result::Success;
 }
@@ -182,9 +193,7 @@ Result U8Tensor3d::Init(int x, int y, int z)
   shape_[0] = x;
   shape_[1] = y;
   shape_[2] = z;
-  cudaMalloc(&dev_, sizeof(uint8_t) * x * y * z);
-  if (dev_ == nullptr)
-    return Result::AllocationFailure;
+  OPENNTC_CUDA_CHECK(cudaMalloc(&dev_, sizeof(uint8_t) * x * y * z), Result::AllocationFailure);
   initialized_ = true;
   return Result::Success;
 }
@@ -239,9 +248,7 @@ IntTensor1d::~IntTensor1d()
 Result IntTensor1d::Init(int x)
 {
   shape_[0] = x;
-  cudaMalloc(&dev_, sizeof(int) * x);
-  if (dev_ == nullptr)
-    return Result::AllocationFailure;
+  OPENNTC_CUDA_CHECK(cudaMalloc(&dev_, sizeof(int) * x), Result::AllocationFailure);
   initialized_ = true;
   return Result::Success;
 }
@@ -363,12 +370,12 @@ Result Context::Init(const ContextInitInfo& init_info)
   grid_draws_.Init(2 * max_batch_);
 
   cublasHandle_t cublas_handle = nullptr;
-  cublasCreate(&cublas_handle);
-  cublasSetMathMode(cublas_handle, CUBLAS_TF32_TENSOR_OP_MATH);
+  OPENNTC_CUBLAS_CHECK(cublasCreate(&cublas_handle), Result::CudaFailure);
+  OPENNTC_CUBLAS_CHECK(cublasSetMathMode(cublas_handle, CUBLAS_TF32_TENSOR_OP_MATH), Result::CudaFailure);
   handle_ = cublas_handle;
 
   rand_dim_ = 1024 * 1024;
-  cudaMalloc(&rstate_, sizeof(curandState) * rand_dim_);
+  OPENNTC_CUDA_CHECK(cudaMalloc(&rstate_, sizeof(curandState) * rand_dim_), Result::CudaFailure);
   launch_initialize_rand(rand_dim_, rstate_);
 
   size_t W0_size = hidden_dim_ * feature_dim_padded_;
@@ -387,26 +394,26 @@ Result Context::Init(const ContextInitInfo& init_info)
 
 // C = A * B, where A, B, C are row-major. C is n x m, A is n x k, B is k x m
 
-static void matmulAB(void* handle, int n, int m, int k, float* A, float* B, float* C)
+static cublasStatus_t matmulAB(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, m, A, k, &sgemm_beta, C, m);
+  return cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, m, A, k, &sgemm_beta, C, m);
 }
 
 // C = A^T * B, where A, B, C are row-major. C is n x m, A is k x n, B is k x m
 
-static void matmulATB(void* handle, int n, int m, int k, float* A, float* B, float* C)
+static cublasStatus_t matmulATB(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_T, m, n, k, &sgemm_alpha, B, m, A, n, &sgemm_beta, C, m);
+  return cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_N, CUBLAS_OP_T, m, n, k, &sgemm_alpha, B, m, A, n, &sgemm_beta, C, m);
 }
 
 // C = A * B^T, where A, B, C are row-major. C is n x m, A is n x k, B is m x k
 
-static void matmulABT(void* handle, int n, int m, int k, float* A, float* B, float* C)
+static cublasStatus_t matmulABT(void* handle, int n, int m, int k, float* A, float* B, float* C)
 {
   float sgemm_alpha = 1.0f, sgemm_beta = 0.0f;
-  cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, k, A, k, &sgemm_beta, C, m);
+  return cublasSgemm((cublasHandle_t)handle, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, &sgemm_alpha, B, k, A, k, &sgemm_beta, C, m);
 }
 
 static float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
@@ -476,6 +483,29 @@ void Context::BeginTraining(const TrainInfo& train_info)
   train_phase_ = TrainPhase::TrainInProgress;
 }
 
+TrainProgress Context::ErrorProgress()
+{
+  last_error_ = Result::CudaFailure;
+  TrainProgress tprogress = {};
+  tprogress.phase_ = TrainPhase::TrainError;
+  tprogress.result_ = Result::CudaFailure;
+  tprogress.batches_complete_ = batch_i_;
+  tprogress.total_batches_ = batch_count_;
+  return tprogress;
+}
+
+CalibrationData Context::FailCalibration()
+{
+  last_error_ = Result::CudaFailure;
+  return CalibrationData{};
+}
+
+EvalResults Context::FailEval()
+{
+  last_error_ = Result::CudaFailure;
+  return EvalResults{};
+}
+
 TrainProgress Context::TrainUntilComplete()
 {
   assert(train_phase_ == TrainPhase::TrainInProgress || train_phase_ == TrainPhase::TrainComplete);
@@ -531,7 +561,7 @@ TrainProgress Context::Train(int32_t batch_count)
       grid_draws[i + i] = dist_grid(gen_);
       grid_draws[i + i + 1] = dist_grid(gen_);
     }
-    cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * grids_per_batch_ * 2, cudaMemcpyHostToDevice);
+    OPENNTC_CUDA_CHECK(cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * grids_per_batch_ * 2, cudaMemcpyHostToDevice), ErrorProgress());
     int grid_dim_draw = std::min(mip_dim_[lod], 256);
     if (batch_i_ < lock_i_)
     {
@@ -598,18 +628,18 @@ TrainProgress Context::Train(int32_t batch_count)
 
     // Forward pass
 
-    matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr());
+    OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr()), ErrorProgress());
     launch_forward_hardgelu(hidden_dim_ * batch_dim, W0x_.DevicePtr(), W0xa_.DevicePtr());
-    matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr());
+    OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr()), ErrorProgress());
     launch_forward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), W1xa_.DevicePtr());
-    matmulAB(handle_, out_dim_, batch_dim, hidden_dim_, Wout_.DevicePtr(), W1xa_.DevicePtr(), Woutx_.DevicePtr());
+    OPENNTC_CUBLAS_CHECK(matmulAB(handle_, out_dim_, batch_dim, hidden_dim_, Wout_.DevicePtr(), W1xa_.DevicePtr(), Woutx_.DevicePtr()), ErrorProgress());
 
     // Loss
 
     float host_neg1 = -1.0f;
     float total_squared_error = 0.0f;
-    cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
-    cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
+    OPENNTC_CUBLAS_CHECK(cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1), ErrorProgress());
+    OPENNTC_CUBLAS_CHECK(cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error), ErrorProgress());
     float mse = total_squared_error / ((float) out_dim_ * batch_dim);
     launch_scalar_product(
       out_dim_ * batch_dim,
@@ -619,28 +649,28 @@ TrainProgress Context::Train(int32_t batch_count)
 
     // Backward pass
 
-    matmulABT(
+    OPENNTC_CUBLAS_CHECK(matmulABT(
       handle_,
       out_dim_,
       hidden_dim_,
       batch_dim,
       dLdWoutx_.DevicePtr(),
       W1xa_.DevicePtr(),
-      dLdWout_.DevicePtr());
-    matmulATB(
+      dLdWout_.DevicePtr()), ErrorProgress());
+    OPENNTC_CUBLAS_CHECK(matmulATB(
       handle_,
       hidden_dim_,
       batch_dim,
       out_dim_,
       Wout_.DevicePtr(),
       dLdWoutx_.DevicePtr(),
-      dLdW1xa_.DevicePtr());
+      dLdW1xa_.DevicePtr()), ErrorProgress());
     launch_backward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), dLdW1xa_.DevicePtr(), dLdW1x_.DevicePtr());
-    matmulABT(handle_, hidden_dim_, hidden_dim_, batch_dim, dLdW1x_.DevicePtr(), W0xa_.DevicePtr(), dLdW1_.DevicePtr());
-    matmulATB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), dLdW1x_.DevicePtr(), dLdW0xa_.DevicePtr());
+    OPENNTC_CUBLAS_CHECK(matmulABT(handle_, hidden_dim_, hidden_dim_, batch_dim, dLdW1x_.DevicePtr(), W0xa_.DevicePtr(), dLdW1_.DevicePtr()), ErrorProgress());
+    OPENNTC_CUBLAS_CHECK(matmulATB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), dLdW1x_.DevicePtr(), dLdW0xa_.DevicePtr()), ErrorProgress());
     launch_backward_hardgelu(hidden_dim_ * batch_dim, W0x_.DevicePtr(), dLdW0xa_.DevicePtr(), dLdW0x_.DevicePtr());
-    matmulABT(handle_, hidden_dim_, feature_dim_, batch_dim, dLdW0x_.DevicePtr(), x_.DevicePtr(), dLdW0_.DevicePtr());
-    matmulATB(handle_, feature_dim_, batch_dim, hidden_dim_, W0_.DevicePtr(), dLdW0x_.DevicePtr(), dLdx_.DevicePtr());
+    OPENNTC_CUBLAS_CHECK(matmulABT(handle_, hidden_dim_, feature_dim_, batch_dim, dLdW0x_.DevicePtr(), x_.DevicePtr(), dLdW0_.DevicePtr()), ErrorProgress());
+    OPENNTC_CUBLAS_CHECK(matmulATB(handle_, feature_dim_, batch_dim, hidden_dim_, W0_.DevicePtr(), dLdW0x_.DevicePtr(), dLdx_.DevicePtr()), ErrorProgress());
 
     dLdG0_[feature_level].FillZero();
     dLdG1_[feature_level].FillZero();
@@ -754,8 +784,8 @@ TrainProgress Context::Train(int32_t batch_count)
     uint32_t* g0pack = nullptr;
     uint32_t* g1pack = nullptr;
 
-    cudaMalloc(&g0pack, sizeof(uint32_t) * (g0_[0].NumElems() * g0_bits_per_channel_) / 32);
-    cudaMalloc(&g1pack, sizeof(uint32_t) * (g1_[0].NumElems() * g1_bits_per_channel_) / 32);
+    OPENNTC_CUDA_CHECK(cudaMalloc(&g0pack, sizeof(uint32_t) * (g0_[0].NumElems() * g0_bits_per_channel_) / 32), ErrorProgress());
+    OPENNTC_CUDA_CHECK(cudaMalloc(&g1pack, sizeof(uint32_t) * (g1_[0].NumElems() * g1_bits_per_channel_) / 32), ErrorProgress());
 
     for (int i = 0; i < level_count_; i++)
     {
@@ -771,16 +801,16 @@ TrainProgress Context::Train(int32_t batch_count)
         g1_bits_per_channel_,
         g1_[i].DevicePtr(),
         g1pack);
-      cudaMemcpy(
+      OPENNTC_CUDA_CHECK(cudaMemcpy(
         g0_host_[i],
         g0pack,
         sizeof(uint32_t) * (g0_[i].NumElems() * g0_bits_per_channel_) / 32,
-        cudaMemcpyDeviceToHost);
-      cudaMemcpy(
+        cudaMemcpyDeviceToHost), ErrorProgress());
+      OPENNTC_CUDA_CHECK(cudaMemcpy(
         g1_host_[i],
         g1pack,
         sizeof(uint32_t) * (g1_[i].NumElems() * g1_bits_per_channel_) / 32,
-        cudaMemcpyDeviceToHost);
+        cudaMemcpyDeviceToHost), ErrorProgress());
     }
 
     cudaFree(g0pack);
@@ -793,9 +823,9 @@ TrainProgress Context::Train(int32_t batch_count)
     float* W1_unpack = new float[W1_.NumElems()];
     float* Wout_unpack = new float[out_dim_padded_ * hidden_dim_];
 
-    cudaMemcpy(W0_unpack_unpadded, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(W1_unpack, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(Wout_unpack, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost);
+    OPENNTC_CUDA_CHECK(cudaMemcpy(W0_unpack_unpadded, W0_.DevicePtr(), W0_.SizeBytes(), cudaMemcpyDeviceToHost), ErrorProgress());
+    OPENNTC_CUDA_CHECK(cudaMemcpy(W1_unpack, W1_.DevicePtr(), W1_.SizeBytes(), cudaMemcpyDeviceToHost), ErrorProgress());
+    OPENNTC_CUDA_CHECK(cudaMemcpy(Wout_unpack, Wout_.DevicePtr(), Wout_.SizeBytes(), cudaMemcpyDeviceToHost), ErrorProgress());
 
     for (int i = 0; i < hidden_dim_; i++)
     {
@@ -840,15 +870,24 @@ int32_t Context::FeatureLevelForLod(int32_t lod) const
   return std::min(level, level_count_ - 1);
 }
 
+Result Context::GetLastError() const
+{
+  return last_error_;
+}
+
 CalibrationData Context::Calibrate(float headroom)
 {
-  assert (manifest_loaded_ && train_phase_ == TrainPhase::TrainComplete);
+  if (!manifest_loaded_ || train_phase_ != TrainPhase::TrainComplete)
+  {
+    last_error_ = Result::InvalidState;
+    return CalibrationData{};
+  }
 
   // TODO: Switch this out with allcation at Init-time.
 
   float* dmax = nullptr;
-  cudaMalloc(&dmax, sizeof(float) * 2);
-  cudaMemset(dmax, 0, sizeof(float) * 2);
+  OPENNTC_CUDA_CHECK(cudaMalloc(&dmax, sizeof(float) * 2), FailCalibration());
+  OPENNTC_CUDA_CHECK(cudaMemset(dmax, 0, sizeof(float) * 2), FailCalibration());
 
   for (int mip_i = 0; mip_i < mip_count_; mip_i++)
   {
@@ -866,7 +905,7 @@ CalibrationData Context::Calibrate(float headroom)
         grid_draws[fill_i + fill_i + 1] = (g / grids_per_dim) * grid_dim_draw;
         fill_i++;
       }
-      cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice);
+      OPENNTC_CUDA_CHECK(cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice), FailCalibration());
 
       int32_t feature_level = FeatureLevelForLod(mip_i);
 
@@ -889,17 +928,17 @@ CalibrationData Context::Calibrate(float headroom)
         g1_[feature_level].DevicePtr(),
         x_.DevicePtr());
 
-      matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr());
+      OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr()), FailCalibration());
       launch_forward_hardgelu(hidden_dim_ * batch_dim, W0x_.DevicePtr(), W0xa_.DevicePtr());
       launch_max_abs(hidden_dim_ * batch_dim, W0xa_.DevicePtr(), &dmax[0]);
-      matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr());
+      OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr()), FailCalibration());
       launch_forward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), W1xa_.DevicePtr());
       launch_max_abs(hidden_dim_ * batch_dim, W1xa_.DevicePtr(), &dmax[1]);
     }
   }
 
   float hmax[2] = {};
-  cudaMemcpy(hmax, dmax, sizeof(float) * 2, cudaMemcpyDeviceToHost);
+  OPENNTC_CUDA_CHECK(cudaMemcpy(hmax, dmax, sizeof(float) * 2, cudaMemcpyDeviceToHost), FailCalibration());
   cudaFree(dmax);
 
   CalibrationData cal = {};
@@ -912,7 +951,11 @@ CalibrationData Context::Calibrate(float headroom)
 
 EvalResults Context::Eval()
 {
-  assert(manifest_loaded_ && (train_phase_ == TrainPhase::TrainInProgress || train_phase_==TrainPhase::TrainComplete));
+  if (!manifest_loaded_ || (train_phase_ != TrainPhase::TrainInProgress && train_phase_ != TrainPhase::TrainComplete))
+  {
+    last_error_ = Result::InvalidState;
+    return EvalResults{};
+  }
 
   double mse_numer = 0;
   double mse_denom = 0;
@@ -935,7 +978,7 @@ EvalResults Context::Eval()
         fill_i++;
       }
 
-      cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice);
+      OPENNTC_CUDA_CHECK(cudaMemcpy(grid_draws_.DevicePtr(), grid_draws, sizeof(int) * 2 * num_batches, cudaMemcpyHostToDevice), FailEval());
 
       int feature_level = FeatureLevelForLod(mip_i);
 
@@ -968,16 +1011,16 @@ EvalResults Context::Eval()
       
       // Forward pass
 
-      matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr());
+      OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, feature_dim_, W0_.DevicePtr(), x_.DevicePtr(), W0x_.DevicePtr()), FailEval());
       launch_forward_hardgelu(hidden_dim_ * batch_dim, W0x_.DevicePtr(), W0xa_.DevicePtr());
-      matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr());
+      OPENNTC_CUBLAS_CHECK(matmulAB(handle_, hidden_dim_, batch_dim, hidden_dim_, W1_.DevicePtr(), W0xa_.DevicePtr(), W1x_.DevicePtr()), FailEval());
       launch_forward_hardgelu(hidden_dim_ * batch_dim, W1x_.DevicePtr(), W1xa_.DevicePtr());
-      matmulAB(handle_, out_dim_, batch_dim, hidden_dim_, Wout_.DevicePtr(), W1xa_.DevicePtr(), Woutx_.DevicePtr());
+      OPENNTC_CUBLAS_CHECK(matmulAB(handle_, out_dim_, batch_dim, hidden_dim_, Wout_.DevicePtr(), W1xa_.DevicePtr(), Woutx_.DevicePtr()), FailEval());
 
       float host_neg1 = -1.0f;
       float total_squared_error = 0.0f;
-      cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1);
-      cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error);
+      OPENNTC_CUBLAS_CHECK(cublasSaxpy((cublasHandle_t)handle_, out_dim_ * batch_dim, &host_neg1, Woutx_.DevicePtr(), 1, mse_.DevicePtr(), 1), FailEval());
+      OPENNTC_CUBLAS_CHECK(cublasSdot((cublasHandle_t)handle_, out_dim_ * batch_dim, mse_.DevicePtr(), 1, mse_.DevicePtr(), 1, &total_squared_error), FailEval());
       mse_numer += total_squared_error;
       mse_denom += batch_dim * out_dim_;
     }
@@ -1233,7 +1276,7 @@ Result Context::LoadManifest(const std::string& filepath)
       UnloadManifest();
       return Result::InvalidManifest;
     }
-    cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    OPENNTC_CUDA_CHECK(cudaMemcpy(tex_prep_.DevicePtr(), tex_data, w * h * desired_channels * sizeof(uint8_t), cudaMemcpyHostToDevice), Result::CudaFailure);
     stbi_image_free(tex_data);
 
     PrepareTexInput prepare_in = {};
@@ -1250,11 +1293,11 @@ Result Context::LoadManifest(const std::string& filepath)
         mips_[i][j].DevicePtr());
     }
     for (int j = 0; j < mip_count_; j++)
-      cudaMemcpy(
+      OPENNTC_CUDA_CHECK(cudaMemcpy(
         mips_host_[i][j],
         mips_[i][j].DevicePtr(),
         sizeof(uint8_t) * mip_dim_[j] * mip_dim_[j] * manifest_.sources_[i].num_channels_,
-        cudaMemcpyDeviceToHost);
+        cudaMemcpyDeviceToHost), Result::CudaFailure);
   }
 
   PackageTexInput package_in = {};
