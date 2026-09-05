@@ -2019,6 +2019,27 @@ void Render()
       const float pitch_limit = XMConvertToRadians(89.0f);
       g_pitch = std::clamp(g_pitch, -pitch_limit, pitch_limit);
     }
+
+    {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const float mid_x = cx + cw / 2.0f;
+      dl->AddLine({mid_x, cy}, {mid_x, cy + ch}, ImGui::GetColorU32(ImGuiCol_Separator), 2.0f);
+
+      const char* left_name = g_gui_flat_view ? g_map_flat_source_to_name[g_gui_flat_left]
+                                              : g_map_shader_to_name[g_gui_shader_left];
+      const char* right_name = g_gui_flat_view ? g_map_flat_source_to_name[g_gui_flat_right]
+                                               : g_map_shader_to_name[g_gui_shader_right];
+      auto DrawCaption = [&](const char* text, float x0) {
+        const float pad = 4.0f;
+        ImVec2 size = ImGui::CalcTextSize(text);
+        ImVec2 p0(x0 + 8.0f, cy + 8.0f);
+        ImVec2 p1(p0.x + size.x + 2.0f * pad, p0.y + size.y + 2.0f * pad);
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 160), 3.0f);
+        dl->AddText({p0.x + pad, p0.y + pad}, IM_COL32_WHITE, text);
+      };
+      DrawCaption(left_name, cx);
+      DrawCaption(right_name, mid_x);
+    }
     ImGui::End();
     ImGui::PopStyleVar();
   }
