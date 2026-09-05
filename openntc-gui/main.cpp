@@ -95,6 +95,7 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc[g_kProfileCount];
 ComPtr<ID3D12PipelineState> g_pipelinestate_flat_ntc[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop[g_kProfileCount];
+ComPtr<ID3D12PipelineState> g_pipelinestate_flat_ntc_coop[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
@@ -365,10 +366,11 @@ enum class FlatSource : int32_t
 {
   Reference,
   NTC,
+  NTC_COOP,
 
   Count
 };
-const char* const g_map_flat_source_to_name[] = {"Reference", "NTC"};
+const char* const g_map_flat_source_to_name[] = {"Reference", "NTC", "NTC_COOP"};
 bool g_gui_flat_view = false;
 int32_t g_gui_flat_left = static_cast<int32_t>(FlatSource::Reference);
 int32_t g_gui_flat_right = static_cast<int32_t>(FlatSource::NTC);
@@ -1102,6 +1104,19 @@ void LoadContent()
           .CullMode(D3D12_CULL_MODE_BACK);
       g_pipelinestate_pbr_ntc_coop[profile_i] = gpb.Build(g_device.Get());
     }
+
+    const char* flat_vs_names[g_kProfileCount] = {"flat_ntc_coop_vs", "flat_ntc_coop_bpp05_vs", "flat_ntc_coop_bpp10_vs", "flat_ntc_coop_bpp225_vs"};
+    const char* flat_ps_names[g_kProfileCount] = {"flat_ntc_coop_ps", "flat_ntc_coop_bpp05_ps", "flat_ntc_coop_bpp10_ps", "flat_ntc_coop_bpp225_ps"};
+    for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
+    {
+      GraphicsPipelineBuilder gpb;
+      gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
+          .VS(PACK_BLOB_ARGS(flat_vs_names[profile_i]))
+          .PS(PACK_BLOB_ARGS(flat_ps_names[profile_i]))
+          .DepthEnable(false)
+          .CullMode(D3D12_CULL_MODE_NONE);
+      g_pipelinestate_flat_ntc_coop[profile_i] = gpb.Build(g_device.Get());
+    }
   }
 #endif
 
@@ -1422,6 +1437,13 @@ static void DrawFlatPane(FlatSource source, const D3D12_VIEWPORT& viewport)
     g_commandlist->SetPipelineState(g_pipelinestate_flat_ntc[static_cast<int32_t>(g_profile)].Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
     SetDescriptorsForShader(Shader::PBR_NTC);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(FlatParams) / 4, &params, 0);
+  }
+  else if (source == FlatSource::NTC_COOP && OPENNTC_COOP && g_app_state == GuiState::Compressed)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat_ntc_coop[static_cast<int32_t>(g_profile)].Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
+    SetDescriptorsForShader(Shader::PBR_NTC_COOP);
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(FlatParams) / 4, &params, 0);
   }
   else
@@ -1758,9 +1780,15 @@ void Render()
   if (g_gui_flat_view)
   {
     const bool ntc_ok = g_app_state == GuiState::Compressed;
+    const bool coop_ok = OPENNTC_COOP && ntc_ok;
+    auto IsSourceValid = [&](int32_t source) {
+      return source == static_cast<int32_t>(FlatSource::NTC) ? ntc_ok
+           : source == static_cast<int32_t>(FlatSource::NTC_COOP) ? coop_ok
+           : true;
+    };
     for (int32_t* value : {&g_gui_flat_left, &g_gui_flat_right})
     {
-      if (!ntc_ok && *value == static_cast<int32_t>(FlatSource::NTC))
+      if (!IsSourceValid(*value))
         *value = static_cast<int32_t>(FlatSource::Reference);
     }
     auto source_combo = [&](const char* label, int32_t* value) {
@@ -1768,7 +1796,7 @@ void Render()
       {
         for (int32_t i = 0; i < static_cast<int32_t>(FlatSource::Count); i++)
         {
-          ImGui::BeginDisabled(i == static_cast<int32_t>(FlatSource::NTC) && !ntc_ok);
+          ImGui::BeginDisabled(!IsSourceValid(i));
           if (ImGui::Selectable(g_map_flat_source_to_name[i], *value == i))
             *value = i;
           ImGui::EndDisabled();
