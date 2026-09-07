@@ -94,8 +94,10 @@ std::string g_manifest_path;
 DataPack g_datapack;
 #define PACK_BLOB_ARGS(name) g_datapack.Get(name).data_, g_datapack.Get(name).size_
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc[g_kProfileCount];
+ComPtr<ID3D12PipelineState> g_pipelinestate_flat_ntc[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc;
 ComPtr<ID3D12PipelineState> g_pipelinestate_pbr_ntc_coop[g_kProfileCount];
+ComPtr<ID3D12PipelineState> g_pipelinestate_flat_ntc_coop[g_kProfileCount];
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr_ntc_coop;
 ComPtr<ID3D12PipelineState> g_pipelinestate_cubemap;
 ComPtr<ID3D12RootSignature> g_rootsignature_cubemap;
@@ -144,6 +146,7 @@ DescriptorHandle g_dhandle_dsv;
 
 DescriptorAllocator g_dalloc_srv;
 DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
+DescriptorHandle g_dhandle_pbr_tex[5];
 DescriptorHandle g_dhandle_ntc_info;
 DescriptorHandle g_dhandle_ntc_data[1 + 1 + 1];
 DescriptorHandle g_dhandle_lparams;
@@ -209,7 +212,7 @@ float g_yaw = 0.0f;
 float y_roll = 0.0f;
 float g_fov_y = 65.0f;
 
-constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 1 + (1 + 1 + 1) + 3 + 5;
+constexpr int32_t g_nonimgui_srv_count = openntc::kMaxSources + 5 + 1 + (1 + 1 + 1) + 3 + 5;
 constexpr int32_t g_imgui_srv_count = 64;
 constexpr int32_t g_srv_count = g_nonimgui_srv_count + g_imgui_srv_count;
 
@@ -330,7 +333,6 @@ std::vector<UINT> g_imgui_available_srv_slots;
 
 enum class Shader: int32_t
 {
-  Flat,
   PBR,
   PBR_NTC,
   PBR_NTC_COOP,
@@ -339,7 +341,6 @@ enum class Shader: int32_t
 };
 
 const char* g_map_shader_to_name[] = {
-  "Flat",
   "PBR",
   "PBR_NTC",
   "PBR_NTC_COOP"
@@ -362,7 +363,30 @@ const char* g_map_camera_mode_to_name[] = {
 
 int32_t g_gui_shader_left = static_cast<int32_t>(Shader::PBR);
 int32_t g_gui_shader_right = static_cast<int32_t>(Shader::PBR);
-int32_t g_gui_texture = 0;
+
+enum class FlatSource : int32_t
+{
+  Reference,
+  NTC,
+  NTC_COOP,
+
+  Count
+};
+const char* const g_map_flat_source_to_name[] = {"Reference", "NTC", "NTC_COOP"};
+bool g_gui_flat_view = false;
+int32_t g_gui_flat_left = static_cast<int32_t>(FlatSource::Reference);
+int32_t g_gui_flat_right = static_cast<int32_t>(FlatSource::NTC);
+int32_t g_gui_flat_channel = 0;
+int32_t g_tex_count = 0;
+openntc::Semantic g_tex_semantics[openntc::kMaxSources] = {};
+
+struct FlatParams
+{
+  float pane_dim_[2];
+  int32_t semantic_;
+  int32_t channels_;
+  float pad2_[12];
+};
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
 float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
@@ -583,6 +607,10 @@ static void RebuildTextureResources(SharedContext::Access& access)
 {
   Flush(g_queue, g_fence, &g_fenceval, g_fence_event);
   openntc::TextureData tex_data = access.ctx_.GetTextureData();
+  g_tex_count = tex_data.tex_count_;
+  for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
+    g_tex_semantics[tex_i] = tex_data.semantics_[tex_i];
+  g_gui_flat_channel = std::clamp(g_gui_flat_channel, 0, std::max(g_tex_count - 1, 0));
 
   for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
   {
@@ -609,6 +637,27 @@ static void RebuildTextureResources(SharedContext::Access& access)
     srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
     g_device->CreateShaderResourceView(g_tex[tex_i].Get(), &srv_desc, g_dhandle_tex[tex_i].cpu_);
+  }
+
+  {
+    const openntc::Semantic pbr_order[5] = {
+      openntc::Semantic::AO,
+      openntc::Semantic::Albedo,
+      openntc::Semantic::Displacement,
+      openntc::Semantic::Normal,
+      openntc::Semantic::Roughness};
+    for (int slot = 0; slot < 5; slot++)
+    {
+      int src = 0;
+      for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
+        if (tex_data.semantics_[tex_i] == pbr_order[slot])
+          src = tex_i;
+      g_device->CopyDescriptorsSimple(
+        1,
+        g_dhandle_pbr_tex[slot].cpu_,
+        g_dhandle_tex[src].cpu_,
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
   }
 
   UINT64 scratch_size = 0llu;
@@ -861,7 +910,7 @@ void LoadContent()
     }
 
     RootSignatureBuilder rsb;
-    rsb.RootConstants(sizeof(XMMATRIX) / 4, D3D12_SHADER_VISIBILITY_VERTEX)
+    rsb.RootConstants(sizeof(FlatParams) / 4, D3D12_SHADER_VISIBILITY_ALL)
         .Range(
           1,
           D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -869,15 +918,6 @@ void LoadContent()
           D3D12_SHADER_VISIBILITY_PIXEL)
         .StaticSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL);
     g_rootsignature_flat = rsb.Build(g_device.Get());
-
-    GraphicsPipelineBuilder gpb;
-    gpb.RootSignature(g_rootsignature_flat.Get())
-        .Input(input_layout, _countof(input_layout))
-        .VS(PACK_BLOB_ARGS("flat_vs"))
-        .PS(PACK_BLOB_ARGS("flat_ps"))
-        .DepthEnable(true)
-        .CullMode(D3D12_CULL_MODE_BACK);
-    g_pipelinestate_flat = gpb.Build(g_device.Get());
   }
 
   // PBR
@@ -989,6 +1029,30 @@ void LoadContent()
     }
   }
 
+  // Flat
+  {
+    GraphicsPipelineBuilder gpb;
+    gpb.RootSignature(g_rootsignature_flat.Get())
+        .VS(PACK_BLOB_ARGS("flat_vs"))
+        .PS(PACK_BLOB_ARGS("flat_ps"))
+        .DepthEnable(false)
+        .CullMode(D3D12_CULL_MODE_NONE);
+    g_pipelinestate_flat = gpb.Build(g_device.Get());
+
+    const char* vs_names[g_kProfileCount] = {"flat_ntc_vs", "flat_ntc_bpp05_vs", "flat_ntc_bpp10_vs", "flat_ntc_bpp225_vs"};
+    const char* ps_names[g_kProfileCount] = {"flat_ntc_ps", "flat_ntc_bpp05_ps", "flat_ntc_bpp10_ps", "flat_ntc_bpp225_ps"};
+    for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
+    {
+      GraphicsPipelineBuilder gpb_ntc;
+      gpb_ntc.RootSignature(g_rootsignature_pbr_ntc.Get())
+          .VS(PACK_BLOB_ARGS(vs_names[profile_i]))
+          .PS(PACK_BLOB_ARGS(ps_names[profile_i]))
+          .DepthEnable(false)
+          .CullMode(D3D12_CULL_MODE_NONE);
+      g_pipelinestate_flat_ntc[profile_i] = gpb_ntc.Build(g_device.Get());
+    }
+  }
+
 #if OPENNTC_COOP
   {
     D3D12_INPUT_ELEMENT_DESC input_layout[] = {
@@ -1042,6 +1106,19 @@ void LoadContent()
           .DepthEnable(true)
           .CullMode(D3D12_CULL_MODE_BACK);
       g_pipelinestate_pbr_ntc_coop[profile_i] = gpb.Build(g_device.Get());
+    }
+
+    const char* flat_vs_names[g_kProfileCount] = {"flat_ntc_coop_vs", "flat_ntc_coop_bpp05_vs", "flat_ntc_coop_bpp10_vs", "flat_ntc_coop_bpp225_vs"};
+    const char* flat_ps_names[g_kProfileCount] = {"flat_ntc_coop_ps", "flat_ntc_coop_bpp05_ps", "flat_ntc_coop_bpp10_ps", "flat_ntc_coop_bpp225_ps"};
+    for (int32_t profile_i = 0; profile_i < g_kProfileCount; profile_i++)
+    {
+      GraphicsPipelineBuilder gpb;
+      gpb.RootSignature(g_rootsignature_pbr_ntc_coop.Get())
+          .VS(PACK_BLOB_ARGS(flat_vs_names[profile_i]))
+          .PS(PACK_BLOB_ARGS(flat_ps_names[profile_i]))
+          .DepthEnable(false)
+          .CullMode(D3D12_CULL_MODE_NONE);
+      g_pipelinestate_flat_ntc_coop[profile_i] = gpb.Build(g_device.Get());
     }
   }
 #endif
@@ -1295,12 +1372,7 @@ void LoadCompressedDataFromFile(const std::string& path)
 
 static void SetPipelineStateForShader(Shader shader)
 {
-  if (shader == Shader::Flat)
-  {
-    g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
-    g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
-  }
-  else if (shader == Shader::PBR)
+  if (shader == Shader::PBR)
   {
     g_commandlist->SetPipelineState(g_pipelinestate_pbr.Get());
     g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr.Get());
@@ -1319,22 +1391,14 @@ static void SetPipelineStateForShader(Shader shader)
 
 static void SetDescriptorsForShader(Shader shader)
 {
-  if (shader == Shader::Flat)
-  {
-    XMMATRIX mvp_mat = XMMatrixMultiply(g_model_mat, g_view_mat);
-    mvp_mat = XMMatrixMultiply(mvp_mat, g_proj_mat);
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[g_gui_texture].gpu_;
-    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvp_mat, 0);
-    g_commandlist->SetGraphicsRootDescriptorTable(1, tex_color_handle);
-  }
-  else if (shader == Shader::PBR)
+  if (shader == Shader::PBR)
   {
     ModelViewProjection mvp = {};
     mvp.model_to_world_ = g_model_mat;
     mvp.world_to_view_ = g_view_mat;
     mvp.view_to_proj_ = g_proj_mat;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_tex[0].gpu_;
+    D3D12_GPU_DESCRIPTOR_HANDLE tex_color_handle = g_dhandle_pbr_tex[0].gpu_;
     D3D12_GPU_DESCRIPTOR_HANDLE srv_handle = g_dhandle_ibl[0].gpu_;
     D3D12_GPU_DESCRIPTOR_HANDLE cbv_lighing_handle = g_dhandle_lparams.gpu_;
     g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(ModelViewProjection) / 4, &mvp, 0);
@@ -1359,6 +1423,40 @@ static void SetDescriptorsForShader(Shader shader)
     g_commandlist->SetGraphicsRootDescriptorTable(3, srv_handle_ibl);
     g_commandlist->SetGraphicsRootDescriptorTable(4, cbv_lighing_handle);
   }
+}
+
+static void DrawFlatPane(FlatSource source, const D3D12_VIEWPORT& viewport)
+{
+  if (g_tex_count == 0)
+    return;
+  FlatParams params = {};
+  params.pane_dim_[0] = viewport.Width;
+  params.pane_dim_[1] = viewport.Height;
+  params.semantic_ = static_cast<int32_t>(g_tex_semantics[g_gui_flat_channel]);
+  params.channels_ = openntc::GetChannelCountForSemantic(g_tex_semantics[g_gui_flat_channel]);
+
+  if (source == FlatSource::NTC && g_app_state == GuiState::Compressed)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat_ntc[static_cast<int32_t>(g_profile)].Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc.Get());
+    SetDescriptorsForShader(Shader::PBR_NTC);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(FlatParams) / 4, &params, 0);
+  }
+  else if (source == FlatSource::NTC_COOP && OPENNTC_COOP && g_app_state == GuiState::Compressed)
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat_ntc_coop[static_cast<int32_t>(g_profile)].Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_pbr_ntc_coop.Get());
+    SetDescriptorsForShader(Shader::PBR_NTC_COOP);
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(FlatParams) / 4, &params, 0);
+  }
+  else
+  {
+    g_commandlist->SetPipelineState(g_pipelinestate_flat.Get());
+    g_commandlist->SetGraphicsRootSignature(g_rootsignature_flat.Get());
+    g_commandlist->SetGraphicsRoot32BitConstants(0, sizeof(FlatParams) / 4, &params, 0);
+    g_commandlist->SetGraphicsRootDescriptorTable(1, g_dhandle_tex[g_gui_flat_channel].gpu_);
+  }
+  g_commandlist->DrawInstanced(6, 1, 0, 0);
 }
 
 void Update()
@@ -1575,7 +1673,6 @@ static bool IsShaderAvailable(Shader shader)
 {
   switch (shader)
   {
-    case Shader::Flat:
     case Shader::PBR:
       return !g_manifest_path.empty();
     case Shader::PBR_NTC:
@@ -1674,10 +1771,68 @@ void Render()
   ImGui::SetNextWindowPos({vp->WorkPos.x + vp->WorkSize.x - sidebar_w, vp->WorkPos.y});
   ImGui::SetNextWindowSize({sidebar_w, vp->WorkSize.y - footer_h});
   ImGui::Begin("Sidebar", nullptr, pinned_flags);
+  Shader shader_left = static_cast<Shader>(g_gui_shader_left);
+  Shader shader_right = static_cast<Shader>(g_gui_shader_right);
+  ImGui::SeparatorText("View");
+  {
+    int32_t view = g_gui_flat_view ? 1 : 0;
+    const char* view_names[] = { "3D", "2D" };
+    ImGui::Combo("Mode", &view, view_names, 2);
+    g_gui_flat_view = view == 1;
+  }
+  if (g_gui_flat_view)
+  {
+    const bool ntc_ok = g_app_state == GuiState::Compressed;
+    const bool coop_ok = OPENNTC_COOP && ntc_ok;
+    auto IsSourceValid = [&](int32_t source) {
+      return source == static_cast<int32_t>(FlatSource::NTC) ? ntc_ok
+           : source == static_cast<int32_t>(FlatSource::NTC_COOP) ? coop_ok
+           : true;
+    };
+    for (int32_t* value : {&g_gui_flat_left, &g_gui_flat_right})
+    {
+      if (!IsSourceValid(*value))
+        *value = static_cast<int32_t>(FlatSource::Reference);
+    }
+    auto source_combo = [&](const char* label, int32_t* value) {
+      if (ImGui::BeginCombo(label, g_map_flat_source_to_name[*value]))
+      {
+        for (int32_t i = 0; i < static_cast<int32_t>(FlatSource::Count); i++)
+        {
+          ImGui::BeginDisabled(!IsSourceValid(i));
+          if (ImGui::Selectable(g_map_flat_source_to_name[i], *value == i))
+            *value = i;
+          ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+      }
+    };
+    source_combo("Left", &g_gui_flat_left);
+    source_combo("Right", &g_gui_flat_right);
+    if (g_tex_count > 0)
+    {
+      const char* current = g_map_semantic_to_name[static_cast<int32_t>(g_tex_semantics[g_gui_flat_channel]) - 1];
+      if (ImGui::BeginCombo("Channel", current))
+      {
+        for (int32_t i = 0; i < g_tex_count; i++)
+        {
+          const char* name = g_map_semantic_to_name[static_cast<int32_t>(g_tex_semantics[i]) - 1];
+          if (ImGui::Selectable(name, g_gui_flat_channel == i))
+            g_gui_flat_channel = i;
+        }
+        ImGui::EndCombo();
+      }
+    }
+    ImGui::Checkbox("TAA", &g_gui_taa);
+  }
+  else
+  {
   ImGui::SeparatorText("Shading");
   ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
   ShaderCombo("Left", &g_gui_shader_left);
   ShaderCombo("Right", &g_gui_shader_right);
+  shader_left = static_cast<Shader>(g_gui_shader_left);
+  shader_right = static_cast<Shader>(g_gui_shader_right);
   if (g_app_state == GuiState::Compressed && !g_compressed_matches_manifest)
   {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
@@ -1691,13 +1846,8 @@ void Render()
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
   ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
   ImGui::Checkbox("TAA", &g_gui_taa);
-  Shader shader_left = static_cast<Shader>(g_gui_shader_left);
-  Shader shader_right = static_cast<Shader>(g_gui_shader_right);
-  if (shader_left == Shader::Flat)
-  {
-    ImGui::Combo("Channel", &g_gui_texture, g_map_semantic_to_name, openntc::kMaxSources);
-  }
   ImGui::Checkbox("Spin", &g_gui_spin);
+  }
 
   ImGui::SeparatorText("Train");
   const bool can_train = !g_manifest_path.empty() &&
@@ -1861,7 +2011,7 @@ void Render()
     ImGui::SetNextWindowSize({cw, ch});
     ImGui::Begin("Viewport Input", nullptr, drag_flags);
     ImGui::InvisibleButton("Viewport Drag", {cw, ch}, ImGuiButtonFlags_MouseButtonLeft);
-    if (ImGui::IsItemActive())
+    if (ImGui::IsItemActive() && !g_gui_flat_view)
     {
       if (static_cast<CameraMode>(g_gui_camera_mode) == CameraMode::Orbit)
         g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
@@ -1873,6 +2023,27 @@ void Render()
 
       const float pitch_limit = XMConvertToRadians(89.0f);
       g_pitch = std::clamp(g_pitch, -pitch_limit, pitch_limit);
+    }
+
+    {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const float mid_x = cx + cw / 2.0f;
+      dl->AddLine({mid_x, cy}, {mid_x, cy + ch}, ImGui::GetColorU32(ImGuiCol_Separator), 2.0f);
+
+      const char* left_name = g_gui_flat_view ? g_map_flat_source_to_name[g_gui_flat_left]
+                                              : g_map_shader_to_name[g_gui_shader_left];
+      const char* right_name = g_gui_flat_view ? g_map_flat_source_to_name[g_gui_flat_right]
+                                               : g_map_shader_to_name[g_gui_shader_right];
+      auto DrawCaption = [&](const char* text, float x0) {
+        const float pad = 4.0f;
+        ImVec2 size = ImGui::CalcTextSize(text);
+        ImVec2 p0(x0 + 8.0f, cy + 8.0f);
+        ImVec2 p1(p0.x + size.x + 2.0f * pad, p0.y + size.y + 2.0f * pad);
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 160), 3.0f);
+        dl->AddText({p0.x + pad, p0.y + pad}, IM_COL32_WHITE, text);
+      };
+      DrawCaption(left_name, cx);
+      DrawCaption(right_name, mid_x);
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -1949,6 +2120,17 @@ void Render()
     g_buffer_lighting_params->Unmap(0, nullptr);
   }
 
+  if (g_gui_flat_view)
+  {
+    g_commandlist->RSSetViewports(1, &viewport_left);
+    g_commandlist->RSSetScissorRects(1, &scissor);
+    g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
+    DrawFlatPane(static_cast<FlatSource>(g_gui_flat_left), viewport_left);
+    g_commandlist->RSSetViewports(1, &viewport_right);
+    DrawFlatPane(static_cast<FlatSource>(g_gui_flat_right), viewport_right);
+  }
+  else
+  {
   {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
@@ -1993,6 +2175,7 @@ void Render()
       g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
     }
   }
+  }
 
   if (use_taa)
   {
@@ -2028,7 +2211,7 @@ void Render()
 
     TaaConstants tc = {};
     tc.proj_to_world_unjittered_ = XMMatrixInverse(nullptr, view_proj_nojitter);
-    tc.prev_world_to_proj_unjittered_ = g_prev_world_to_proj;
+    tc.prev_world_to_proj_unjittered_ = g_gui_flat_view ? view_proj_nojitter : g_prev_world_to_proj;
     XMStoreFloat3(&tc.eye_, eye_pos);
     tc.pane_origin_ = XMFLOAT2(cx, cy);
     tc.pane_dim_ = XMFLOAT2(cw / 2.0f, ch);
@@ -2545,6 +2728,8 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     
     for (int tex_i = 0; tex_i < openntc::kMaxSources; tex_i++)
       g_dhandle_tex[tex_i] = g_dalloc_srv.Allocate();
+    for (int i = 0; i < 5; i++)
+      g_dhandle_pbr_tex[i] = g_dalloc_srv.Allocate();
     g_dhandle_ntc_info = g_dalloc_srv.Allocate();
     for (int i = 0; i < 1 + 1 + 1; i++)
       g_dhandle_ntc_data[i] = g_dalloc_srv.Allocate();
