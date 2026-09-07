@@ -1764,7 +1764,7 @@ void Render()
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float sidebar_w = 350.0f;
-  const float footer_h = ImGui::GetFrameHeight() * 1.6f;
+  const float footer_h = std::ceil(ImGui::GetTextLineHeight() + 2.0f * ImGui::GetStyle().WindowPadding.y);
   const ImGuiWindowFlags pinned_flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar;
                                       
@@ -1927,7 +1927,7 @@ void Render()
 
   ImGui::SetNextWindowPos({vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - footer_h});
   ImGui::SetNextWindowSize({vp->WorkSize.x, footer_h});
-  ImGui::Begin("Footer", nullptr, pinned_flags);
+  ImGui::Begin("Footer", nullptr, pinned_flags | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
   ImGui::Text("openntc-gui v0.1 pre-release");
   ImGui::SameLine();
   ImGui::TextDisabled("|");
@@ -2685,6 +2685,98 @@ HANDLE CreateEventHandle()
   return fence_event;
 }
 
+// Style based off "Catppucin Mocha"
+// From https://github.com/ocornut/imgui/issues/707#issuecomment-4107169777
+//  With some tweaks for our case
+
+static void SetupImGuiCatppuccinMochaStyle()
+{
+  ImGui::StyleColorsDark();
+
+  ImGuiStyle& style = ImGui::GetStyle();
+  ImVec4* colors = style.Colors;
+
+  style.WindowPadding = ImVec2(12.0f, 12.0f);
+  style.FramePadding = ImVec2(6.0f, 4.0f);
+  style.ItemSpacing = ImVec2(8.0f, 6.0f);
+  style.ScrollbarSize = 14.0f;
+  style.GrabMinSize = 12.0f;
+
+  // Removing rounded window corners to avoid exposing clear color
+
+  style.WindowRounding = 0.0f;
+  style.FrameRounding = 5.0f;
+  style.PopupRounding = 5.0f;
+  style.ScrollbarRounding = 12.0f;
+  style.GrabRounding = 5.0f;
+  style.TabRounding = 5.0f;
+
+  style.WindowBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.PopupBorderSize = 1.0f;
+
+  // Text
+  colors[ImGuiCol_Text] = ImVec4(0.80f, 0.84f, 0.96f, 1.00f);          // Text
+  colors[ImGuiCol_TextDisabled] = ImVec4(0.42f, 0.45f, 0.55f, 1.00f);  // Surface1
+
+  // Backgrounds
+  colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);  // Base
+  colors[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);   // Mantle
+  colors[ImGuiCol_PopupBg] = ImVec4(0.07f, 0.07f, 0.11f, 0.96f);   // Crust
+
+  // Borders
+  colors[ImGuiCol_Border] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);  // Surface0
+  colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+  // Frames
+  colors[ImGuiCol_FrameBg] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);         // Surface0
+  colors[ImGuiCol_FrameBgHovered] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);  // Surface1
+  colors[ImGuiCol_FrameBgActive] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);   // Surface2
+
+  // Title bars
+  colors[ImGuiCol_TitleBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);           // Mantle
+  colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);     // Base
+  colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.07f, 0.07f, 0.11f, 1.00f);  // Crust
+
+  // Menus
+  colors[ImGuiCol_MenuBarBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+
+  // Scrollbars
+  colors[ImGuiCol_ScrollbarBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);  // Surface2
+  colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.37f, 0.38f, 0.51f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.42f, 0.45f, 0.55f, 1.00f);
+
+  // Interactables
+  colors[ImGuiCol_CheckMark] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);   // Lavender
+  colors[ImGuiCol_SliderGrab] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);  // Sapphire
+  colors[ImGuiCol_SliderGrabActive] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);
+  colors[ImGuiCol_Button] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_ButtonHovered] = ImVec4(0.80f, 0.65f, 0.97f, 1.00f);  // Mauve
+  colors[ImGuiCol_ButtonActive] = ImVec4(0.70f, 0.55f, 0.87f, 1.00f);
+  colors[ImGuiCol_Header] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_HeaderHovered] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);
+  colors[ImGuiCol_HeaderActive] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+
+  // Separators + Pane Divider
+  colors[ImGuiCol_Separator] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);  // Surface1
+  colors[ImGuiCol_SeparatorHovered] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);
+  colors[ImGuiCol_SeparatorActive] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);
+
+  // Tabs
+  colors[ImGuiCol_Tab] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
+  colors[ImGuiCol_TabHovered] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+  colors[ImGuiCol_TabSelected] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_TabDimmed] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+  colors[ImGuiCol_TabDimmedSelected] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
+
+  // Misc
+  colors[ImGuiCol_PlotLines] = ImVec4(0.94f, 0.72f, 0.42f, 1.00f);  // Marigold
+  colors[ImGuiCol_PlotHistogram] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);  // Sapphire (progress bar)
+  colors[ImGuiCol_TextSelectedBg] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+  colors[ImGuiCol_NavCursor] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);  // Lavender
+}
+
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
   {
@@ -2785,7 +2877,7 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGui::StyleColorsDark();
+  SetupImGuiCatppuccinMochaStyle();
   ImGui_ImplWin32_Init(g_hwnd);
 
   ImGui_ImplDX12_InitInfo imgui_info = {};
