@@ -87,6 +87,8 @@ ComPtr<ID3D12PipelineState> g_pipelinestate_pbr;
 ComPtr<ID3D12RootSignature> g_rootsignature_pbr;
 constexpr int32_t g_kProfileCount = static_cast<int32_t>(openntc::Profile::Count);
 const char* const g_map_profile_to_name[g_kProfileCount] = { "BPP 0.2", "BPP 0.5", "BPP 1.0", "BPP 2.25" };
+constexpr int32_t g_kQualityCount = static_cast<int32_t>(openntc::Quality::Count);
+const char* const g_map_quality_to_name[g_kQualityCount] = { "Low", "Medium", "High", "Ultra" };
 openntc::Profile g_profile = openntc::Profile::Bpp_0_2;
 std::string g_manifest_path;
 DataPack g_datapack;
@@ -286,11 +288,11 @@ void TransitionGuiState(GuiEvent e)
   }
 }
 
-void PerformTrainingJob()
+void PerformTrainingJob(openntc::Quality quality)
 {
   openntc::TrainInfo train_info = {};
   train_info.grids_per_batch_ = 1;
-  train_info.batch_count_ = 30000;
+  train_info.quality_ = quality;
   SharedFields fields = g_shared_fields.load(std::memory_order_seq_cst);
   fields.train_complete_ = false;
   fields.train_in_progress_ = true;
@@ -369,6 +371,7 @@ bool g_gui_spin = true;
 bool g_gui_taa = true;
 int32_t g_gui_model = 0;
 int32_t g_gui_profile = 0;
+int32_t g_gui_quality = static_cast<int32_t>(openntc::Quality::Medium);
 
 static inline UINT64 RoundUpTo(UINT64 a, UINT64 b)
 {
@@ -1712,6 +1715,7 @@ void Render()
         g_gui_profile = prev_profile;
     }
   }
+  ImGui::Combo("Quality", &g_gui_quality, g_map_quality_to_name, g_kQualityCount);
   bool train_button = ImGui::Button("Train");
   ImGui::EndDisabled();
   {
@@ -1728,10 +1732,11 @@ void Render()
           fields.train_in_progress_ = true;
           fields.train_complete_ = false;
           fields.train_steps_ = 0;
-          fields.train_total_steps_ = 30000;
+          const openntc::Quality quality = static_cast<openntc::Quality>(g_gui_quality);
+          fields.train_total_steps_ = openntc::GetStepsForQuality(quality);
           g_shared_fields.store(fields, std::memory_order_seq_cst);
           g_stop_training.store(false, std::memory_order_seq_cst);
-          g_train_job = std::async(std::launch::async, PerformTrainingJob);
+          g_train_job = std::async(std::launch::async, PerformTrainingJob, quality);
           TransitionGuiState(GuiEvent::TrainStarted);
           SetStatus("Training Started: %d total steps", fields.train_total_steps_);
         }

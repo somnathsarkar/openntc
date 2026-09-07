@@ -144,9 +144,21 @@ struct Manifest
   int32_t dim_;
 };
 
+enum class Quality
+{
+  Low,
+  Medium,
+  High,
+  Ultra,
+
+  Count
+};
+
+int GetStepsForQuality(Quality quality);
+
 struct TrainInfo
 {
-  int batch_count_;
+  Quality quality_;
   int grids_per_batch_;
 };
 

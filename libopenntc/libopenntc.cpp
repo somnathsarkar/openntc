@@ -422,6 +422,24 @@ static float cosine_annealing(float lr_min, float lr_max, int t_max, int t_cur)
   return lr;
 }
 
+// NOTE: Measured over a few sample materials at 1k, could use more a larger dataset over
+//  different texture sizes for a more accurate comparison
+
+int GetStepsForQuality(Quality quality)
+{
+  switch (quality)
+  {
+    case Quality::Low:
+      return 30000;
+    case Quality::Medium:
+      return 120000;
+    case Quality::High:
+      return 240000;
+    default:
+      return 30000;
+  }
+}
+
 static void QuantizeWeights(float* Wf, int rows, int cols, float prescale, uint32_t* o_Wq, float* o_Ws)
 {
   for (int i = 0; i < rows; i++)
@@ -451,7 +469,7 @@ static void QuantizeWeights(float* Wf, int rows, int cols, float prescale, uint3
 void Context::BeginTraining(const TrainInfo& train_info)
 {
   assert(train_phase_ == TrainPhase::ManifestLoaded || train_phase_ == TrainPhase::TrainComplete);
-  batch_count_ = train_info.batch_count_;
+  batch_count_ = GetStepsForQuality(train_info.quality_);
   lock_i_ = (95 * batch_count_) / 100;
   batch_i_ = 0;
   grids_per_batch_ = train_info.grids_per_batch_;
