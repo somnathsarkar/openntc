@@ -391,7 +391,6 @@ int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
 float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
-bool g_gui_spin = true;
 bool g_gui_taa = true;
 int32_t g_gui_model = 0;
 int32_t g_gui_profile = 0;
@@ -1719,6 +1718,19 @@ static bool ModeButton(const char* label, bool selected, float width)
   return clicked;
 }
 
+static void ModeButtonRow(const char* const* names, int32_t count, int32_t* value)
+{
+  const float width =
+    (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (count - 1)) / count;
+  for (int32_t i = 0; i < count; i++)
+  {
+    if (i > 0)
+      ImGui::SameLine();
+    if (ModeButton(names[i], *value == i, width))
+      *value = i;
+  }
+}
+
 void Render()
 {
   ImGui_ImplDX12_NewFrame();
@@ -1789,12 +1801,10 @@ void Render()
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   ImGui::SeparatorText("View");
   {
-    const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    if (ModeButton("3D", !g_gui_flat_view, width))
-      g_gui_flat_view = false;
-    ImGui::SameLine();
-    if (ModeButton("2D", g_gui_flat_view, width))
-      g_gui_flat_view = true;
+    const char* const view_names[] = {"3D", "2D"};
+    int32_t view = g_gui_flat_view ? 1 : 0;
+    ModeButtonRow(view_names, 2, &view);
+    g_gui_flat_view = view == 1;
   }
   if (g_gui_flat_view)
   {
@@ -1845,7 +1855,7 @@ void Render()
   else
   {
   ImGui::SeparatorText("Shading");
-  ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
+  ModeButtonRow(g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count), &g_gui_camera_mode);
   ShaderCombo("Left", &g_gui_shader_left);
   ShaderCombo("Right", &g_gui_shader_right);
   shader_left = static_cast<Shader>(g_gui_shader_left);
@@ -1863,7 +1873,6 @@ void Render()
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
   ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
   ImGui::Checkbox("TAA", &g_gui_taa);
-  ImGui::Checkbox("Spin", &g_gui_spin);
   }
 
   ImGui::SeparatorText("Train");
@@ -1981,9 +1990,9 @@ void Render()
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
   XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
-  if (cmode == CameraMode::Orbit)
+  if (cmode == CameraMode::Static || cmode == CameraMode::Orbit)
   {
-    float angle = g_gui_spin ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
+    float angle = (cmode == CameraMode::Orbit) ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
     g_model_mat = XMMatrixIdentity();
     eye_pos = XMVector3Transform(XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f), XMMatrixRotationY(-angle));
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
@@ -2030,8 +2039,7 @@ void Render()
     ImGui::InvisibleButton("Viewport Drag", {cw, ch}, ImGuiButtonFlags_MouseButtonLeft);
     if (ImGui::IsItemActive() && !g_gui_flat_view)
     {
-      if (static_cast<CameraMode>(g_gui_camera_mode) == CameraMode::Orbit)
-        g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
+      g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
 
       const float sensitivity = 0.008f;
       ImGuiIO& io = ImGui::GetIO();
