@@ -1705,6 +1705,20 @@ static void ShaderCombo(const char* label, int32_t* value)
   }
 }
 
+static bool ModeButton(const char* label, bool selected, float width)
+{
+  if (selected)
+  {
+    const ImVec4 pressed = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    ImGui::PushStyleColor(ImGuiCol_Button, pressed);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pressed);
+  }
+  const bool clicked = ImGui::Button(label, {width, 0.0f});
+  if (selected)
+    ImGui::PopStyleColor(2);
+  return clicked;
+}
+
 void Render()
 {
   ImGui_ImplDX12_NewFrame();
@@ -1775,13 +1789,16 @@ void Render()
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   ImGui::SeparatorText("View");
   {
-    int32_t view = g_gui_flat_view ? 1 : 0;
-    const char* view_names[] = { "3D", "2D" };
-    ImGui::Combo("Mode", &view, view_names, 2);
-    g_gui_flat_view = view == 1;
+    const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (ModeButton("3D", !g_gui_flat_view, width))
+      g_gui_flat_view = false;
+    ImGui::SameLine();
+    if (ModeButton("2D", g_gui_flat_view, width))
+      g_gui_flat_view = true;
   }
   if (g_gui_flat_view)
   {
+    ImGui::SeparatorText("Channel");
     const bool ntc_ok = g_app_state == GuiState::Compressed;
     const bool coop_ok = OPENNTC_COOP && ntc_ok;
     auto IsSourceValid = [&](int32_t source) {
