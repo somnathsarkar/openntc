@@ -1068,6 +1068,8 @@ CompressedData Context::GetCompressedData()
     data.g0_offset_[i] = data.g0_offset_[i - 1] + data.g0_size_[i - 1];
     data.g1_offset_[i] = data.g1_offset_[i - 1] + data.g1_size_[i - 1];
   }
+  data.g0_total_size_ = data.g0_offset_[level_count_ - 1] + data.g0_size_[level_count_ - 1];
+  data.g1_total_size_ = data.g1_offset_[level_count_ - 1] + data.g1_size_[level_count_ - 1];
   data.decoder_ = decoder_host_;
   data.decoder_size_ = decoder_size_;
 
@@ -1247,10 +1249,23 @@ Result Context::LoadManifest(const std::string& filepath)
     vG1_[level_i].InitLike(g1_[level_i]);
   }
 
-  for (int i = 0; i < level_count_; i++)
   {
-    g0_host_[i] = new uint32_t[(g0_[i].NumElems() * g0_bits_per_channel_) / 32];
-    g1_host_[i] = new uint32_t[(g1_[i].NumElems() * g1_bits_per_channel_) / 32];
+    size_t g0_words = 0, g1_words = 0;
+    for (int i = 0; i < level_count_; i++)
+    {
+      g0_words += (g0_[i].NumElems() * g0_bits_per_channel_) / 32;
+      g1_words += (g1_[i].NumElems() * g1_bits_per_channel_) / 32;
+    }
+    g0_host_packed_ = new uint32_t[g0_words];
+    g1_host_packed_ = new uint32_t[g1_words];
+    size_t g0_off = 0, g1_off = 0;
+    for (int i = 0; i < level_count_; i++)
+    {
+      g0_host_[i] = g0_host_packed_ + g0_off;
+      g1_host_[i] = g1_host_packed_ + g1_off;
+      g0_off += (g0_[i].NumElems() * g0_bits_per_channel_) / 32;
+      g1_off += (g1_[i].NumElems() * g1_bits_per_channel_) / 32;
+    }
   }
 
   for (int i = 0; i < mip_count_; i++)
@@ -1384,11 +1399,10 @@ void Context::UnloadManifest()
     package_[i].Destroy();
   }
 
-  for(int i = 0; i < level_count_; i++)
-  {
-    delete[] g0_host_[i];
-    delete[] g1_host_[i];
-  }
+  delete[] g0_host_packed_;
+  delete[] g1_host_packed_;
+  g0_host_packed_ = nullptr;
+  g1_host_packed_ = nullptr;
 
   for (int i = 0; i < manifest_.source_count_; i++)
   {

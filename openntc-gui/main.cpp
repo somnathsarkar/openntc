@@ -1234,13 +1234,8 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     g_device->CreateConstantBufferView(&cbv_desc, g_dhandle_ntc_info.cpu_);
   }
 
-  uint64_t g0_size = 0;
-  uint64_t g1_size = 0;
-  for (int level_i = 0; level_i < cdata.level_count_; level_i++)
-  {
-    g0_size += cdata.g0_size_[level_i];
-    g1_size += cdata.g1_size_[level_i];
-  }
+  const uint64_t g0_size = cdata.g0_total_size_;
+  const uint64_t g1_size = cdata.g1_total_size_;
 
   {
     g_buffer_g0 = CreateBuffer(g_device.Get(), D3D12_HEAP_TYPE_GPU_UPLOAD, g0_size);
@@ -1259,8 +1254,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
     g_buffer_g0->Map(0, &read_range, &mapped);
-    for (int level_i = 0; level_i < cdata.level_count_; level_i++)
-      memcpy(static_cast<char*>(mapped) + cdata.g0_offset_[level_i], cdata.g0_[level_i], cdata.g0_size_[level_i]);
+    memcpy(mapped, cdata.g0_[0], g0_size);
     g_buffer_g0->Unmap(0, nullptr);
   }
 
@@ -1281,8 +1275,7 @@ void UploadCompressedData(openntc::CompressedData& cdata)
     void* mapped = nullptr;
     D3D12_RANGE read_range = {0, 0};
     g_buffer_g1->Map(0, &read_range, &mapped);
-    for (int level_i = 0; level_i < cdata.level_count_; level_i++)
-      memcpy(static_cast<char*>(mapped) + cdata.g1_offset_[level_i], cdata.g1_[level_i], cdata.g1_size_[level_i]);
+    memcpy(mapped, cdata.g1_[0], g1_size);
     g_buffer_g1->Unmap(0, nullptr);
   }
 

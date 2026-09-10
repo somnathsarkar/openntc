@@ -437,14 +437,30 @@ Result Load(const std::string& path, FileData& o_data)
     o_data.data_.g0_offset_[level_i] = o_data.data_.g0_size_[level_i - 1] + o_data.data_.g0_offset_[level_i - 1];
     o_data.data_.g1_offset_[level_i] = o_data.data_.g1_size_[level_i - 1] + o_data.data_.g1_offset_[level_i - 1];
   }
+  
+  // Make feature pyramid data contiguous
+  const int last = o_data.data_.level_count_ - 1;
+  o_data.data_.g0_total_size_ = o_data.data_.g0_offset_[last] + o_data.data_.g0_size_[last];
+  o_data.data_.g1_total_size_ = o_data.data_.g1_offset_[last] + o_data.data_.g1_size_[last];
+  o_data.g0_packed_ = new uint8_t[o_data.data_.g0_total_size_];
+  o_data.g1_packed_ = new uint8_t[o_data.data_.g1_total_size_];
+  for (int level_i = 0; level_i < o_data.data_.level_count_; level_i++)
+  {
+    memcpy(o_data.g0_packed_ + o_data.data_.g0_offset_[level_i], o_data.data_.g0_[level_i], o_data.data_.g0_size_[level_i]);
+    memcpy(o_data.g1_packed_ + o_data.data_.g1_offset_[level_i], o_data.data_.g1_[level_i], o_data.data_.g1_size_[level_i]);
+    o_data.data_.g0_[level_i] = (uint32_t*)(o_data.g0_packed_ + o_data.data_.g0_offset_[level_i]);
+    o_data.data_.g1_[level_i] = (uint32_t*)(o_data.g1_packed_ + o_data.data_.g1_offset_[level_i]);
+  }
 
   return Result::Success;
 }
 
-FileData::FileData() : raw_(nullptr) {}
+FileData::FileData() : raw_(nullptr), g0_packed_(nullptr), g1_packed_(nullptr) {}
 FileData::~FileData()
 {
   delete[] raw_;
+  delete[] g0_packed_;
+  delete[] g1_packed_;
 }
 const CompressedData& FileData::Data()
 {

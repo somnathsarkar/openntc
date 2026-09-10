@@ -98,6 +98,8 @@ struct CompressedData
   size_t g1_size_[kMaxLevels];
   size_t g0_offset_[kMaxLevels];
   size_t g1_offset_[kMaxLevels];
+  size_t g0_total_size_;
+  size_t g1_total_size_;
   size_t decoder_size_;
 
   int g0_grid_dim_[kMaxLevels];
@@ -143,5 +145,7 @@ public:
 private:
   CompressedData data_;
   uint8_t* raw_;
+  uint8_t* g0_packed_;
+  uint8_t* g1_packed_;
 };
 } // namespace openntc

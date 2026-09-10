@@ -200,6 +200,8 @@ public:
 
   uint32_t* g0_host_[kMaxLevels];
   uint32_t* g1_host_[kMaxLevels];
+  uint32_t* g0_host_packed_ = nullptr;
+  uint32_t* g1_host_packed_ = nullptr;
 
   uint8_t* decoder_host_;
   size_t decoder_size_;
