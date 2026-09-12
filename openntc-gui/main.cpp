@@ -1854,8 +1854,15 @@ void Render()
   }
   else
   {
-  ImGui::SeparatorText("Shading");
+  ImGui::SeparatorText("Camera");
   ModeButtonRow(g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count), &g_gui_camera_mode);
+  ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
+
+  ImGui::SeparatorText("Geometry");
+  ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
+  ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
+
+  ImGui::SeparatorText("Shading");
   ShaderCombo("Left", &g_gui_shader_left);
   ShaderCombo("Right", &g_gui_shader_right);
   shader_left = static_cast<Shader>(g_gui_shader_left);
@@ -1867,11 +1874,8 @@ void Render()
       "Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
     ImGui::PopStyleColor();
   }
-  ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
-  ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
-  ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
   ImGui::Checkbox("TAA", &g_gui_taa);
   }
 
