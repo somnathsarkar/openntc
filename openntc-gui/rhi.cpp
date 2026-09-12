@@ -100,11 +100,14 @@ ComPtr<ID3D12Resource> CreateBuffer(ID3D12Device2* device, D3D12_HEAP_TYPE heap_
   desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+  D3D12_RESOURCE_STATES initial_state = heap_type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
+    : heap_type == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ
+    : D3D12_RESOURCE_STATE_COMMON;
   VERIFY(device->CreateCommittedResource(
     &props,
     D3D12_HEAP_FLAG_NONE,
     &desc,
-    D3D12_RESOURCE_STATE_COMMON,
+    initial_state,
     nullptr,
     IID_PPV_ARGS(&buffer)));
 

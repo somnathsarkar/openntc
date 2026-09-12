@@ -391,6 +391,14 @@ float g_gui_displacement_scale = 0.01f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_taa = true;
+
+float g_stat_frame_ms = 0.0f;
+float g_stat_fps = 0.0f;
+float g_stat_pane_ms[2] = {0.0f, 0.0f};
+constexpr uint32_t g_kTimestampsPerFrame = 3;
+ComPtr<ID3D12QueryHeap> g_query_heap;
+ComPtr<ID3D12Resource> g_query_readback;
+uint64_t g_timestamp_frequency = 1;
 int32_t g_gui_model = 0;
 int32_t g_gui_profile = 0;
 int32_t g_gui_quality = static_cast<int32_t>(openntc::Quality::Medium);
@@ -1473,10 +1481,8 @@ void Update()
   g_total_seconds += dT.count();
   if (elapsed_seconds > 1.0)
   {
-    char buffer[500];
-    auto fps = framecounter / elapsed_seconds;
-    sprintf_s(buffer, 500, "FPS: %f\n", fps);
-    OutputDebugStringA(buffer);
+    g_stat_fps = static_cast<float>(framecounter / elapsed_seconds);
+    g_stat_frame_ms = static_cast<float>(1000.0 * elapsed_seconds / framecounter);
     framecounter = 0;
     elapsed_seconds = 0.0;
   }
@@ -1970,6 +1976,22 @@ void Render()
   ImGui::TextDisabled("|");
   ImGui::SameLine();
   ImGui::TextUnformatted(g_status_text);
+  {
+    char stats[160];
+    snprintf(
+      stats,
+      sizeof(stats),
+      "L %.2f ms | R %.2f ms | %dx%d | %.1f ms (%.0f fps)",
+      g_stat_pane_ms[0],
+      g_stat_pane_ms[1],
+      static_cast<int>(vp->WorkSize.x - sidebar_w),
+      static_cast<int>(vp->WorkSize.y - footer_h),
+      g_stat_frame_ms,
+      g_stat_fps);
+    const float stats_w = ImGui::CalcTextSize(stats).x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - stats_w - ImGui::GetStyle().WindowPadding.x);
+    ImGui::TextDisabled("%s", stats);
+  }
   ImGui::End();
 
   float cx = vp->WorkPos.x;
@@ -2081,6 +2103,24 @@ void Render()
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
   g_commandlist->Reset(command_allocator.Get(), nullptr);
+
+  {
+    const size_t slot_bytes = g_kTimestampsPerFrame * sizeof(uint64_t);
+    D3D12_RANGE range = {g_frame_i * slot_bytes, (g_frame_i + 1) * slot_bytes};
+    uint64_t* mapped = nullptr;
+    if (SUCCEEDED(g_query_readback->Map(0, &range, reinterpret_cast<void**>(&mapped))))
+    {
+      const uint64_t* t = mapped + g_frame_i * g_kTimestampsPerFrame;
+      if (t[0] != 0 && t[1] >= t[0] && t[2] >= t[1])
+      {
+        g_stat_pane_ms[0] = static_cast<float>((t[1] - t[0]) * 1000.0 / g_timestamp_frequency);
+        g_stat_pane_ms[1] = static_cast<float>((t[2] - t[1]) * 1000.0 / g_timestamp_frequency);
+      }
+      D3D12_RANGE none = {0, 0};
+      g_query_readback->Unmap(0, &none);
+    }
+  }
+  const uint32_t query_base = g_frame_i * g_kTimestampsPerFrame;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu_;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_dhandle_dsv.cpu_;
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -2148,12 +2188,14 @@ void Render()
     g_buffer_lighting_params->Unmap(0, nullptr);
   }
 
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 0);
   if (g_gui_flat_view)
   {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
     DrawFlatPane(static_cast<FlatSource>(g_gui_flat_left), viewport_left);
+    g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 1);
     g_commandlist->RSSetViewports(1, &viewport_right);
     DrawFlatPane(static_cast<FlatSource>(g_gui_flat_right), viewport_right);
   }
@@ -2181,6 +2223,7 @@ void Render()
       g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
     }
   }
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 1);
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
     g_commandlist->RSSetScissorRects(1, &scissor);
@@ -2204,6 +2247,15 @@ void Render()
     }
   }
   }
+
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 2);
+  g_commandlist->ResolveQueryData(
+    g_query_heap.Get(),
+    D3D12_QUERY_TYPE_TIMESTAMP,
+    query_base,
+    g_kTimestampsPerFrame,
+    g_query_readback.Get(),
+    query_base * sizeof(uint64_t));
 
   if (use_taa)
   {
@@ -2898,6 +2950,16 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   g_fence = CreateFence(g_device);
   g_fence_event = CreateEventHandle();
+
+  {
+    D3D12_QUERY_HEAP_DESC qdesc = {};
+    qdesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qdesc.Count = g_numframes * g_kTimestampsPerFrame;
+    VERIFY(g_device->CreateQueryHeap(&qdesc, IID_PPV_ARGS(&g_query_heap)));
+    g_query_readback =
+      CreateBuffer(g_device.Get(), D3D12_HEAP_TYPE_READBACK, g_numframes * g_kTimestampsPerFrame * sizeof(uint64_t));
+    VERIFY(g_queue->GetTimestampFrequency(&g_timestamp_frequency));
+  }
 
   g_initialized = true;
 
