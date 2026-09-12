@@ -58,7 +58,6 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(openntc::Semantic:
 const char* const g_map_model_to_name[g_kModelCount] = {
   "Cube",
   "Sphere",
-  "Plane",
   "Knob",
 };
 
@@ -1859,7 +1858,7 @@ void Render()
   ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
 
   ImGui::SeparatorText("Geometry");
-  ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
+  ModeButtonRow(g_map_model_to_name, g_kModelCount, &g_gui_model);
   ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
 
   ImGui::SeparatorText("Shading");

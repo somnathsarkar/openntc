@@ -184,26 +184,6 @@ void Model::InitSphere(uint32_t detail, Model& o_model)
 }
 
 
-void Model::InitPlane(uint32_t detail, Model& o_model)
-{
-  assert(detail >= 1);
-  const uint32_t n = detail;
-  const CubeFace plane_face =
-    { {-1.0f,  1.0f, 0.0f}, { 2.0f, 0.0f, 0.0f}, {0.0f, -2.0f, 0.0f}, { 0.0f, 0.0f, -1.0f}, { 1.0f, 0.0f, 0.0f} };
-
-  delete[] o_model.vertices_;
-  delete[] o_model.indices_;
-  o_model.vertex_count_ = (n + 1) * (n + 1);
-  o_model.index_count_ = n * n * 6;
-  o_model.vertices_ = new VertexDescriptor[o_model.vertex_count_];
-  o_model.indices_ = new uint32_t[o_model.index_count_];
-
-  uint32_t vert_i = 0;
-  uint32_t idx_i = 0;
-  BuildPatchGrid(plane_face, n, o_model.vertices_, o_model.indices_, 0, vert_i, idx_i);
-}
-
-
 // Material Test Ball ("Mitsuba knob") from https://benedikt-bitterli.me/resources/
 //  Available under public domain. Preprocessed to match our vertex descriptor format.
 void Model::InitKnob(const void* data, size_t size, Model& o_model)
@@ -232,7 +212,6 @@ void InitModel(ModelType type, uint32_t detail, Model& o_model, const void* knob
   {
     case ModelType::kCube:   Model::InitCube(detail, o_model); break;
     case ModelType::kSphere: Model::InitSphere(detail, o_model); break;
-    case ModelType::kPlane:  Model::InitPlane(detail, o_model); break;
     case ModelType::kKnob:   Model::InitKnob(knob_data, knob_size, o_model); break;
     default: assert(false); break;
   }
