@@ -1865,7 +1865,7 @@ void Render()
 
   ImGui::SeparatorText("Geometry");
   ModeButtonRow(g_map_model_to_name, g_kModelCount, &g_gui_model);
-  ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
+  ImGui::SliderFloat("Displacement", &g_gui_displacement_scale, 0.0f, 0.5f);
 
   ImGui::SeparatorText("Shading");
   ShaderCombo("Left", &g_gui_shader_left);
