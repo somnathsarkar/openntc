@@ -91,12 +91,17 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
 
   float2 uv = UnjitterUv(p_in.uv_, LightingParamsCBV.jitter_px_);
   MaterialParams mat = DefaultMaterialParams();
-  mat.albedo_ = tex_albedo.Sample(sampler_trilinear, uv).rgb;
-  mat.normal_ = tex_normal.Sample(sampler_trilinear, uv).rgb;
-  mat.ao_ = tex_ao.Sample(sampler_trilinear, uv).r;
-  mat.roughness_ = tex_roughness.Sample(sampler_trilinear, uv).r;
-  mat.present_ =
-    SemanticBit(Semantic::Albedo) | SemanticBit(Semantic::Normal) | SemanticBit(Semantic::AO) | SemanticBit(Semantic::Roughness);
+  const uint present = LightingParamsCBV.sem_present_;
+  if (present & SemanticBit(Semantic::Albedo))
+    mat.albedo_ = tex_albedo.Sample(sampler_trilinear, uv).rgb;
+  if (present & SemanticBit(Semantic::Normal))
+    mat.normal_ = tex_normal.Sample(sampler_trilinear, uv).rgb;
+  if (present & SemanticBit(Semantic::AO))
+    mat.ao_ = tex_ao.Sample(sampler_trilinear, uv).r;
+  if (present & SemanticBit(Semantic::Roughness))
+    mat.roughness_ = tex_roughness.Sample(sampler_trilinear, uv).r;
+  mat.present_ = present &
+    (SemanticBit(Semantic::Albedo) | SemanticBit(Semantic::Normal) | SemanticBit(Semantic::AO) | SemanticBit(Semantic::Roughness));
 
   p_out.color_ = ShadeMaterial(
     mat,

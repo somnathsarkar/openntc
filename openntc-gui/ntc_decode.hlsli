@@ -62,21 +62,25 @@ uint SemanticBit(Semantic sem)
 #define G1_BITS 4
 #define G0_CHANNELS 8
 #define G1_CHANNELS 12
+#define LEVEL0_MIPS 4
 #elif defined(BPP_0_5)
 #define G0_BITS 4
 #define G1_BITS 4
 #define G0_CHANNELS 12
 #define G1_CHANNELS 20
+#define LEVEL0_MIPS 4
 #elif defined(BPP_1_0)
 #define G0_BITS 2
 #define G1_BITS 4
 #define G0_CHANNELS 12
 #define G1_CHANNELS 10
+#define LEVEL0_MIPS 3
 #elif defined(BPP_2_25)
 #define G0_BITS 4
 #define G1_BITS 4
 #define G0_CHANNELS 16
 #define G1_CHANNELS 12
+#define LEVEL0_MIPS 3
 #else
 #error Undefined profile
 #endif
@@ -122,15 +126,9 @@ uint ClampS8(float f)
 #define G1_SPAN_UINTS CELL_SPAN_UINTS(G1_CELL_BITS)
 int FeatureLevelForLod(int lod)
 {
-  if (lod <= 3)
+  if (lod < LEVEL0_MIPS)
     return 0;
-  else if (lod <= 5)
-    return 1;
-  else if (lod <= 7)
-    return 2;
-  else if (lod <= 9)
-    return 3;
-  return 4;
+  return 1 + (lod - LEVEL0_MIPS) / 2;
 }
 
 // Extract channel k: n contiguous bits from w0, w1, w2 contiguous uints at offset 'phase'.

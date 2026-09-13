@@ -8,7 +8,8 @@ struct LightingParams
   float normal_scale_;
   float noise_frame_;
   float2 jitter_px_;
-  float2 pad1_;
+  uint sem_present_;
+  uint pad1_;
   float3 diffuse_sh_[9];
 };
 

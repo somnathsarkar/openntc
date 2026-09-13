@@ -146,6 +146,7 @@ DescriptorHandle g_dhandle_dsv;
 DescriptorAllocator g_dalloc_srv;
 DescriptorHandle g_dhandle_tex[openntc::kMaxSources];
 DescriptorHandle g_dhandle_pbr_tex[5];
+uint32_t g_sem_present_mask = 0;
 DescriptorHandle g_dhandle_ntc_info;
 DescriptorHandle g_dhandle_ntc_data[1 + 1 + 1];
 DescriptorHandle g_dhandle_lparams;
@@ -196,7 +197,8 @@ struct LightingParams
   float normal_scale_;
   float noise_frame_;
   XMFLOAT2 jitter_px_;
-  XMFLOAT2 pad1_;
+  uint32_t sem_present_;
+  uint32_t pad1_;
   XMFLOAT3A diffuse_sh_[9];
 };
 
@@ -652,6 +654,9 @@ static void RebuildTextureResources(SharedContext::Access& access)
       openntc::Semantic::Displacement,
       openntc::Semantic::Normal,
       openntc::Semantic::Roughness};
+    g_sem_present_mask = 0;
+    for (int tex_i = 0; tex_i < tex_data.tex_count_; tex_i++)
+      g_sem_present_mask |= 1u << static_cast<uint32_t>(tex_data.semantics_[tex_i]);
     for (int slot = 0; slot < 5; slot++)
     {
       int src = 0;
@@ -2167,6 +2172,7 @@ void Render()
     lp.displacement_scale_ = g_gui_displacement_scale;
     lp.normal_scale_ = g_gui_normal_scale;
     lp.jitter_px_ = taa_jitter_px;
+    lp.sem_present_ = g_sem_present_mask;
 
     // Using temporal noise without TAA results in jitter. Turn it off when TAA is off.
     static uint32_t noise_frame = 0;
