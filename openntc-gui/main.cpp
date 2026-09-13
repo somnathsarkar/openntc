@@ -387,7 +387,7 @@ struct FlatParams
   float pad2_[12];
 };
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
-float g_gui_displacement_scale = 0.01f;
+float g_gui_displacement_scale = 0.00f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
 bool g_gui_taa = true;
@@ -1866,7 +1866,7 @@ void Render()
 
   ImGui::SeparatorText("Geometry");
   ModeButtonRow(g_map_model_to_name, g_kModelCount, &g_gui_model);
-  ImGui::SliderFloat("Displacement", &g_gui_displacement_scale, 0.0f, 0.5f);
+  ImGui::SliderFloat("Displacement", &g_gui_displacement_scale, 0.0f, 0.1f);
 
   ImGui::SeparatorText("Shading");
   ShaderCombo("Left", &g_gui_shader_left);
