@@ -435,6 +435,8 @@ int GetStepsForQuality(Quality quality)
       return 120000;
     case Quality::High:
       return 240000;
+    case Quality::Ultra:
+      return 480000;
     default:
       return 30000;
   }

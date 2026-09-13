@@ -58,7 +58,6 @@ const char* const g_map_semantic_to_name[static_cast<int32_t>(openntc::Semantic:
 const char* const g_map_model_to_name[g_kModelCount] = {
   "Cube",
   "Sphere",
-  "Plane",
   "Knob",
 };
 
@@ -388,11 +387,18 @@ struct FlatParams
   float pad2_[12];
 };
 int32_t g_gui_camera_mode = static_cast<int32_t>(CameraMode::Orbit);
-float g_gui_displacement_scale = 0.01f;
+float g_gui_displacement_scale = 0.00f;
 float g_gui_normal_scale = 1.0f;
 float g_gui_exposure = 1.0f;
-bool g_gui_spin = true;
 bool g_gui_taa = true;
+
+float g_stat_frame_ms = 0.0f;
+float g_stat_fps = 0.0f;
+float g_stat_pane_ms[2] = {0.0f, 0.0f};
+constexpr uint32_t g_kTimestampsPerFrame = 3;
+ComPtr<ID3D12QueryHeap> g_query_heap;
+ComPtr<ID3D12Resource> g_query_readback;
+uint64_t g_timestamp_frequency = 1;
 int32_t g_gui_model = 0;
 int32_t g_gui_profile = 0;
 int32_t g_gui_quality = static_cast<int32_t>(openntc::Quality::Medium);
@@ -1468,10 +1474,8 @@ void Update()
   g_total_seconds += dT.count();
   if (elapsed_seconds > 1.0)
   {
-    char buffer[500];
-    auto fps = framecounter / elapsed_seconds;
-    sprintf_s(buffer, 500, "FPS: %f\n", fps);
-    OutputDebugStringA(buffer);
+    g_stat_fps = static_cast<float>(framecounter / elapsed_seconds);
+    g_stat_frame_ms = static_cast<float>(1000.0 * elapsed_seconds / framecounter);
     framecounter = 0;
     elapsed_seconds = 0.0;
   }
@@ -1698,6 +1702,34 @@ static void ShaderCombo(const char* label, int32_t* value)
   }
 }
 
+static bool ModeButton(const char* label, bool selected, float width)
+{
+  if (selected)
+  {
+    const ImVec4 pressed = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    ImGui::PushStyleColor(ImGuiCol_Button, pressed);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pressed);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
+  }
+  const bool clicked = ImGui::Button(label, {width, 0.0f});
+  if (selected)
+    ImGui::PopStyleColor(3);
+  return clicked;
+}
+
+static void ModeButtonRow(const char* const* names, int32_t count, int32_t* value)
+{
+  const float width =
+    (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (count - 1)) / count;
+  for (int32_t i = 0; i < count; i++)
+  {
+    if (i > 0)
+      ImGui::SameLine();
+    if (ModeButton(names[i], *value == i, width))
+      *value = i;
+  }
+}
+
 void Render()
 {
   ImGui_ImplDX12_NewFrame();
@@ -1757,7 +1789,7 @@ void Render()
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float sidebar_w = 350.0f;
-  const float footer_h = ImGui::GetFrameHeight() * 1.6f;
+  const float footer_h = std::ceil(ImGui::GetTextLineHeight() + 2.0f * ImGui::GetStyle().WindowPadding.y);
   const ImGuiWindowFlags pinned_flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar;
                                       
@@ -1768,13 +1800,14 @@ void Render()
   Shader shader_right = static_cast<Shader>(g_gui_shader_right);
   ImGui::SeparatorText("View");
   {
+    const char* const view_names[] = {"3D", "2D"};
     int32_t view = g_gui_flat_view ? 1 : 0;
-    const char* view_names[] = { "3D", "2D" };
-    ImGui::Combo("Mode", &view, view_names, 2);
+    ModeButtonRow(view_names, 2, &view);
     g_gui_flat_view = view == 1;
   }
   if (g_gui_flat_view)
   {
+    ImGui::SeparatorText("Channel");
     const bool ntc_ok = g_app_state == GuiState::Compressed;
     const bool coop_ok = OPENNTC_COOP && ntc_ok;
     auto IsSourceValid = [&](int32_t source) {
@@ -1820,8 +1853,15 @@ void Render()
   }
   else
   {
+  ImGui::SeparatorText("Camera");
+  ModeButtonRow(g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count), &g_gui_camera_mode);
+  ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
+
+  ImGui::SeparatorText("Geometry");
+  ModeButtonRow(g_map_model_to_name, g_kModelCount, &g_gui_model);
+  ImGui::SliderFloat("Displacement", &g_gui_displacement_scale, 0.0f, 0.1f);
+
   ImGui::SeparatorText("Shading");
-  ImGui::Combo("Camera", &g_gui_camera_mode, g_map_camera_mode_to_name, static_cast<int32_t>(CameraMode::Count));
   ShaderCombo("Left", &g_gui_shader_left);
   ShaderCombo("Right", &g_gui_shader_right);
   shader_left = static_cast<Shader>(g_gui_shader_left);
@@ -1833,16 +1873,12 @@ void Render()
       "Warning: Compressed data does not match the loaded manifest dimensions. Comparison may not be meaningful!");
     ImGui::PopStyleColor();
   }
-  ImGui::SliderFloat("FOV", &g_fov_y, 10.0f, 180.0f);
-  ImGui::SliderFloat("Displacement Scale", &g_gui_displacement_scale, 0.0f, 0.5f);
   ImGui::SliderFloat("Normal Scale", &g_gui_normal_scale, 0.0f, 10.0f);
   ImGui::SliderFloat("Exposure", &g_gui_exposure, 0.5f, 1.5f);
-  ImGui::Combo("Model", &g_gui_model, g_map_model_to_name, g_kModelCount);
   ImGui::Checkbox("TAA", &g_gui_taa);
-  ImGui::Checkbox("Spin", &g_gui_spin);
   }
 
-  ImGui::SeparatorText("Train");
+  ImGui::SeparatorText("Compression");
   const bool can_train = !g_manifest_path.empty() &&
     (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
   ImGui::BeginDisabled(!can_train);
@@ -1859,7 +1895,7 @@ void Render()
     }
   }
   ImGui::Combo("Quality", &g_gui_quality, g_map_quality_to_name, g_kQualityCount);
-  bool train_button = ImGui::Button("Train");
+  bool train_button = ImGui::Button("Compress");
   ImGui::EndDisabled();
   {
     std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
@@ -1920,7 +1956,7 @@ void Render()
 
   ImGui::SetNextWindowPos({vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - footer_h});
   ImGui::SetNextWindowSize({vp->WorkSize.x, footer_h});
-  ImGui::Begin("Footer", nullptr, pinned_flags);
+  ImGui::Begin("Footer", nullptr, pinned_flags | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
   ImGui::Text("openntc-gui v0.1 pre-release");
   ImGui::SameLine();
   ImGui::TextDisabled("|");
@@ -1934,6 +1970,22 @@ void Render()
   ImGui::TextDisabled("|");
   ImGui::SameLine();
   ImGui::TextUnformatted(g_status_text);
+  {
+    char stats[160];
+    snprintf(
+      stats,
+      sizeof(stats),
+      "L %.2f ms | R %.2f ms | %dx%d | %.1f ms (%.0f fps)",
+      g_stat_pane_ms[0],
+      g_stat_pane_ms[1],
+      static_cast<int>(vp->WorkSize.x - sidebar_w),
+      static_cast<int>(vp->WorkSize.y - footer_h),
+      g_stat_frame_ms,
+      g_stat_fps);
+    const float stats_w = ImGui::CalcTextSize(stats).x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - stats_w - ImGui::GetStyle().WindowPadding.x);
+    ImGui::TextDisabled("%s", stats);
+  }
   ImGui::End();
 
   float cx = vp->WorkPos.x;
@@ -1957,9 +2009,9 @@ void Render()
   const XMVECTOR up_dir = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
   XMVECTOR eye_pos = XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f);
-  if (cmode == CameraMode::Orbit)
+  if (cmode == CameraMode::Static || cmode == CameraMode::Orbit)
   {
-    float angle = g_gui_spin ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
+    float angle = (cmode == CameraMode::Orbit) ? static_cast<float>(std::fmod(g_total_seconds, std::acos(-1.0) * 2.0)) : 0.0f;
     g_model_mat = XMMatrixIdentity();
     eye_pos = XMVector3Transform(XMVectorSet(0.0f, 0.0f, -eye_distance, 1.0f), XMMatrixRotationY(-angle));
     g_view_mat = XMMatrixLookAtLH(eye_pos, focus_pos, up_dir);
@@ -2006,8 +2058,7 @@ void Render()
     ImGui::InvisibleButton("Viewport Drag", {cw, ch}, ImGuiButtonFlags_MouseButtonLeft);
     if (ImGui::IsItemActive() && !g_gui_flat_view)
     {
-      if (static_cast<CameraMode>(g_gui_camera_mode) == CameraMode::Orbit)
-        g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
+      g_gui_camera_mode = static_cast<int32_t>(CameraMode::Controlled);
 
       const float sensitivity = 0.008f;
       ImGuiIO& io = ImGui::GetIO();
@@ -2046,6 +2097,24 @@ void Render()
   auto buffer = g_buffers[g_frame_i];
   command_allocator->Reset();
   g_commandlist->Reset(command_allocator.Get(), nullptr);
+
+  {
+    const size_t slot_bytes = g_kTimestampsPerFrame * sizeof(uint64_t);
+    D3D12_RANGE range = {g_frame_i * slot_bytes, (g_frame_i + 1) * slot_bytes};
+    uint64_t* mapped = nullptr;
+    if (SUCCEEDED(g_query_readback->Map(0, &range, reinterpret_cast<void**>(&mapped))))
+    {
+      const uint64_t* t = mapped + g_frame_i * g_kTimestampsPerFrame;
+      if (t[0] != 0 && t[1] >= t[0] && t[2] >= t[1])
+      {
+        g_stat_pane_ms[0] = static_cast<float>((t[1] - t[0]) * 1000.0 / g_timestamp_frequency);
+        g_stat_pane_ms[1] = static_cast<float>((t[2] - t[1]) * 1000.0 / g_timestamp_frequency);
+      }
+      D3D12_RANGE none = {0, 0};
+      g_query_readback->Unmap(0, &none);
+    }
+  }
+  const uint32_t query_base = g_frame_i * g_kTimestampsPerFrame;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_dhandle_rtv[g_frame_i].cpu_;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = g_dhandle_dsv.cpu_;
   UINT tex_color_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -2113,12 +2182,14 @@ void Render()
     g_buffer_lighting_params->Unmap(0, nullptr);
   }
 
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 0);
   if (g_gui_flat_view)
   {
     g_commandlist->RSSetViewports(1, &viewport_left);
     g_commandlist->RSSetScissorRects(1, &scissor);
     g_commandlist->OMSetRenderTargets(1, &scene_rtv, FALSE, &dsv_handle);
     DrawFlatPane(static_cast<FlatSource>(g_gui_flat_left), viewport_left);
+    g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 1);
     g_commandlist->RSSetViewports(1, &viewport_right);
     DrawFlatPane(static_cast<FlatSource>(g_gui_flat_right), viewport_right);
   }
@@ -2146,6 +2217,7 @@ void Render()
       g_commandlist->DrawIndexedInstanced(g_map_model_to_index_count[g_gui_model], 1, 0, 0, 0);
     }
   }
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 1);
   {
     g_commandlist->RSSetViewports(1, &viewport_right);
     g_commandlist->RSSetScissorRects(1, &scissor);
@@ -2169,6 +2241,15 @@ void Render()
     }
   }
   }
+
+  g_commandlist->EndQuery(g_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_base + 2);
+  g_commandlist->ResolveQueryData(
+    g_query_heap.Get(),
+    D3D12_QUERY_TYPE_TIMESTAMP,
+    query_base,
+    g_kTimestampsPerFrame,
+    g_query_readback.Get(),
+    query_base * sizeof(uint64_t));
 
   if (use_taa)
   {
@@ -2678,6 +2759,98 @@ HANDLE CreateEventHandle()
   return fence_event;
 }
 
+// Style based off "Catppucin Mocha"
+// From https://github.com/ocornut/imgui/issues/707#issuecomment-4107169777
+//  With some tweaks for our case
+
+static void SetupImGuiCatppuccinMochaStyle()
+{
+  ImGui::StyleColorsDark();
+
+  ImGuiStyle& style = ImGui::GetStyle();
+  ImVec4* colors = style.Colors;
+
+  style.WindowPadding = ImVec2(12.0f, 12.0f);
+  style.FramePadding = ImVec2(6.0f, 4.0f);
+  style.ItemSpacing = ImVec2(8.0f, 6.0f);
+  style.ScrollbarSize = 14.0f;
+  style.GrabMinSize = 12.0f;
+
+  // Removing rounded window corners to avoid exposing clear color
+
+  style.WindowRounding = 0.0f;
+  style.FrameRounding = 5.0f;
+  style.PopupRounding = 5.0f;
+  style.ScrollbarRounding = 12.0f;
+  style.GrabRounding = 5.0f;
+  style.TabRounding = 5.0f;
+
+  style.WindowBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.PopupBorderSize = 1.0f;
+
+  // Text
+  colors[ImGuiCol_Text] = ImVec4(0.80f, 0.84f, 0.96f, 1.00f);          // Text
+  colors[ImGuiCol_TextDisabled] = ImVec4(0.42f, 0.45f, 0.55f, 1.00f);  // Surface1
+
+  // Backgrounds
+  colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);  // Base
+  colors[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);   // Mantle
+  colors[ImGuiCol_PopupBg] = ImVec4(0.07f, 0.07f, 0.11f, 0.96f);   // Crust
+
+  // Borders
+  colors[ImGuiCol_Border] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);  // Surface0
+  colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+  // Frames
+  colors[ImGuiCol_FrameBg] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);         // Surface0
+  colors[ImGuiCol_FrameBgHovered] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);  // Surface1
+  colors[ImGuiCol_FrameBgActive] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);   // Surface2
+
+  // Title bars
+  colors[ImGuiCol_TitleBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);           // Mantle
+  colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);     // Base
+  colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.07f, 0.07f, 0.11f, 1.00f);  // Crust
+
+  // Menus
+  colors[ImGuiCol_MenuBarBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+
+  // Scrollbars
+  colors[ImGuiCol_ScrollbarBg] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);  // Surface2
+  colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.37f, 0.38f, 0.51f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.42f, 0.45f, 0.55f, 1.00f);
+
+  // Interactables
+  colors[ImGuiCol_CheckMark] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);   // Lavender
+  colors[ImGuiCol_SliderGrab] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);  // Sapphire
+  colors[ImGuiCol_SliderGrabActive] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);
+  colors[ImGuiCol_Button] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_ButtonHovered] = ImVec4(0.80f, 0.65f, 0.97f, 1.00f);  // Mauve
+  colors[ImGuiCol_ButtonActive] = ImVec4(0.70f, 0.55f, 0.87f, 1.00f);
+  colors[ImGuiCol_Header] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_HeaderHovered] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);
+  colors[ImGuiCol_HeaderActive] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+
+  // Separators + Pane Divider
+  colors[ImGuiCol_Separator] = ImVec4(0.25f, 0.26f, 0.35f, 1.00f);  // Surface1
+  colors[ImGuiCol_SeparatorHovered] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);
+  colors[ImGuiCol_SeparatorActive] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);
+
+  // Tabs
+  colors[ImGuiCol_Tab] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
+  colors[ImGuiCol_TabHovered] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+  colors[ImGuiCol_TabSelected] = ImVec4(0.19f, 0.20f, 0.27f, 1.00f);
+  colors[ImGuiCol_TabDimmed] = ImVec4(0.09f, 0.09f, 0.15f, 1.00f);
+  colors[ImGuiCol_TabDimmedSelected] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
+
+  // Misc
+  colors[ImGuiCol_PlotLines] = ImVec4(0.94f, 0.72f, 0.42f, 1.00f);  // Marigold
+  colors[ImGuiCol_PlotHistogram] = ImVec4(0.45f, 0.78f, 0.93f, 1.00f);  // Sapphire (progress bar)
+  colors[ImGuiCol_TextSelectedBg] = ImVec4(0.31f, 0.32f, 0.42f, 1.00f);
+  colors[ImGuiCol_NavCursor] = ImVec4(0.71f, 0.75f, 1.00f, 1.00f);  // Lavender
+}
+
 int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow)
 {
   {
@@ -2772,13 +2945,33 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   g_fence = CreateFence(g_device);
   g_fence_event = CreateEventHandle();
 
+  {
+    D3D12_QUERY_HEAP_DESC qdesc = {};
+    qdesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qdesc.Count = g_numframes * g_kTimestampsPerFrame;
+    VERIFY(g_device->CreateQueryHeap(&qdesc, IID_PPV_ARGS(&g_query_heap)));
+    g_query_readback =
+      CreateBuffer(g_device.Get(), D3D12_HEAP_TYPE_READBACK, g_numframes * g_kTimestampsPerFrame * sizeof(uint64_t));
+    VERIFY(g_queue->GetTimestampFrequency(&g_timestamp_frequency));
+  }
+
   g_initialized = true;
 
   LoadContent();
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGui::StyleColorsDark();
+  SetupImGuiCatppuccinMochaStyle();
+  {
+    const DataPack::Blob font = g_datapack.Get("Roboto-Medium.ttf");
+    ImFontConfig cfg;
+    cfg.FontDataOwnedByAtlas = false;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    if (font.data_ == nullptr ||
+        ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<void*>(font.data_), static_cast<int>(font.size_), 16.0f, &cfg) == nullptr)
+      ImGui::GetIO().Fonts->AddFontDefault();
+  }
   ImGui_ImplWin32_Init(g_hwnd);
 
   ImGui_ImplDX12_InitInfo imgui_info = {};

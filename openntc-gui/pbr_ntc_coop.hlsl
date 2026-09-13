@@ -44,9 +44,13 @@ VertexShaderOutput vs_main(VertexShaderInput v_in)
 
   // NOTE: This heuristic LOD is exclusively for the models shipped with the UI
   //  No stochastic filtering for displacement.
+  float displacement = 0.0f;
   float lod = clamp(max(0.0f, log2(NTCCBV.dim_ / 200.0f)), 0.0, float(NTCCBV.mip_count_ - 1));
-  MaterialParams vs_mat = SampleMaterial(g0, g1, decoder, NTCCBV, v_in.uv_, int(round(lod)));
-  float displacement = (vs_mat.displacement_ - 0.5) * LightingParamsCBV.displacement_scale_;
+  if (LightingParamsCBV.displacement_scale_ > 0.0f)
+  {
+    MaterialParams vs_mat = SampleMaterial(g0, g1, decoder, NTCCBV, v_in.uv_, int(round(lod)));
+    displacement = (vs_mat.displacement_ - 0.5) * LightingParamsCBV.displacement_scale_;
+  }
   float4 model_pos = float4(v_in.pos_ + v_in.normal_ * displacement, 1.0f);
 
   float4 world_pos = mul(ModelViewProjectionCB.model_to_world_, model_pos);

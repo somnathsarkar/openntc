@@ -80,7 +80,10 @@ PixelShaderOutput ps_main(PixelShaderInput p_in)
     {
       float2 prev_uv = float2(prev_clip.x / prev_clip.w + 1.0, 1.0 - prev_clip.y / prev_clip.w) / 2.0;
       if (all(prev_uv >= 0.0) && all(prev_uv <= 1.0))
+      {
         prev_pixel = pane_base + prev_uv * TaaInfoCB.pane_dim_;
+        prev_pixel = clamp(prev_pixel, pane_base + 0.5, pane_base + TaaInfoCB.pane_dim_ - 0.5);
+      }
       else
         blend = 1.0;
     }
