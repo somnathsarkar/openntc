@@ -2969,6 +2969,16 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   SetupImGuiCatppuccinMochaStyle();
+  {
+    const DataPack::Blob font = g_datapack.Get("Roboto-Medium.ttf");
+    ImFontConfig cfg;
+    cfg.FontDataOwnedByAtlas = false;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    if (font.data_ == nullptr ||
+        ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<void*>(font.data_), static_cast<int>(font.size_), 16.0f, &cfg) == nullptr)
+      ImGui::GetIO().Fonts->AddFontDefault();
+  }
   ImGui_ImplWin32_Init(g_hwnd);
 
   ImGui_ImplDX12_InitInfo imgui_info = {};

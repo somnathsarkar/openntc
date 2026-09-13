@@ -142,7 +142,8 @@ set(OPENNTC_ASSET_FILES
   ${CMAKE_SOURCE_DIR}/data/specular_cube.dds
   ${CMAKE_SOURCE_DIR}/data/dfg.dds
   ${CMAKE_SOURCE_DIR}/data/sh.txt
-  ${CMAKE_SOURCE_DIR}/data/knob.bin)
+  ${CMAKE_SOURCE_DIR}/data/knob.bin
+  ${CMAKE_SOURCE_DIR}/data/Roboto-Medium.ttf)
 foreach(f ${OPENNTC_ASSET_FILES})
   if(NOT EXISTS ${f})
     message(FATAL_ERROR "Missing binary asset: ${f}")
@@ -160,7 +161,8 @@ list(APPEND PACK_INPUTS
   "specular_cube.dds=${CMAKE_SOURCE_DIR}/data/specular_cube.dds"
   "dfg.dds=${CMAKE_SOURCE_DIR}/data/dfg.dds"
   "sh.txt=${CMAKE_SOURCE_DIR}/data/sh.txt"
-  "knob.bin=${CMAKE_SOURCE_DIR}/data/knob.bin")
+  "knob.bin=${CMAKE_SOURCE_DIR}/data/knob.bin"
+  "Roboto-Medium.ttf=${CMAKE_SOURCE_DIR}/data/Roboto-Medium.ttf")
 
 set(PACK_FILE_DEPS "")
 foreach(pair ${PACK_INPUTS})
