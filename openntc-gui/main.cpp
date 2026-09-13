@@ -1716,10 +1716,11 @@ static bool ModeButton(const char* label, bool selected, float width)
     const ImVec4 pressed = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
     ImGui::PushStyleColor(ImGuiCol_Button, pressed);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pressed);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
   }
   const bool clicked = ImGui::Button(label, {width, 0.0f});
   if (selected)
-    ImGui::PopStyleColor(2);
+    ImGui::PopStyleColor(3);
   return clicked;
 }
 
