@@ -1885,7 +1885,7 @@ void Render()
   ImGui::Checkbox("TAA", &g_gui_taa);
   }
 
-  ImGui::SeparatorText("Train");
+  ImGui::SeparatorText("Compression");
   const bool can_train = !g_manifest_path.empty() &&
     (g_app_state == GuiState::MaterialLoaded || g_app_state == GuiState::Compressed);
   ImGui::BeginDisabled(!can_train);
@@ -1902,7 +1902,7 @@ void Render()
     }
   }
   ImGui::Combo("Quality", &g_gui_quality, g_map_quality_to_name, g_kQualityCount);
-  bool train_button = ImGui::Button("Train");
+  bool train_button = ImGui::Button("Compress");
   ImGui::EndDisabled();
   {
     std::optional<SharedContext::Access> oaccess = g_ctx.TryAcquire();
