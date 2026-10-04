@@ -6,7 +6,7 @@ openntc is a collection of source-available Neural Texture Compression tools wri
 
 ![GUI](images/gui.webp)
 
-An in-depth article on how it works is available here.
+An in-depth article on how it works is available here: [Article Link](https://somnathsarkar.io/2026/08/31/openntc/).
 
 ![Flowchart](images/compression_flow.webp)
 
